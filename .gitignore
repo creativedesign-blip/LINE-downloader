@@ -1,0 +1,13 @@
+node_modules/
+_legacy/node_modules/
+
+downloads/
+
+config/chrome-profile/
+config/state/
+config/targets.json
+
+*.log
+*.tmp
+
+.env
