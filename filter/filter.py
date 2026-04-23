@@ -20,6 +20,8 @@ import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 
 def sidecar_path(img_path: Path) -> Path:
     return img_path.with_suffix(img_path.suffix + '.json')
@@ -291,6 +293,14 @@ def process_one(ocr, img_path: Path):
         return 'err'
     flag = '[旅遊]' if is_travel else '[  -  ]'
     print(f"  {flag} {reason:<8} {img_path.name}  {hits_display}")
+
+    if is_travel:
+        sc = sidecar_path(new_path)
+        from tools.branding.brand_stitcher import stitch_one_auto
+        from tools.indexing.reindex import reindex_one_auto
+        stitch_one_auto(sc)
+        reindex_one_auto(sc)
+
     return classification
 
 

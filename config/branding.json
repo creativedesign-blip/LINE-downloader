@@ -1,0 +1,14 @@
+{
+  "logoPath": "config/brand.png",
+  "bandHeightRatio": 0.12,
+  "bandMinHeightPx": 80,
+  "bandColor": [255, 255, 255],
+  "logoWidthRatio": 0.7,
+  "logoScaleMax": 2.0,
+  "logoScaleMin": 0.25,
+  "minLogoPixelWidthRequired": 1000,
+  "logoHorizontalAlign": "center",
+  "logoPaddingRatio": 0.02,
+  "outputFormat": "jpg",
+  "outputQuality": 92
+}
