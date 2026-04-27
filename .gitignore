@@ -1,0 +1,29 @@
+node_modules/
+_legacy/node_modules/
+
+downloads/
+
+config/chrome-profile/
+config/state/
+config/targets.json
+
+# Runtime products (Phase 2 indexing)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Build artifacts
+LINE-downloader.zip
+
+# Local tooling
+.claude/
+
+*.log
+*.tmp
+
+.env

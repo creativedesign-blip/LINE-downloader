@@ -1,0 +1,17 @@
+{
+  "name": "line-official-download-automation",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MVP automation for LINE Web group image download and OCR classification",
+  "main": "app.js",
+  "scripts": {
+    "bind": "node app.js bind",
+    "pages": "node app.js pages",
+    "list": "node app.js list",
+    "run": "node app.js run",
+    "run-all": "node app.js run-all"
+  },
+  "dependencies": {
+    "playwright-core": "^1.54.2"
+  }
+}
