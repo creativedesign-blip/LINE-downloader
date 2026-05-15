@@ -744,7 +744,12 @@ class Handler(SimpleHTTPRequestHandler):
             raw = self.rfile.read(length).decode("utf-8") if length else "{}"
             data = json.loads(raw)
             message = str(data.get("message") or "").strip()
-            limit = int(data.get("limit") or 12)
+            # Default raised from 12 to 100: with limit=12 + indexed_at-DESC
+            # ordering, popular country queries (e.g. "日本", "韓國") routinely
+            # truncated 20+ legitimate matches and dropped older travel DM
+            # off the page. 100 is comfortable for the 1-2 group sizes we
+            # see today; the chat UI can still pass an explicit smaller value.
+            limit = int(data.get("limit") or 100)
             include_archived = bool(data.get("include_archived"))
             if not message:
                 self._json({"kind": "empty", "message": "請輸入要交給 Agent 的旅遊任務。"})
