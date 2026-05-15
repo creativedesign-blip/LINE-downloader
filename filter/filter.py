@@ -140,7 +140,7 @@ DATE_RE = re.compile(
 def normalize_ocr_text(text: str) -> str:
     """Normalize OCR text for matching.
 
-    RapidOCR sometimes inserts spaces/newlines inside words, emits full-width
+    PaddleOCR sometimes inserts spaces/newlines inside words, emits full-width
     digits, or mixes Simplified/Traditional variants.  Keep the original text
     for logs/indexing, but classify against this compact version to avoid false
     OTHER results for obvious travel DM images.

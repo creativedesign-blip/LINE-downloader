@@ -791,12 +791,14 @@ function isManualAgentRunCommand(query) {
 
 function LoginScreen({ onLogin }) {
   const [username, setUsername] = useState("admin_dadova");
-  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+    const form = event.currentTarget;
+    const passwordInput = form.elements.namedItem("password");
+    const password = passwordInput?.value || "";
     setError("");
     setSubmitting(true);
     try {
@@ -804,6 +806,9 @@ function LoginScreen({ onLogin }) {
     } catch (loginError) {
       setError(loginError.message || "登入失敗，請稍後再試。");
     } finally {
+      if (passwordInput) {
+        passwordInput.value = "";
+      }
       setSubmitting(false);
     }
   };
@@ -871,9 +876,8 @@ function LoginScreen({ onLogin }) {
             <KeyRound className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
             <input
               id="login-password"
+              name="password"
               type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
               autoComplete="current-password"
               className="w-full rounded-md border bg-white px-10 py-3 text-sm outline-none transition-colors focus:border-stone-900"
               style={{ borderColor: "#D6CFB8" }}

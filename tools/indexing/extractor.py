@@ -456,9 +456,11 @@ def extract_price_from(text: str) -> Optional[int]:
 # Duration (days)
 # ---------------------------------------------------------------------------
 
-_DURATION_PLUS_RE = re.compile(r"(?<!\d)(\d{1,2})\s*[+＋]\s*(\d{1,2})\s*[天日](?:遊|程)?")
-_DURATION_RE = re.compile(r"(\d+)\s*[天日](?:遊|程)?")
-_DURATION_CH_RE = re.compile(r"([一二兩三四五六七八九十]{1,3})\s*[天日](?:遊|程)?")
+_DURATION_GAP = r"[ \t　]*"
+_DURATION_SUFFIX = r"[天日](?![本期])(?:遊|程)?"
+_DURATION_PLUS_RE = re.compile(rf"(?<![\d/])(\d{{1,2}}){_DURATION_GAP}[+＋]{_DURATION_GAP}(\d{{1,2}}){_DURATION_GAP}{_DURATION_SUFFIX}")
+_DURATION_RE = re.compile(rf"(?<![\d/])(\d{{1,2}}){_DURATION_GAP}{_DURATION_SUFFIX}")
+_DURATION_CH_RE = re.compile(rf"([一二兩三四五六七八九十]{{1,3}}){_DURATION_GAP}{_DURATION_SUFFIX}")
 
 
 def extract_duration(text: str) -> Optional[int]:

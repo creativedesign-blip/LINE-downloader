@@ -5,6 +5,7 @@ downloads/
 
 # Local pipeline output (large, regenerable from RPA)
 .cache/
+.paddlex-cache/
 .tools/
 logs/
 line-rpa/download/
@@ -17,6 +18,7 @@ travel-agent-interface/dist/
 config/chrome-profile/
 config/state/
 config/targets.json
+config/duplicate_reviews.json
 
 # Runtime products (Phase 2 indexing)
 *.db

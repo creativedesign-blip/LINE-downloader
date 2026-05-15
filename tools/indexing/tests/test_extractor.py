@@ -259,6 +259,16 @@ class TestExtractDuration(unittest.TestCase):
         # '12天' and '11夜' — we pick 12 via 天 match.
         self.assertEqual(extract_duration("12天11夜"), 12)
 
+    def test_dates_do_not_become_duration(self):
+        self.assertIsNone(extract_duration("07/12,07/23,08/18,08/20\n日本環球影城"))
+        self.assertIsNone(extract_duration("7/22、7/25、7/29\n日期\n$ 36,800"))
+        self.assertIsNone(extract_duration("08/20日本環球影城"))
+        self.assertIsNone(extract_duration("7/29日期"))
+
+    def test_valid_duration_survives_departure_dates(self):
+        self.assertEqual(extract_duration("關西\n星\nON\n5日\n送小費\n08/18,08/20\n日本環球影城"), 5)
+        self.assertEqual(extract_duration("關西夏日假期5天\n出發\n7/18、7/22、7/25、7/29\n日期"), 5)
+
     def test_out_of_range_rejected(self):
         # '100 天' gets filtered; '2 天' should be ok though.
         self.assertEqual(extract_duration("100 天"), None)

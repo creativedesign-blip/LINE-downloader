@@ -32,6 +32,8 @@ def make_args(**overrides):
         "skip_branding": False,
         "skip_index": False,
         "skip_ocr_enrich": False,
+        "second_pass_ocr": False,
+        "second_pass_limit": 0,
         "force_branding": False,
     }
     defaults.update(overrides)
@@ -85,6 +87,33 @@ class TestPipelineTargetDiscovery(unittest.TestCase):
         self.assertNotIn("ocr:all", names)
         self.assertIn("branding:all", names)
         self.assertIn("index:all", names)
+
+    def test_second_pass_ocr_is_opt_in(self):
+        commands = build_commands(make_args(second_pass_ocr=True), [TEST_TARGET])
+        second_pass_commands = [
+            command for name, command in commands
+            if name == "second-pass-ocr:all"
+        ]
+        self.assertEqual(len(second_pass_commands), 1)
+        self.assertIn("--provider", second_pass_commands[0])
+        self.assertIn("paddle-ocr", second_pass_commands[0])
+        self.assertIn("--limit", second_pass_commands[0])
+        self.assertIn("0", second_pass_commands[0])
+        self.assertIn("--target", second_pass_commands[0])
+        self.assertIn(TEST_TARGET, second_pass_commands[0])
+
+    def test_second_pass_ocr_can_process_all_candidates(self):
+        commands = build_commands(
+            make_args(second_pass_ocr=True, second_pass_limit=0),
+            [TEST_TARGET],
+        )
+        second_pass_commands = [
+            command for name, command in commands
+            if name == "second-pass-ocr:all"
+        ]
+        self.assertEqual(len(second_pass_commands), 1)
+        limit_index = second_pass_commands[0].index("--limit")
+        self.assertEqual(second_pass_commands[0][limit_index + 1], "0")
 
     def test_indexing_collects_non_jpg_sidecars(self):
         travel_dir = self.target_dir / "travel"

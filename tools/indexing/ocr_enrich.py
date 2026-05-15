@@ -3,8 +3,8 @@
 This is the pre-index step for the OpenClaw flow:
   travel image -> sidecar OCR text -> branding -> SQLite/search index
 
-It uses RapidOCR because it is lightweight inside the project .venv. Existing
-sidecars with OCR text are skipped unless --force is supplied.
+It uses RapidOCR for fast first-pass bulk OCR. Existing sidecars with OCR text
+are skipped unless --force is supplied.
 """
 
 from __future__ import annotations
@@ -65,6 +65,8 @@ def _has_price_area_cue(text: str) -> bool:
 def _ocr_image(engine, image: Image.Image) -> str:
     import numpy as np
 
+    if image.mode != "RGB":
+        image = image.convert("RGB")
     result, _ = engine(np.array(image))
     if not result:
         return ""
@@ -112,7 +114,14 @@ def _price_ocr_text(engine, image_path: Path, current_text: str) -> str:
     return ""
 
 
-def enrich_one(engine, image_path: Path, *, force: bool = False) -> str:
+def enrich_one(
+    engine,
+    image_path: Path,
+    *,
+    force: bool = False,
+    engine_name: str = "rapidocr-onnxruntime",
+    include_price_ocr: bool = True,
+) -> str:
     sidecar = load_sidecar(image_path)
     ocr = sidecar.get("ocr") or {}
     image_hash = file_sha256(image_path)
@@ -121,11 +130,11 @@ def enrich_one(engine, image_path: Path, *, force: bool = False) -> str:
         price_ocr = ocr.get("priceOcr") or {}
         if price_ocr.get("imageSha256") == image_hash:
             return "skipped"
-        price_text = _price_ocr_text(engine, image_path, str(ocr.get("text") or ""))
+        price_text = _price_ocr_text(engine, image_path, str(ocr.get("text") or "")) if include_price_ocr else ""
         if not price_text:
             ocr["priceOcr"] = {
                 "text": "",
-                "engine": "rapidocr-onnxruntime",
+                "engine": engine_name,
                 "imageSha256": image_hash,
                 "classifiedAt": _iso_now(),
                 "status": "not_found",
@@ -135,7 +144,7 @@ def enrich_one(engine, image_path: Path, *, force: bool = False) -> str:
             return "skipped"
         ocr["priceOcr"] = {
             "text": price_text,
-            "engine": "rapidocr-onnxruntime",
+            "engine": engine_name,
             "imageSha256": image_hash,
             "classifiedAt": _iso_now(),
             "status": "found",
@@ -146,7 +155,7 @@ def enrich_one(engine, image_path: Path, *, force: bool = False) -> str:
         return "enriched"
 
     text = _ocr_text(engine, image_path)
-    price_text = _price_ocr_text(engine, image_path, text)
+    price_text = _price_ocr_text(engine, image_path, text) if include_price_ocr else ""
     if price_text:
         text = f"{text}\n{price_text}".strip()
     source = sidecar.get("source") or {}
@@ -161,13 +170,13 @@ def enrich_one(engine, image_path: Path, *, force: bool = False) -> str:
         "classifiedAt": _iso_now(),
         "classification": ocr.get("classification") or "travel",
         "text": text,
-        "engine": "rapidocr-onnxruntime",
+        "engine": engine_name,
         "imageSha256": image_hash,
     })
     if price_text:
         ocr["priceOcr"] = {
             "text": price_text,
-            "engine": "rapidocr-onnxruntime",
+            "engine": engine_name,
             "imageSha256": image_hash,
             "classifiedAt": _iso_now(),
             "status": "found",
@@ -214,7 +223,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     except ImportError as e:
         logger.critical("rapidocr-onnxruntime is not installed in this Python: %s", e)
         return 2
-
     engine = RapidOCR()
     stats = {"enriched": 0, "skipped": 0, "error": 0}
     for img in images:

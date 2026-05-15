@@ -37,7 +37,9 @@ from tools.common.targets import DOWNLOADS_DIR, PROJECT_ROOT, load_target_ids, r
 FILTER_SCRIPT = PROJECT_ROOT / "filter" / "filter.py"
 BRANDING_SCRIPT = PROJECT_ROOT / "tools" / "branding" / "brand_stitcher.py"
 OCR_ENRICH_SCRIPT = PROJECT_ROOT / "tools" / "indexing" / "ocr_enrich.py"
+SECOND_PASS_OCR_SCRIPT = PROJECT_ROOT / "tools" / "indexing" / "second_pass_ocr.py"
 REINDEX_SCRIPT = PROJECT_ROOT / "tools" / "indexing" / "reindex.py"
+DEFAULT_SECOND_PASS_LIMIT = 0
 
 SUPPORTED_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 IMAGE_INDEX_PATH = DOWNLOADS_DIR / "image_index.json"
@@ -244,7 +246,7 @@ def build_commands(args: argparse.Namespace, target_ids: list[str]) -> list[tupl
     """Build one shared subprocess per stage instead of one per target.
 
     Earlier versions spawned filter/ocr_enrich/branding once per target,
-    which forced RapidOCR and PIL/cv2/branding config to reload N times.
+    which forced OCR and PIL/cv2/branding config to reload N times.
     The downstream scripts now accept repeatable --target so a single
     process can iterate over all targets with one model load.
     """
@@ -271,6 +273,20 @@ def build_commands(args: argparse.Namespace, target_ids: list[str]) -> list[tupl
         for target_id in target_ids:
             cmd.extend(["--target", target_id])
         commands.append(("ocr-enrich:all", cmd))
+
+    if getattr(args, "second_pass_ocr", False) and target_ids:
+        second_pass_limit = getattr(args, "second_pass_limit", DEFAULT_SECOND_PASS_LIMIT)
+        cmd = [
+            args.python,
+            str(SECOND_PASS_OCR_SCRIPT),
+            "--provider",
+            "paddle-ocr",
+            "--limit",
+            str(second_pass_limit),
+        ]
+        for target_id in target_ids:
+            cmd.extend(["--target", target_id])
+        commands.append(("second-pass-ocr:all", cmd))
 
     if not args.skip_index and target_ids:
         commands.append(("index:all", [args.python, str(REINDEX_SCRIPT)]))
@@ -313,6 +329,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         help="skip travel_index.db rebuild")
     parser.add_argument("--skip-ocr-enrich", action="store_true",
                         help="skip cached OCR enrichment for travel sidecars")
+    parser.add_argument("--second-pass-ocr", action="store_true",
+                        help="rerun PaddleOCR only for suspicious travel sidecars before indexing")
+    parser.add_argument("--second-pass-limit", type=int, default=DEFAULT_SECOND_PASS_LIMIT,
+                        help="maximum suspicious sidecars to refresh per run; default 0 processes all")
     parser.add_argument("--force-branding", action="store_true",
                         help="rebuild branded images even if unchanged")
     parser.add_argument("--dry-run", action="store_true",
