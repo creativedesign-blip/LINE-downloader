@@ -52,7 +52,9 @@ SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 # Bump this when extractor logic / vocab semantically changes; existing rows
 # with a stale extractor_version will be re-extracted on the next reindex
 # even if their sidecar mtime is unchanged.
-EXTRACTOR_VERSION = "1"
+# v2: removed ambiguous 松山 -> 日本 region hint that mis-tagged Taiwan
+#     travel DM with "松山出發" as containing 日本.
+EXTRACTOR_VERSION = "2"
 
 logger = logging.getLogger("indexing")
 

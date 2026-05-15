@@ -151,7 +151,14 @@ _REGION_COUNTRY_HINTS = {
     "輕井澤": "日本", "河口湖": "日本", "靜岡": "日本", "山梨": "日本",
     "長野": "日本", "高山": "日本", "金澤": "日本", "姬路": "日本",
     "岡山": "日本", "廣島": "日本", "宮島": "日本", "鳥取": "日本",
-    "松江": "日本", "松山": "日本", "高松": "日本", "鹿兒島": "日本",
+    "松江": "日本", "高松": "日本", "鹿兒島": "日本",
+    # "松山" intentionally absent: ambiguous between 台北松山機場 (departure
+    # airport — appears in nearly every Taiwan domestic / outbound DM as
+    # "松山出發") and 日本愛媛松山市. Mapping to 日本 caused Taiwan-trip
+    # DM (e.g. "松山出發 馬祖雙島") to be tagged country=[日本, 台灣]
+    # via region inference. Genuine 松山市 trips fall through to
+    # country_hints.json, which already lists Japan markers like 沖繩 /
+    # JUNGLIA / 美麗海 — pure "松山市" only DM is virtually nonexistent.
     "熊本": "日本", "宮崎": "日本", "別府": "日本",
     "立山黑部": "日本", "白川鄉": "日本",
     "首爾": "韓國", "釜山": "韓國", "濟州": "韓國", "濟州島": "韓國",
