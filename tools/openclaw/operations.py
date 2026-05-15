@@ -402,8 +402,17 @@ def query_itineraries(
         params.append(target_id)
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    # Dedup by image_sha256 — RPA-side hash dedup leaks (group rename,
+    # corrupt image_index.json, etc.) sometimes land the same image bytes
+    # in multiple rows. Mirror the rule from index_db.TravelIndex.query
+    # so this code path doesn't surface duplicates either.
     sql = (
-        f"SELECT * FROM itineraries {where} "
+        f"SELECT * FROM ("
+        f"  SELECT *, ROW_NUMBER() OVER ("
+        f"    PARTITION BY COALESCE(image_sha256, sidecar_path) "
+        f"    ORDER BY indexed_at DESC, rowid DESC"
+        f"  ) AS _rn FROM itineraries {where}"
+        f") WHERE _rn = 1 "
         "ORDER BY indexed_at DESC, source_time DESC LIMIT ?"
     )
     sql_limit = int(limit) if include_archived else max(int(limit) * 5, int(limit), 100)
