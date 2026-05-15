@@ -91,7 +91,12 @@ def index_one(sidecar_path: Path, index: TravelIndex,
         return "error"
 
     ocr = sidecar.get("ocr") or {}
-    if ocr.get("classification") != "travel":
+    # The directory location is the source of truth: collect_travel_sidecars
+    # only feeds us files from travel/. Any classification value other than
+    # 'other' or 'error' is treated as a confirmed travel item — including
+    # 'review' images that a human moved into travel/ without re-running
+    # filter, and older sidecars with no classification field set.
+    if ocr.get("classification") in ("other", "error"):
         logger.debug("skip non-travel: %s", sidecar_path.name)
         return "skipped"
 

@@ -74,6 +74,7 @@ DEFAULT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT_DIR = DEFAULT_ROOT
 DEFAULT_TRAVEL_DIR = DEFAULT_ROOT / 'travel'
 DEFAULT_OTHER_DIR = DEFAULT_ROOT / 'other'
+DEFAULT_REVIEW_DIR = DEFAULT_ROOT / 'review'
 DEFAULT_ERROR_DIR = DEFAULT_ROOT / 'error'
 DEFAULT_MIN_WEAK_HITS = 2
 KEYWORDS_FILE = Path(__file__).resolve().parent / 'travel_keywords.txt'
@@ -163,6 +164,8 @@ def parse_args(argv=None):
                         help='Single-target legacy mode: travel destination.')
     parser.add_argument('--other-dir', type=Path, default=None,
                         help='Single-target legacy mode: other destination.')
+    parser.add_argument('--review-dir', type=Path, default=None,
+                        help='Single-target legacy mode: review destination (uncertain hits).')
     parser.add_argument('--error-dir', type=Path, default=None,
                         help='Single-target legacy mode: error destination.')
     parser.add_argument('--target', action='append', default=None, metavar='ID',
@@ -227,10 +230,17 @@ def get_ocr():
 
 
 def classify_text(text: str):
-    """回傳 (is_travel, reason, hits_display)
-    規則：強信號任一命中 → True；否則弱信號+金額/日期 bonus ≥ MIN_WEAK_HITS → True"""
+    """Return (classification, reason, hits_display).
+
+    classification ∈ {'travel', 'review', 'other'}:
+      - travel: strong keyword hit, OR weak+bonus signals reach MIN_WEAK_HITS
+      - review: no strong hit, but at least one weak or bonus signal
+        (some travel cue is present but not enough to commit). Routed
+        to review/ for human confirmation.
+      - other: no signal at all.
+    """
     if not text:
-        return False, 'empty', ''
+        return 'other', 'empty', ''
     raw_text = unicodedata.normalize('NFKC', text)
     compact_text = normalize_ocr_text(raw_text)
     strong = keyword_hits(STRONG_KEYWORDS, raw_text, compact_text)
@@ -241,14 +251,22 @@ def classify_text(text: str):
     if DATE_RE.search(raw_text) or DATE_RE.search(compact_text):
         bonus.append('<日期>')
 
+    weight = len(weak) + len(bonus)
     if strong:
         reason = f"強×{len(strong)}"
     else:
         reason = f"弱×{len(weak)}+{len(bonus)}"
-    is_travel = bool(strong) or (len(weak) + len(bonus) >= MIN_WEAK_HITS)
+
+    if strong or weight >= MIN_WEAK_HITS:
+        classification = 'travel'
+    elif weight >= 1:
+        classification = 'review'
+    else:
+        classification = 'other'
+
     all_hits = strong + weak + bonus
     hits_display = ','.join(all_hits[:5]) + (' …' if len(all_hits) > 5 else '')
-    return is_travel, reason, hits_display
+    return classification, reason, hits_display
 
 
 def update_sidecar_with_ocr(img_path: Path, *, classification: str, text: str = '',
@@ -279,7 +297,8 @@ def update_sidecar_with_ocr(img_path: Path, *, classification: str, text: str = 
 
 
 def process_one(ocr, img_path: Path, *,
-                travel_dir: Path, other_dir: Path, error_dir: Path):
+                travel_dir: Path, other_dir: Path, error_dir: Path,
+                review_dir: Path):
     # 先檢查檔案是否還在——另一個 classifier 行程（例如 UI server 內部的）可能已經搬走
     if not img_path.exists():
         return 'skip'
@@ -315,9 +334,13 @@ def process_one(ocr, img_path: Path, *,
         print(f"  [錯誤] {img_path.name}: {e}  → 錯誤/")
         return 'err'
 
-    is_travel, reason, hits_display = classify_text(text)
-    dest = travel_dir if is_travel else other_dir
-    classification = 'travel' if is_travel else 'other'
+    classification, reason, hits_display = classify_text(text)
+    dest_by_class = {
+        'travel': travel_dir,
+        'review': review_dir,
+        'other': other_dir,
+    }
+    dest = dest_by_class[classification]
     if not img_path.exists():
         return 'skip'
     update_sidecar_with_ocr(
@@ -338,10 +361,13 @@ def process_one(ocr, img_path: Path, *,
     except Exception as move_err:
         print(f"  [錯誤] {img_path.name}: 搬移失敗 {move_err}")
         return 'err'
-    flag = '[旅遊]' if is_travel else '[  -  ]'
-    print(f"  {flag} {reason:<8} {img_path.name}  {hits_display}")
+    flag_by_class = {'travel': '[旅遊]', 'review': '[待審]', 'other': '[  -  ]'}
+    print(f"  {flag_by_class[classification]} {reason:<8} {img_path.name}  {hits_display}")
 
-    if is_travel:
+    # Only auto-brand + auto-index confirmed travel images. review/ images
+    # wait for human confirmation; once moved into travel/, the next
+    # pipeline run picks them up via reindex/branding.
+    if classification == 'travel':
         sc = sidecar_of(new_path)
         from tools.branding.brand_stitcher import stitch_one_auto
         from tools.indexing.reindex import reindex_one_auto
@@ -368,22 +394,22 @@ def wait_stable(path: Path) -> bool:
 
 
 def resolve_target_specs(args):
-    """Return list of (input_dir, travel_dir, other_dir, error_dir).
+    """Return list of (input_dir, travel_dir, other_dir, review_dir, error_dir).
 
     --target mode: derives paths from line-rpa/download/<id>/{,inbox} and
-    routes outputs to <id>/{travel,other,error}. inbox/ entry only emitted
-    when it exists.
+    routes outputs to <id>/{travel,other,review,error}. inbox/ entry only
+    emitted when it exists.
 
     Legacy mode: a single spec from --input-dir/--travel-dir/etc. with the
     same defaults the script has used since v1.
     """
     legacy_dirs_provided = any([
-        args.input_dir, args.travel_dir, args.other_dir, args.error_dir,
+        args.input_dir, args.travel_dir, args.other_dir, args.review_dir, args.error_dir,
     ])
     if args.target and legacy_dirs_provided:
         raise SystemExit(
             '--target cannot be combined with --input-dir/--travel-dir/'
-            '--other-dir/--error-dir; pick one mode.'
+            '--other-dir/--review-dir/--error-dir; pick one mode.'
         )
     if args.target and args.watch:
         raise SystemExit('--watch is single-folder polling and cannot be combined with --target.')
@@ -399,17 +425,19 @@ def resolve_target_specs(args):
                 continue
             travel = base / 'travel'
             other = base / 'other'
+            review = base / 'review'
             error = base / 'error'
-            specs.append((base, travel, other, error))
+            specs.append((base, travel, other, review, error))
             inbox = base / 'inbox'
             if inbox.exists():
-                specs.append((inbox.resolve(), travel, other, error))
+                specs.append((inbox.resolve(), travel, other, review, error))
         return specs
 
     return [(
         (args.input_dir or DEFAULT_INPUT_DIR).resolve(),
         (args.travel_dir or DEFAULT_TRAVEL_DIR).resolve(),
         (args.other_dir or DEFAULT_OTHER_DIR).resolve(),
+        (args.review_dir or DEFAULT_REVIEW_DIR).resolve(),
         (args.error_dir or DEFAULT_ERROR_DIR).resolve(),
     )]
 
@@ -422,8 +450,8 @@ def main(argv=None) -> int:
     specs = resolve_target_specs(args)
 
     seen_outputs = set()
-    for _, travel, other, error in specs:
-        for d in (travel, other, error):
+    for _, travel, other, review, error in specs:
+        for d in (travel, other, review, error):
             if d not in seen_outputs:
                 d.mkdir(parents=True, exist_ok=True)
                 seen_outputs.add(d)
@@ -434,21 +462,23 @@ def main(argv=None) -> int:
     if args.target:
         print(f"  Targets: {', '.join(args.target)} ({len(specs)} input folders)")
     else:
-        in_dir, tr, ot, er = specs[0]
+        in_dir, tr, ot, rv, er = specs[0]
         print(f"  根目錄：{in_dir}")
         print(f"  旅遊相關 → {tr.name}/")
         print(f"  非旅遊   → {ot.name}/")
+        print(f"  待人工審核 → {rv.name}/")
         print(f"  錯誤檔   → {er.name}/")
     print(f"  關鍵字：強信號 {len(STRONG_KEYWORDS)} 個（任一即過）/ 弱信號 {len(WEAK_KEYWORDS)} 個（需 >={MIN_WEAK_HITS}，含金額/日期 bonus）")
+    print(f"  待審區：strong=0 但有 1 個信號的圖（弱×1+0、弱×0+1）→ {DEFAULT_REVIEW_DIR.name}/")
     print()
 
     if args.watch:
-        in_dir, tr, ot, er = specs[0]
-        return _watch_loop(in_dir, tr, ot, er)
+        in_dir, tr, ot, rv, er = specs[0]
+        return _watch_loop(in_dir, tr, ot, rv, er)
 
-    stats = {'travel': 0, 'other': 0, 'err': 0, 'skip': 0}
+    stats = {'travel': 0, 'review': 0, 'other': 0, 'err': 0, 'skip': 0}
     any_files = False
-    for in_dir, tr, ot, er in specs:
+    for in_dir, tr, ot, rv, er in specs:
         if not in_dir.exists():
             print(f"[skip] 來源不存在：{in_dir}")
             continue
@@ -459,21 +489,25 @@ def main(argv=None) -> int:
         print(f"[{in_dir}] 找到 {len(files)} 張，開始處理")
         for i, f in enumerate(files, 1):
             print(f"  [{i:3d}/{len(files)}]", end=' ')
-            stats[process_one(get_ocr(), f, travel_dir=tr, other_dir=ot, error_dir=er)] += 1
+            stats[process_one(get_ocr(), f,
+                              travel_dir=tr, other_dir=ot,
+                              review_dir=rv, error_dir=er)] += 1
         print()
 
     if not any_files:
         print("沒有待過濾的圖片。")
         return 0
-    print(f"完成：{stats['travel']} 旅遊相關 / {stats['other']} 非旅遊 / {stats['err']} 錯誤 / {stats['skip']} 略過(另一行程已處理)")
+    print(f"完成：{stats['travel']} 旅遊相關 / {stats['review']} 待人工審核 / "
+          f"{stats['other']} 非旅遊 / {stats['err']} 錯誤 / {stats['skip']} 略過")
     return 0
 
 
-def _watch_loop(input_dir: Path, travel_dir: Path, other_dir: Path, error_dir: Path) -> int:
+def _watch_loop(input_dir: Path, travel_dir: Path, other_dir: Path,
+                review_dir: Path, error_dir: Path) -> int:
     print("監看中：新進根目錄的圖片會自動分類")
     print("按 Ctrl+C 結束\n")
     processed = set()
-    total = {'travel': 0, 'other': 0, 'err': 0, 'skip': 0}
+    total = {'travel': 0, 'review': 0, 'other': 0, 'err': 0, 'skip': 0}
     try:
         while True:
             for f in list_pending(input_dir):
@@ -484,6 +518,7 @@ def _watch_loop(input_dir: Path, travel_dir: Path, other_dir: Path, error_dir: P
                 total[process_one(get_ocr(), f,
                                    travel_dir=travel_dir,
                                    other_dir=other_dir,
+                                   review_dir=review_dir,
                                    error_dir=error_dir)] += 1
                 processed.add(f)
             processed = {p for p in processed if p.exists()}
@@ -493,7 +528,8 @@ def _watch_loop(input_dir: Path, travel_dir: Path, other_dir: Path, error_dir: P
 
     print()
     print("=" * 60)
-    print(f"  累計：{total['travel']} 旅遊相關 / {total['other']} 非旅遊 / {total['err']} 錯誤")
+    print(f"  累計：{total['travel']} 旅遊相關 / {total['review']} 待人工審核 / "
+          f"{total['other']} 非旅遊 / {total['err']} 錯誤")
     print("=" * 60)
     return 0
 
