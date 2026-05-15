@@ -70,20 +70,24 @@ class TestCompositeShape(unittest.TestCase):
         logo = make_logo_rgba(120, 400)
         out = composite(base, logo, DEFAULT_CFG)
 
-        # band_h = max(80, int(1080 * 0.12)) = 129
-        self.assertEqual(out.shape, (1080 + 129, 1080, 3))
+        # pad = int(1080 * 0.02) = 21; available_w = 1080 - 42 = 1038
+        # scale = (1038 * 0.7) / 400 = 1.8165
+        # new_h = round(120 * 1.8165) = 218
+        # band_h = max(80, int(1080*0.12)=129, new_h + 2*pad = 260) = 260
+        self.assertEqual(out.shape, (1080 + 260, 1080, 3))
         self.assertEqual(out.dtype, np.uint8)
 
     def test_base_larger_than_logo_scales_up(self):
         # 2000x2000 base + 400x120 logo
-        # target_w = 2000 * 0.7 = 1400, scale_ideal = 3.5
-        # scaleMax caps to 2.0 -> new_w = 800
+        # pad = int(2000 * 0.02) = 40; available_w = 1920
+        # scale_ideal = (1920 * 0.7) / 400 = 3.36 -> capped at scaleMax 2.0
+        # new_h = 240
+        # band_h = max(80, int(2000*0.12)=240, new_h + 2*pad = 320) = 320
         base = make_base(2000, 2000)
         logo = make_logo_rgba(120, 400)
         out = composite(base, logo, DEFAULT_CFG)
 
-        band_h = int(2000 * 0.12)  # 240
-        self.assertEqual(out.shape, (2000 + band_h, 2000, 3))
+        self.assertEqual(out.shape, (2000 + 320, 2000, 3))
 
     def test_base_smaller_than_logo_scales_down(self):
         # 300x300 base + 400x120 logo
@@ -97,11 +101,14 @@ class TestCompositeShape(unittest.TestCase):
 
     def test_base_equals_logo_width(self):
         # 400x400 base + 400x120 logo
-        # target_w = 400 * 0.7 = 280, scale_ideal = 0.7
+        # pad = int(400 * 0.02) = 8; available_w = 384
+        # scale = (384 * 0.7) / 400 = 0.672
+        # new_h = round(120 * 0.672) = 81
+        # band_h = max(80, int(400*0.12)=48, new_h + 2*pad = 97) = 97
         base = make_base(400, 400)
         logo = make_logo_rgba(120, 400)
         out = composite(base, logo, DEFAULT_CFG)
-        self.assertEqual(out.shape, (400 + 80, 400, 3))  # band floor 80
+        self.assertEqual(out.shape, (400 + 97, 400, 3))
 
     def test_scale_cap_hit_with_huge_base(self):
         # 4000x4000 base + 200x60 logo
@@ -121,34 +128,45 @@ class TestCompositeShape(unittest.TestCase):
         with self.assertRaises(LogoTooSmallError):
             composite(base, logo, DEFAULT_CFG)
 
-    def test_band_height_cap_limits_scale(self):
-        # If band_h is small relative to logo height, height becomes the
-        # binding constraint. base 10000x400 -> band_h = 80 (just from
-        # ratio 0.12*400=48, floored to 80). Logo 120 tall, scale by height:
-        # 80 * 0.85 / 120 = 0.567.
+    def test_wide_base_grows_band_to_fit_max_scaled_logo(self):
+        # 400 tall x 10000 wide. The composite() rewrite no longer caps logo
+        # scale by the band — instead the band grows to fit the logo plus
+        # padding. Width is huge, so scale_ideal exceeds scaleMax and the
+        # logo is rendered at 2.0x; the band must accommodate it.
+        # pad = int(10000 * 0.02) = 200
+        # scale = min((10000 - 400) * 0.7 / 400, 2.0) = min(16.8, 2.0) = 2.0
+        # new_h = 240
+        # band_h = max(80, int(400*0.12)=48, new_h + 2*pad = 640) = 640
         base = make_base(400, 10000)
         logo = make_logo_rgba(120, 400)
         out = composite(base, logo, DEFAULT_CFG)
 
         self.assertEqual(out.shape[1], 10000)
-        self.assertEqual(out.shape[0], 400 + 80)
+        self.assertEqual(out.shape[0], 400 + 640)
 
     def test_horizontal_base_landscape(self):
         # 400x1200 landscape
+        # pad = int(1200 * 0.02) = 24; available_w = 1152
+        # scale_ideal = 1152 * 0.7 / 400 = 2.016 -> capped at scaleMax 2.0
+        # new_h = 240
+        # band_h = max(80, int(400*0.12)=48, new_h + 2*pad = 288) = 288
         base = make_base(400, 1200)
         logo = make_logo_rgba(120, 400)
         out = composite(base, logo, DEFAULT_CFG)
 
-        self.assertEqual(out.shape, (400 + 80, 1200, 3))
+        self.assertEqual(out.shape, (400 + 288, 1200, 3))
 
     def test_vertical_base_portrait(self):
         # 1200x600 portrait (phone screenshot style)
+        # pad = int(600 * 0.02) = 12; available_w = 576
+        # scale = (576 * 0.7) / 400 = 1.008
+        # new_h = round(120 * 1.008) = 121
+        # band_h = max(80, int(1200*0.12)=144, new_h + 2*pad = 145) = 145
         base = make_base(1200, 600)
         logo = make_logo_rgba(120, 400)
         out = composite(base, logo, DEFAULT_CFG)
 
-        band_h = int(1200 * 0.12)  # 144
-        self.assertEqual(out.shape, (1200 + band_h, 600, 3))
+        self.assertEqual(out.shape, (1200 + 145, 600, 3))
 
 
 class TestCompositeChannels(unittest.TestCase):
