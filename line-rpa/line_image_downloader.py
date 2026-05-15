@@ -453,19 +453,45 @@ class LineRpa:
 
     def open_or_focus_line(self) -> None:
         trace("finding LINE window")
-        self.hwnd = self.find_line_window()
-        if not self.hwnd:
-            trace("LINE window not found; starting LINE.exe")
-            subprocess.Popen([self.config["line_exe"]], close_fds=True)
-            timeout_seconds = float(self.config.get("line_start_timeout_seconds", 90))
-            deadline = time.time() + timeout_seconds
-            while time.time() < deadline and not self.hwnd:
-                time.sleep(1)
-                self.hwnd = self.find_line_window()
+        timeout_seconds = float(self.config.get("line_start_timeout_seconds", 90))
+        self.hwnd = self._restore_line_window(timeout_seconds=timeout_seconds)
         if not self.hwnd:
             raise RuntimeError("LINE window not found. Confirm LINE PC is installed and logged in.")
         trace(f"LINE hwnd={self.hwnd}")
         self.focus_line_window()
+
+    def _line_start_command(self) -> Path:
+        line_exe = Path(self.config["line_exe"])
+        launcher = line_exe.with_name("LineLauncher.exe")
+        return launcher if launcher.exists() else line_exe
+
+    def _restore_line_window(self, *, timeout_seconds: float = 10) -> int | None:
+        hwnd = self.find_line_window()
+        if hwnd:
+            self.hwnd = hwnd
+            return hwnd
+
+        start_path = self._line_start_command()
+        trace(f"LINE window not visible; starting {start_path.name}")
+        subprocess.Popen([str(start_path)], cwd=str(start_path.parent), close_fds=True)
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            time.sleep(1)
+            hwnd = self.find_line_window()
+            if hwnd:
+                self.hwnd = hwnd
+                return hwnd
+        return None
+
+    def _ensure_line_window_handle(self, hwnd: int, key: str) -> int:
+        if win32gui.IsWindow(hwnd):
+            return hwnd
+        if hwnd == self.hwnd:
+            trace(f"LINE window handle stale before {key}; restoring LINE window")
+            refreshed = self._restore_line_window(timeout_seconds=10)
+            if refreshed:
+                return refreshed
+        return hwnd
 
     def focus_line_window(self) -> None:
         if not self.hwnd:
@@ -478,6 +504,7 @@ class LineRpa:
         shell = win32com.client.Dispatch("WScript.Shell")
         shell.SendKeys("%")
         time.sleep(0.2)
+        self.hwnd = self._ensure_line_window_handle(self.hwnd, "focusing")
         if not win32gui.IsWindow(self.hwnd):
             raise RuntimeError("LINE window handle disappeared while focusing")
         win32gui.BringWindowToTop(self.hwnd)
@@ -1011,12 +1038,14 @@ class LineRpa:
         self.click_window_ratio(self.hwnd, key)
 
     def click_window_ratio(self, hwnd: int, key: str) -> None:
+        hwnd = self._ensure_line_window_handle(hwnd, key)
         if not win32gui.IsWindow(hwnd):
             raise RuntimeError(f"window handle is no longer valid for {key}")
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
         shell = win32com.client.Dispatch("WScript.Shell")
         shell.SendKeys("%")
         time.sleep(0.1)
+        hwnd = self._ensure_line_window_handle(hwnd, key)
         if not win32gui.IsWindow(hwnd):
             raise RuntimeError(f"window handle disappeared before clicking {key}")
         win32gui.BringWindowToTop(hwnd)

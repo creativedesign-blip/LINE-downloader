@@ -243,6 +243,44 @@ class LineImageDownloaderTests(unittest.TestCase):
         with self._patch_windows(windows), patch.object(rpa, "_line_process_ids", return_value={10}):
             self.assertIsNone(rpa.find_line_window())
 
+    def test_line_start_command_prefers_launcher_next_to_line_exe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            line_exe = Path(tmp) / "LINE.exe"
+            launcher = Path(tmp) / "LineLauncher.exe"
+            line_exe.write_text("", encoding="utf-8")
+            launcher.write_text("", encoding="utf-8")
+            rpa = app.LineRpa({"line_exe": str(line_exe), "coordinates": app.DEFAULT_CONFIG["coordinates"]})
+
+            self.assertEqual(rpa._line_start_command(), launcher)
+
+    def test_click_window_ratio_restores_stale_main_window_handle(self):
+        rpa = app.LineRpa({"wait_seconds": 0, "coordinates": {"target": [0.5, 0.5]}})
+        rpa.hwnd = 100
+        mouse_positions = []
+
+        def restore_line_window(*, timeout_seconds):
+            rpa.hwnd = 200
+            return 200
+
+        class FakeShell:
+            def SendKeys(self, keys):
+                pass
+
+        with patch.object(rpa, "_restore_line_window", side_effect=restore_line_window), \
+             patch.object(app.time, "sleep"), \
+             patch.object(app.win32gui, "IsWindow", side_effect=lambda hwnd: hwnd == 200), \
+             patch.object(app.win32gui, "ShowWindow"), \
+             patch.object(app.win32gui, "BringWindowToTop"), \
+             patch.object(app.win32gui, "GetWindowRect", return_value=(0, 0, 100, 100)), \
+             patch.object(app.win32com.client, "Dispatch", return_value=FakeShell()), \
+             patch.object(app.win32api, "SetCursorPos", side_effect=lambda pos: mouse_positions.append(pos)), \
+             patch.object(app.win32api, "mouse_event"), \
+             patch.object(rpa, "safe_set_foreground"):
+            rpa.click_window_ratio(100, "target")
+
+        self.assertEqual(rpa.hwnd, 200)
+        self.assertEqual(mouse_positions, [(50, 50)])
+
     @staticmethod
     @contextmanager
     def _patch_windows(windows):
