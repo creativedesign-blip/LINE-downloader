@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from tools.common.json_store import load_json_dict, save_json_dict
 from tools.common.targets import DOWNLOADS_DIR, PROJECT_ROOT
 
 
@@ -33,29 +33,16 @@ def file_sha256(path: Path) -> str:
 
 
 def load_image_seen_log(path: Path = IMAGE_SEEN_LOG_PATH) -> dict[str, dict[str, Any]]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    out: dict[str, dict[str, Any]] = {}
-    for digest, record in data.items():
-        if isinstance(digest, str) and isinstance(record, dict):
-            out[digest] = dict(record)
-    return out
+    raw = load_json_dict(path)
+    return {
+        digest: dict(record)
+        for digest, record in raw.items()
+        if isinstance(digest, str) and isinstance(record, dict)
+    }
 
 
 def save_image_seen_log(log: dict[str, dict[str, Any]], path: Path = IMAGE_SEEN_LOG_PATH) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(log, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    tmp.replace(path)
+    save_json_dict(path, log)
 
 
 def relpath(path: Path) -> str:

@@ -30,7 +30,8 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from tools.common.image_seen import file_sha256
-from tools.common.targets import DOWNLOADS_DIR, PROJECT_ROOT, load_target_ids
+from tools.common.json_store import load_json_dict, save_json_dict
+from tools.common.targets import DOWNLOADS_DIR, PROJECT_ROOT, load_target_ids, relpath_from_root
 
 
 FILTER_SCRIPT = PROJECT_ROOT / "filter" / "filter.py"
@@ -79,27 +80,16 @@ def has_pending_images(input_dir: Path) -> bool:
 
 
 def load_image_index(path: Path = IMAGE_INDEX_PATH) -> dict[str, list[str]]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    index: dict[str, list[str]] = {}
-    for target_id, hashes in data.items():
-        if isinstance(target_id, str) and isinstance(hashes, list):
-            index[target_id] = [str(value) for value in hashes]
-    return index
+    raw = load_json_dict(path)
+    return {
+        target_id: [str(value) for value in hashes]
+        for target_id, hashes in raw.items()
+        if isinstance(target_id, str) and isinstance(hashes, list)
+    }
 
 
 def save_image_index(index: dict[str, list[str]], path: Path = IMAGE_INDEX_PATH) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(index, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    save_json_dict(path, index)
 
 
 def collect_images_in_folder(target_id: str, folder_name: str) -> list[Path]:
@@ -124,31 +114,28 @@ def collect_review_images(target_ids: list[str]) -> dict[str, list[str]]:
     for target_id in target_ids:
         paths = collect_images_in_folder(target_id, "review")
         if paths:
-            review[target_id] = [path.relative_to(PROJECT_ROOT).as_posix() for path in paths]
+            review[target_id] = [relpath_from_root(path) for path in paths]
     return review
 
 
 def load_hash_cache(path: Path = HASH_CACHE_PATH) -> dict[str, dict]:
-    """{rel_posix_path: {"mtime": float, "size": int, "sha256": str}}.
-
-    Missing or corrupt cache files are treated as empty — a cache miss only
-    costs one re-hash, never correctness.
-    """
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    """{rel_posix_path: {"mtime": float, "size": int, "sha256": str}}."""
+    return load_json_dict(path)
 
 
 def save_hash_cache(cache: dict[str, dict], path: Path = HASH_CACHE_PATH) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    save_json_dict(path, cache)
+
+
+def _cached_digest(entry: Optional[dict], st: object) -> Optional[str]:
+    """Return the cached SHA256 if (mtime, size, sha256) all match, else None."""
+    if not entry:
+        return None
+    if entry.get("mtime") != getattr(st, "st_mtime", None):
+        return None
+    if entry.get("size") != getattr(st, "st_size", None):
+        return None
+    return entry.get("sha256") or None
 
 
 def sync_image_index_for_targets(
@@ -168,23 +155,25 @@ def sync_image_index_for_targets(
     cache_misses = 0
     errors: list[str] = []
 
-    target_path_prefixes = tuple(f"line-rpa/download/{tid}/" for tid in target_ids)
+    # Derive prefixes from DOWNLOADS_DIR rather than hardcoding
+    # "line-rpa/download/<tid>/" — the cache passthrough rule (drop entries
+    # under synced targets that vanished on disk) breaks silently if the
+    # downloads folder ever moves and the literal goes stale.
+    target_path_prefixes = tuple(
+        relpath_from_root(DOWNLOADS_DIR / tid) + "/" for tid in target_ids
+    )
 
     for target_id in target_ids:
         hashes: set[str] = set()
         for image_path in collect_index_images(target_id):
-            rel = image_path.resolve().relative_to(PROJECT_ROOT).as_posix()
+            rel = relpath_from_root(image_path)
             try:
                 st = image_path.stat()
             except OSError as exc:
                 errors.append(f"{image_path}: {exc}")
                 continue
-            entry = old_cache.get(rel)
-            if (entry
-                    and entry.get("mtime") == st.st_mtime
-                    and entry.get("size") == st.st_size
-                    and entry.get("sha256")):
-                digest = entry["sha256"]
+            digest = _cached_digest(old_cache.get(rel), st)
+            if digest is not None:
                 cache_hits += 1
             else:
                 try:
@@ -200,10 +189,8 @@ def sync_image_index_for_targets(
     # Carry over cache entries for targets we did NOT sync this run, so a
     # per-target invocation doesn't wipe the cache for everyone else.
     for rel, entry in old_cache.items():
-        if rel in new_cache:
+        if rel in new_cache or rel.startswith(target_path_prefixes):
             continue
-        if rel.startswith(target_path_prefixes):
-            continue  # synced this run + not in new_cache → file gone, drop
         new_cache[rel] = entry
 
     if not errors:

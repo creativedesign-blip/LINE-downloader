@@ -23,6 +23,7 @@ import shutil
 import hashlib
 import argparse
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -68,6 +69,17 @@ def decode_image_bytes(buf: bytes):
     if img is None:
         raise RuntimeError("cv2.imdecode 失敗（格式不支援或檔案損壞）")
     return img
+
+
+@dataclass(frozen=True)
+class Routes:
+    """Output destinations for one filter spec. Attribute names match
+    the classify_text return values (travel/review/other) so process_one
+    can dispatch with `getattr(routes, classification)`."""
+    travel: Path
+    other: Path
+    review: Path
+    error: Path
 
 # ============== 設定 ==============
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent
@@ -296,9 +308,7 @@ def update_sidecar_with_ocr(img_path: Path, *, classification: str, text: str = 
         print(f"  [警告] sidecar 寫入失敗 {img_path.name}: {save_err}")
 
 
-def process_one(ocr, img_path: Path, *,
-                travel_dir: Path, other_dir: Path, error_dir: Path,
-                review_dir: Path):
+def process_one(ocr, img_path: Path, *, routes: Routes):
     # 先檢查檔案是否還在——另一個 classifier 行程（例如 UI server 內部的）可能已經搬走
     if not img_path.exists():
         return 'skip'
@@ -321,7 +331,7 @@ def process_one(ocr, img_path: Path, *,
             return 'skip'
         update_sidecar_with_ocr(img_path, classification='error', error=str(e))
         try:
-            err_path = unique_path(error_dir, img_path.name)
+            err_path = unique_path(routes.error, img_path.name)
             move_with_sidecar(img_path, err_path)
         except FileNotFoundError:
             # 另一個行程搬走了，清掉我們剛寫的 sidecar 避免 orphan
@@ -335,12 +345,7 @@ def process_one(ocr, img_path: Path, *,
         return 'err'
 
     classification, reason, hits_display = classify_text(text)
-    dest_by_class = {
-        'travel': travel_dir,
-        'review': review_dir,
-        'other': other_dir,
-    }
-    dest = dest_by_class[classification]
+    dest = getattr(routes, classification)
     if not img_path.exists():
         return 'skip'
     update_sidecar_with_ocr(
@@ -415,30 +420,33 @@ def resolve_target_specs(args):
         raise SystemExit('--watch is single-folder polling and cannot be combined with --target.')
 
     if args.target:
-        specs = []
+        specs: list[tuple[Path, Routes]] = []
         for tid in args.target:
             base = (DOWNLOADS_DIR / tid).resolve()
             if not base.exists():
                 # Skip silently rather than mkdir-creating a phantom group folder.
-                # main() reports "沒有待過濾的圖片" if every target is skipped.
                 print(f"[skip] target 不存在：{base}")
                 continue
-            travel = base / 'travel'
-            other = base / 'other'
-            review = base / 'review'
-            error = base / 'error'
-            specs.append((base, travel, other, review, error))
+            routes = Routes(
+                travel=base / 'travel',
+                other=base / 'other',
+                review=base / 'review',
+                error=base / 'error',
+            )
+            specs.append((base, routes))
             inbox = base / 'inbox'
             if inbox.exists():
-                specs.append((inbox.resolve(), travel, other, review, error))
+                specs.append((inbox.resolve(), routes))
         return specs
 
     return [(
         (args.input_dir or DEFAULT_INPUT_DIR).resolve(),
-        (args.travel_dir or DEFAULT_TRAVEL_DIR).resolve(),
-        (args.other_dir or DEFAULT_OTHER_DIR).resolve(),
-        (args.review_dir or DEFAULT_REVIEW_DIR).resolve(),
-        (args.error_dir or DEFAULT_ERROR_DIR).resolve(),
+        Routes(
+            travel=(args.travel_dir or DEFAULT_TRAVEL_DIR).resolve(),
+            other=(args.other_dir or DEFAULT_OTHER_DIR).resolve(),
+            review=(args.review_dir or DEFAULT_REVIEW_DIR).resolve(),
+            error=(args.error_dir or DEFAULT_ERROR_DIR).resolve(),
+        ),
     )]
 
 
@@ -450,8 +458,8 @@ def main(argv=None) -> int:
     specs = resolve_target_specs(args)
 
     seen_outputs = set()
-    for _, travel, other, review, error in specs:
-        for d in (travel, other, review, error):
+    for _, routes in specs:
+        for d in (routes.travel, routes.other, routes.review, routes.error):
             if d not in seen_outputs:
                 d.mkdir(parents=True, exist_ok=True)
                 seen_outputs.add(d)
@@ -462,23 +470,23 @@ def main(argv=None) -> int:
     if args.target:
         print(f"  Targets: {', '.join(args.target)} ({len(specs)} input folders)")
     else:
-        in_dir, tr, ot, rv, er = specs[0]
+        in_dir, routes = specs[0]
         print(f"  根目錄：{in_dir}")
-        print(f"  旅遊相關 → {tr.name}/")
-        print(f"  非旅遊   → {ot.name}/")
-        print(f"  待人工審核 → {rv.name}/")
-        print(f"  錯誤檔   → {er.name}/")
+        print(f"  旅遊相關 → {routes.travel.name}/")
+        print(f"  非旅遊   → {routes.other.name}/")
+        print(f"  待人工審核 → {routes.review.name}/")
+        print(f"  錯誤檔   → {routes.error.name}/")
     print(f"  關鍵字：強信號 {len(STRONG_KEYWORDS)} 個（任一即過）/ 弱信號 {len(WEAK_KEYWORDS)} 個（需 >={MIN_WEAK_HITS}，含金額/日期 bonus）")
     print(f"  待審區：strong=0 但有 1 個信號的圖（弱×1+0、弱×0+1）→ {DEFAULT_REVIEW_DIR.name}/")
     print()
 
     if args.watch:
-        in_dir, tr, ot, rv, er = specs[0]
-        return _watch_loop(in_dir, tr, ot, rv, er)
+        in_dir, routes = specs[0]
+        return _watch_loop(in_dir, routes)
 
     stats = {'travel': 0, 'review': 0, 'other': 0, 'err': 0, 'skip': 0}
     any_files = False
-    for in_dir, tr, ot, rv, er in specs:
+    for in_dir, routes in specs:
         if not in_dir.exists():
             print(f"[skip] 來源不存在：{in_dir}")
             continue
@@ -489,9 +497,7 @@ def main(argv=None) -> int:
         print(f"[{in_dir}] 找到 {len(files)} 張，開始處理")
         for i, f in enumerate(files, 1):
             print(f"  [{i:3d}/{len(files)}]", end=' ')
-            stats[process_one(get_ocr(), f,
-                              travel_dir=tr, other_dir=ot,
-                              review_dir=rv, error_dir=er)] += 1
+            stats[process_one(get_ocr(), f, routes=routes)] += 1
         print()
 
     if not any_files:
@@ -502,8 +508,7 @@ def main(argv=None) -> int:
     return 0
 
 
-def _watch_loop(input_dir: Path, travel_dir: Path, other_dir: Path,
-                review_dir: Path, error_dir: Path) -> int:
+def _watch_loop(input_dir: Path, routes: Routes) -> int:
     print("監看中：新進根目錄的圖片會自動分類")
     print("按 Ctrl+C 結束\n")
     processed = set()
@@ -515,11 +520,7 @@ def _watch_loop(input_dir: Path, travel_dir: Path, other_dir: Path,
                     continue
                 if not wait_stable(f):
                     continue
-                total[process_one(get_ocr(), f,
-                                   travel_dir=travel_dir,
-                                   other_dir=other_dir,
-                                   review_dir=review_dir,
-                                   error_dir=error_dir)] += 1
+                total[process_one(get_ocr(), f, routes=routes)] += 1
                 processed.add(f)
             processed = {p for p in processed if p.exists()}
             time.sleep(WATCH_POLL_SEC)

@@ -86,6 +86,11 @@ def index_one(sidecar_path: Path, index: TravelIndex,
     try:
         with open(sidecar_path, "r", encoding="utf-8") as f:
             sidecar = json.load(f)
+    except FileNotFoundError:
+        # Disappeared between stat() and open() — treat as a soft-skip so
+        # the prune step in main() picks it up via list_sidecar_paths next
+        # cycle rather than counting it as a hard error this cycle.
+        return "skipped"
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("broken sidecar %s: %s", sidecar_path.name, e)
         return "error"
@@ -246,6 +251,15 @@ def _setup_logging(verbose: bool) -> None:
     )
 
 
+def _is_fresh(existing: Optional[dict], disk_mtime: float) -> bool:
+    """True iff the DB row matches both the file's mtime and the current
+    extractor version — i.e. re-extraction would produce the same result."""
+    if not existing:
+        return False
+    return (existing.get("sidecar_mtime") == disk_mtime
+            and existing.get("extractor_version") == EXTRACTOR_VERSION)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
     _setup_logging(args.verbose)
@@ -281,14 +295,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                     stats["error"] += 1
                     continue
 
-                if not args.force:
-                    existing = index.get_freshness(rel)
-                    if (existing
-                            and existing.get("sidecar_mtime") == mtime
-                            and existing.get("extractor_version") == EXTRACTOR_VERSION):
-                        stats["fresh"] += 1
-                        continue
-
+                if not args.force and _is_fresh(index.get_freshness(rel), mtime):
+                    stats["fresh"] += 1
+                    continue
                 stats[index_one(sc, index, sidecar_mtime=mtime)] += 1
 
             # Prune rows for sidecars no longer on disk (only within targets

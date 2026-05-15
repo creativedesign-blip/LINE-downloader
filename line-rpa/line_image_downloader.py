@@ -32,6 +32,7 @@ from tools.common.image_seen import (  # noqa: E402
     record_seen_image,
     save_image_seen_log,
 )
+from tools.common.json_store import load_json_dict, save_json_dict  # noqa: E402
 
 DEFAULT_CONFIG = {
     "excel_path": str(APP_DIR / "line.XLSX"),
@@ -140,23 +141,15 @@ def image_seen_log_path(save_root: Path) -> Path:
 
 
 def load_image_index(path: Path) -> dict[str, list[str]]:
-    if not path.exists():
-        return {}
-    with path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, dict):
-        return {}
-    index: dict[str, list[str]] = {}
-    for group_name, hashes in data.items():
-        if isinstance(group_name, str) and isinstance(hashes, list):
-            index[group_name] = [str(value) for value in hashes]
-    return index
+    return {
+        group_name: [str(value) for value in hashes]
+        for group_name, hashes in load_json_dict(path).items()
+        if isinstance(group_name, str) and isinstance(hashes, list)
+    }
 
 
 def save_image_index(path: Path, index: dict[str, list[str]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(index, f, ensure_ascii=False, indent=2, sort_keys=True)
+    save_json_dict(path, index)
 
 
 def read_groups(excel_path: Path) -> list[str]:
