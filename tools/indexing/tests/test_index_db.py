@@ -304,5 +304,32 @@ class TestClear(unittest.TestCase):
             self.assertEqual(idx.count(), 0)
 
 
+class TestFreshness(unittest.TestCase):
+    def test_get_freshness_returns_none_for_unknown(self):
+        with make_index() as idx:
+            self.assertIsNone(idx.get_freshness("never-indexed.jpg.json"))
+
+    def test_upsert_records_mtime_and_version(self):
+        with make_index() as idx:
+            idx.upsert(**base_row(), sidecar_mtime=1234.5, extractor_version="v2")
+            f = idx.get_freshness("downloads/metro/travel/a.jpg.json")
+            self.assertEqual(f, {"sidecar_mtime": 1234.5, "extractor_version": "v2"})
+
+    def test_list_sidecar_paths_scopes_to_targets(self):
+        with make_index() as idx:
+            idx.upsert(**base_row(
+                sidecar_path="downloads/metro/travel/a.jpg.json", target_id="metro",
+            ))
+            idx.upsert(**base_row(
+                sidecar_path="downloads/agoda/travel/b.jpg.json", target_id="agoda",
+            ))
+            metro_only = idx.list_sidecar_paths(["metro"])
+            self.assertEqual(metro_only, {"downloads/metro/travel/a.jpg.json"})
+            both = idx.list_sidecar_paths(["metro", "agoda"])
+            self.assertEqual(len(both), 2)
+            all_paths = idx.list_sidecar_paths()
+            self.assertEqual(len(all_paths), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

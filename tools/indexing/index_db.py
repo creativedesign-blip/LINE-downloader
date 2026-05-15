@@ -18,24 +18,26 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS itineraries (
-    sidecar_path   TEXT PRIMARY KEY,
-    image_path     TEXT NOT NULL,
-    target_id      TEXT,
-    group_name     TEXT,
-    branded_path   TEXT,
-    country_csv    TEXT,
-    months_csv     TEXT,
-    price_from     INTEGER,
-    airline_csv    TEXT,
-    region_csv     TEXT,
-    duration_days  INTEGER,
-    features_csv   TEXT,
-    source_time    TEXT,
-    indexed_at     TEXT NOT NULL
+    sidecar_path        TEXT PRIMARY KEY,
+    image_path          TEXT NOT NULL,
+    target_id           TEXT,
+    group_name          TEXT,
+    branded_path        TEXT,
+    country_csv         TEXT,
+    months_csv          TEXT,
+    price_from          INTEGER,
+    airline_csv         TEXT,
+    region_csv          TEXT,
+    duration_days       INTEGER,
+    features_csv        TEXT,
+    source_time         TEXT,
+    indexed_at          TEXT NOT NULL,
+    sidecar_mtime       REAL,
+    extractor_version   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_country  ON itineraries(country_csv);
 CREATE INDEX IF NOT EXISTS idx_months   ON itineraries(months_csv);
@@ -99,6 +101,7 @@ COLUMNS = (
     "country_csv", "months_csv", "price_from",
     "airline_csv", "region_csv", "duration_days", "features_csv",
     "source_time", "indexed_at",
+    "sidecar_mtime", "extractor_version",
 )
 _INSERT_SQL = (
     f"INSERT OR REPLACE INTO itineraries ({', '.join(COLUMNS)}) "
@@ -239,6 +242,8 @@ class TravelIndex:
         duration_days: Optional[int] = None,
         features: Optional[Iterable[str]] = None,
         source_time: Optional[str] = None,
+        sidecar_mtime: Optional[float] = None,
+        extractor_version: Optional[str] = None,
     ) -> None:
         """Insert or replace a row, keyed by sidecar_path."""
         row = (
@@ -256,9 +261,43 @@ class TravelIndex:
             _wrap_csv(features or ()),
             source_time,
             _iso_now(),
+            float(sidecar_mtime) if sidecar_mtime is not None else None,
+            extractor_version,
         )
         self.conn.execute(_INSERT_SQL, row)
         self._maybe_commit()
+
+    def get_freshness(self, sidecar_path: str) -> Optional[dict]:
+        """Return {'sidecar_mtime': float, 'extractor_version': str} for an
+        existing row, or None if the sidecar isn't indexed yet."""
+        cur = self.conn.execute(
+            "SELECT sidecar_mtime, extractor_version "
+            "FROM itineraries WHERE sidecar_path = ?",
+            (sidecar_path,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "sidecar_mtime": row["sidecar_mtime"],
+            "extractor_version": row["extractor_version"],
+        }
+
+    def list_sidecar_paths(self, target_ids: Optional[Iterable[str]] = None) -> set[str]:
+        """All sidecar_path values currently in the index, optionally scoped
+        to specific targets (used by reindex to detect deleted sidecars)."""
+        if target_ids is None:
+            cur = self.conn.execute("SELECT sidecar_path FROM itineraries")
+            return {row[0] for row in cur.fetchall()}
+        ids = list(target_ids)
+        if not ids:
+            return set()
+        placeholders = ",".join("?" * len(ids))
+        cur = self.conn.execute(
+            f"SELECT sidecar_path FROM itineraries WHERE target_id IN ({placeholders})",
+            ids,
+        )
+        return {row[0] for row in cur.fetchall()}
 
     def upsert_plan(
         self,

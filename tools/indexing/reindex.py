@@ -43,11 +43,16 @@ from tools.indexing.extractor import (
 from tools.indexing.index_db import TravelIndex
 from tools.indexing.plan_extractor import extract_plans
 
-Result = Literal["indexed", "skipped", "error"]
+Result = Literal["indexed", "skipped", "error", "fresh"]
 
 
 DEFAULT_DB_PATH = PROJECT_ROOT / "config" / "travel_index.db"
 SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
+
+# Bump this when extractor logic / vocab semantically changes; existing rows
+# with a stale extractor_version will be re-extracted on the next reindex
+# even if their sidecar mtime is unchanged.
+EXTRACTOR_VERSION = "1"
 
 logger = logging.getLogger("indexing")
 
@@ -75,7 +80,8 @@ def _find_branded(orig_image: Path) -> Optional[Path]:
     return None
 
 
-def index_one(sidecar_path: Path, index: TravelIndex) -> Result:
+def index_one(sidecar_path: Path, index: TravelIndex,
+              sidecar_mtime: Optional[float] = None) -> Result:
     """Parse one sidecar and upsert a row."""
     try:
         with open(sidecar_path, "r", encoding="utf-8") as f:
@@ -119,6 +125,8 @@ def index_one(sidecar_path: Path, index: TravelIndex) -> Result:
         duration_days=duration_days,
         features=features,
         source_time=sidecar.get("savedAt"),
+        sidecar_mtime=sidecar_mtime,
+        extractor_version=EXTRACTOR_VERSION,
     )
     sidecar_rel = relpath_from_root(sidecar_path)
     image_rel = relpath_from_root(orig_img)
@@ -209,12 +217,16 @@ def reindex_one_auto(sidecar_path: Path) -> Result:
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="(Re)build the travel itinerary SQLite index."
+        description="Incrementally (re)build the travel itinerary SQLite index."
     )
     p.add_argument("--target", metavar="ID",
                    help="only (re)index the given target id")
     p.add_argument("--dry-run", action="store_true",
                    help="list sidecars that would be indexed, touch no DB")
+    p.add_argument("--force", action="store_true",
+                   help="full rebuild: clear table and re-extract every sidecar "
+                        "(default: skip rows whose sidecar mtime + extractor "
+                        "version match the existing DB row)")
     p.add_argument("--db", metavar="PATH", default=str(DEFAULT_DB_PATH),
                    help=f"SQLite file (default: {DEFAULT_DB_PATH.name})")
     p.add_argument("-v", "--verbose", action="store_true",
@@ -247,21 +259,49 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.info("[indexing] dry-run: %d sidecars", len(sidecars))
         return 0
 
-    stats = {"indexed": 0, "skipped": 0, "error": 0}
+    stats = {"indexed": 0, "skipped": 0, "error": 0, "fresh": 0, "pruned": 0}
     with TravelIndex(Path(args.db)) as index:
         with index.transaction():
-            index.clear()
+            if args.force:
+                index.clear()
+
+            disk_paths: set[str] = set()
             for sc in sidecars:
-                stats[index_one(sc, index)] += 1
+                rel = relpath_from_root(sc)
+                disk_paths.add(rel)
+                try:
+                    mtime = sc.stat().st_mtime
+                except OSError as e:
+                    logger.warning("stat failed for %s: %s", sc.name, e)
+                    stats["error"] += 1
+                    continue
+
+                if not args.force:
+                    existing = index.get_freshness(rel)
+                    if (existing
+                            and existing.get("sidecar_mtime") == mtime
+                            and existing.get("extractor_version") == EXTRACTOR_VERSION):
+                        stats["fresh"] += 1
+                        continue
+
+                stats[index_one(sc, index, sidecar_mtime=mtime)] += 1
+
+            # Prune rows for sidecars no longer on disk (only within targets
+            # we actually scanned this run, so unrelated targets are untouched).
+            for rel in index.list_sidecar_paths(target_ids) - disk_paths:
+                index.delete(rel)
+                stats["pruned"] += 1
+
         total_in_db = index.count()
         total_plans = index.plan_count()
         total_departures = index.departure_count()
 
     elapsed = time.perf_counter() - t_start
     logger.info(
-        "[indexing] indexed=%d skipped=%d errors=%d in_db=%d plans=%d departures=%d elapsed=%.1fs",
-        stats["indexed"], stats["skipped"], stats["error"], total_in_db,
-        total_plans, total_departures, elapsed,
+        "[indexing] indexed=%d fresh=%d pruned=%d skipped=%d errors=%d "
+        "in_db=%d plans=%d departures=%d elapsed=%.1fs",
+        stats["indexed"], stats["fresh"], stats["pruned"], stats["skipped"],
+        stats["error"], total_in_db, total_plans, total_departures, elapsed,
     )
     return 0 if stats["error"] == 0 else 1
 

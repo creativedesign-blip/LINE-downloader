@@ -41,6 +41,9 @@ REINDEX_SCRIPT = PROJECT_ROOT / "tools" / "indexing" / "reindex.py"
 SUPPORTED_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 IMAGE_INDEX_PATH = DOWNLOADS_DIR / "image_index.json"
 IMAGE_INDEX_SYNC_DIRS = ("travel", "other", "review")
+# Sidecar cache so sync_image_index_for_targets doesn't re-hash every file
+# on every pipeline run; keyed by repo-relative posix path.
+HASH_CACHE_PATH = DOWNLOADS_DIR / ".image_hash_cache.json"
 
 
 @dataclass
@@ -125,23 +128,87 @@ def collect_review_images(target_ids: list[str]) -> dict[str, list[str]]:
     return review
 
 
+def load_hash_cache(path: Path = HASH_CACHE_PATH) -> dict[str, dict]:
+    """{rel_posix_path: {"mtime": float, "size": int, "sha256": str}}.
+
+    Missing or corrupt cache files are treated as empty — a cache miss only
+    costs one re-hash, never correctness.
+    """
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_hash_cache(cache: dict[str, dict], path: Path = HASH_CACHE_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
 def sync_image_index_for_targets(
     target_ids: list[str],
     index_path: Path = IMAGE_INDEX_PATH,
+    cache_path: Path = HASH_CACHE_PATH,
 ) -> StepResult:
+    """Refresh image_index.json for `target_ids`, reusing cached SHA256
+    digests when (mtime, size) match. Cache entries belonging to non-synced
+    targets are passed through; entries for synced targets that no longer
+    have a file on disk are dropped (natural prune)."""
     started = time.perf_counter()
     index = load_image_index(index_path)
+    old_cache = load_hash_cache(cache_path)
+    new_cache: dict[str, dict] = {}
+    cache_hits = 0
+    cache_misses = 0
     errors: list[str] = []
+
+    target_path_prefixes = tuple(f"line-rpa/download/{tid}/" for tid in target_ids)
+
     for target_id in target_ids:
         hashes: set[str] = set()
         for image_path in collect_index_images(target_id):
+            rel = image_path.resolve().relative_to(PROJECT_ROOT).as_posix()
             try:
-                hashes.add(file_sha256(image_path))
+                st = image_path.stat()
             except OSError as exc:
                 errors.append(f"{image_path}: {exc}")
+                continue
+            entry = old_cache.get(rel)
+            if (entry
+                    and entry.get("mtime") == st.st_mtime
+                    and entry.get("size") == st.st_size
+                    and entry.get("sha256")):
+                digest = entry["sha256"]
+                cache_hits += 1
+            else:
+                try:
+                    digest = file_sha256(image_path)
+                except OSError as exc:
+                    errors.append(f"{image_path}: {exc}")
+                    continue
+                cache_misses += 1
+            new_cache[rel] = {"mtime": st.st_mtime, "size": st.st_size, "sha256": digest}
+            hashes.add(digest)
         index[target_id] = sorted(hashes)
+
+    # Carry over cache entries for targets we did NOT sync this run, so a
+    # per-target invocation doesn't wipe the cache for everyone else.
+    for rel, entry in old_cache.items():
+        if rel in new_cache:
+            continue
+        if rel.startswith(target_path_prefixes):
+            continue  # synced this run + not in new_cache → file gone, drop
+        new_cache[rel] = entry
+
     if not errors:
         save_image_index(index, index_path)
+        save_hash_cache(new_cache, cache_path)
     elapsed = time.perf_counter() - started
     command = [
         "internal:sync-image-index",
@@ -149,6 +216,10 @@ def sync_image_index_for_targets(
         ",".join(IMAGE_INDEX_SYNC_DIRS),
         "--targets",
         ",".join(target_ids),
+        "--cache-hits",
+        str(cache_hits),
+        "--cache-misses",
+        str(cache_misses),
     ]
     if errors:
         command.extend(["--errors", "; ".join(errors[:5])])
