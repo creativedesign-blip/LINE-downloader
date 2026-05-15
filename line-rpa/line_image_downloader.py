@@ -34,6 +34,12 @@ from tools.common.image_seen import (  # noqa: E402
 )
 from tools.common.json_store import load_json_dict, save_json_dict  # noqa: E402
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 DEFAULT_CONFIG = {
     "excel_path": str(APP_DIR / "line.XLSX"),
     "save_root": str(APP_DIR / "download"),
@@ -93,6 +99,17 @@ class DownloadTarget:
     path: Path
     should_download: bool
     reason: str
+
+
+@dataclass
+class LineWindowCandidate:
+    hwnd: int
+    title: str
+    class_name: str
+    area: int
+    pid: int | None = None
+    score: int = 0
+    reason: str = ""
 
 
 @dataclass
@@ -527,59 +544,125 @@ class LineRpa:
         except Exception:
             pass
 
-    def find_line_window(self) -> int | None:
-        matches: list[tuple[int, int]] = []
+    @staticmethod
+    def _score_line_window(title: str, class_name: str, area: int, *, pid_match: bool = False) -> tuple[int, str]:
+        if any(kind in class_name for kind in ("Popup", "ToolTip", "Tray", "ScreenChange")):
+            return 0, "excluded-transient"
+        if class_name == "CASCADIA_HOSTING_WINDOW_CLASS":
+            return 0, "excluded-terminal"
+        if area < 100000:
+            return 0, "too-small"
+
+        score = 0
+        reasons: list[str] = []
+        if title == "LINE":
+            score += 60
+            reasons.append("title=LINE")
+        elif "LINE" in title.upper() and (pid_match or class_name.startswith("Qt")):
+            score += 35
+            reasons.append("title-contains-LINE")
+        if class_name.startswith("Qt"):
+            score += 40
+            reasons.append("class=Qt")
+        elif class_name == "#32770" and title == "LINE":
+            score += 10
+            reasons.append("line-dialog")
+        if pid_match:
+            score += 25
+            reasons.append("pid=LINE.exe")
+        return score, "+".join(reasons) if reasons else "weak-match"
+
+    @staticmethod
+    def _usable_line_window(candidate: LineWindowCandidate) -> bool:
+        if "line-dialog" in candidate.reason:
+            return False
+        return candidate.score >= 60
+
+    def _line_window_candidates(self, *, line_pids: set[int] | None = None) -> list[LineWindowCandidate]:
+        candidates: list[LineWindowCandidate] = []
+        line_pids = line_pids or set()
 
         def callback(hwnd: int, _: object) -> None:
             if not win32gui.IsWindowVisible(hwnd):
                 return
             title = win32gui.GetWindowText(hwnd)
             class_name = win32gui.GetClassName(hwnd)
-            if title != "LINE" or not class_name.startswith("Qt"):
-                return
-            if any(kind in class_name for kind in ("Popup", "ToolTip", "Tray", "ScreenChange")):
-                return
+            try:
+                _, window_pid = win32process.GetWindowThreadProcessId(hwnd)
+            except Exception:
+                window_pid = None
             left, top, right, bottom = win32gui.GetWindowRect(hwnd)
             area = max(0, right - left) * max(0, bottom - top)
-            if area < 100000:
+            score, reason = self._score_line_window(
+                title,
+                class_name,
+                area,
+                pid_match=bool(window_pid and window_pid in line_pids),
+            )
+            if score <= 0:
                 return
-            matches.append((area, hwnd))
+            candidates.append(
+                LineWindowCandidate(
+                    hwnd=hwnd,
+                    title=title,
+                    class_name=class_name,
+                    area=area,
+                    pid=window_pid,
+                    score=score,
+                    reason=reason,
+                )
+            )
 
         win32gui.EnumWindows(callback, None)
-        if matches:
-            matches.sort(reverse=True)
-            return matches[0][1]
-        return self.find_line_window_from_process()
+        candidates.sort(key=lambda item: (item.score, item.area), reverse=True)
+        return candidates
 
-    def find_line_window_from_process(self) -> int | None:
+    @staticmethod
+    def _line_process_ids() -> set[int]:
+        pids: set[int] = set()
         try:
             wmi = win32com.client.GetObject("winmgmts:")
             for proc in wmi.ExecQuery("SELECT ProcessId FROM Win32_Process WHERE Name = 'LINE.exe'"):
-                pid = int(proc.ProcessId)
-                hwnds: list[int] = []
-
-                def callback(hwnd: int, _: object) -> None:
-                    if not win32gui.IsWindowVisible(hwnd):
-                        return
-                    _, window_pid = win32process.GetWindowThreadProcessId(hwnd)
-                    if window_pid != pid:
-                        return
-                    title = win32gui.GetWindowText(hwnd)
-                    class_name = win32gui.GetClassName(hwnd)
-                    if title != "LINE" or not class_name.startswith("Qt"):
-                        return
-                    if any(kind in class_name for kind in ("Popup", "ToolTip", "Tray", "ScreenChange")):
-                        return
-                    left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-                    area = max(0, right - left) * max(0, bottom - top)
-                    if area >= 100000:
-                        hwnds.append(hwnd)
-
-                win32gui.EnumWindows(callback, None)
-                if hwnds:
-                    return hwnds[0]
+                pids.add(int(proc.ProcessId))
         except Exception:
-            return None
+            return set()
+        return pids
+
+    @staticmethod
+    def _trace_line_window_candidates(candidates: list[LineWindowCandidate]) -> None:
+        if not candidates:
+            trace("LINE window candidates: none")
+            return
+        for item in candidates[:5]:
+            trace(
+                "LINE candidate hwnd={0} score={1} area={2} title={3!r} class={4!r} reason={5}".format(
+                    item.hwnd,
+                    item.score,
+                    item.area,
+                    item.title,
+                    item.class_name,
+                    item.reason,
+                )
+            )
+
+    def find_line_window(self) -> int | None:
+        candidates = self._line_window_candidates(line_pids=self._line_process_ids())
+        if candidates:
+            self._trace_line_window_candidates(candidates)
+            for candidate in candidates:
+                if self._usable_line_window(candidate):
+                    return candidate.hwnd
+        trace("LINE.exe process found but no usable visible LINE window matched")
+        return None
+
+    def find_line_window_from_process(self) -> int | None:
+        candidates = self._line_window_candidates(line_pids=self._line_process_ids())
+        if candidates:
+            self._trace_line_window_candidates(candidates)
+            for candidate in candidates:
+                if self._usable_line_window(candidate):
+                    return candidate.hwnd
+        trace("LINE.exe process found but no usable visible LINE window matched")
         return None
 
     def search_and_open_group(self, group_name: str) -> None:

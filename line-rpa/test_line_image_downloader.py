@@ -2,6 +2,7 @@ import tempfile
 import unittest
 import json
 import shutil
+from contextlib import contextmanager
 from itertools import count
 from pathlib import Path
 from unittest.mock import patch
@@ -212,6 +213,56 @@ class LineImageDownloaderTests(unittest.TestCase):
                 ("popup", 200, "photos_videos_menu_item"),
             ],
         )
+
+    def test_find_line_window_prefers_strict_qt_main_window(self):
+        rpa = app.LineRpa({"wait_seconds": 0, "coordinates": app.DEFAULT_CONFIG["coordinates"]})
+        windows = {
+            100: {"visible": True, "title": "LINE", "class": "#32770", "rect": (0, 0, 500, 300), "pid": 10},
+            200: {"visible": True, "title": "LINE", "class": "Qt653QWindowIcon", "rect": (0, 0, 1200, 800), "pid": 10},
+            300: {"visible": True, "title": "LINE", "class": "Qt653QWindowPopup", "rect": (0, 0, 1200, 800), "pid": 10},
+        }
+
+        with self._patch_windows(windows), patch.object(rpa, "_line_process_ids", return_value={10}):
+            self.assertEqual(rpa.find_line_window(), 200)
+
+    def test_find_line_window_falls_back_to_line_process_qt_window_without_title(self):
+        rpa = app.LineRpa({"wait_seconds": 0, "coordinates": app.DEFAULT_CONFIG["coordinates"]})
+        windows = {
+            200: {"visible": True, "title": "", "class": "Qt653QWindowIcon", "rect": (0, 0, 1200, 800), "pid": 10},
+        }
+
+        with self._patch_windows(windows), patch.object(rpa, "_line_process_ids", return_value={10}):
+            self.assertEqual(rpa.find_line_window(), 200)
+
+    def test_find_line_window_reports_dialog_but_does_not_use_it_as_main_window(self):
+        rpa = app.LineRpa({"wait_seconds": 0, "coordinates": app.DEFAULT_CONFIG["coordinates"]})
+        windows = {
+            100: {"visible": True, "title": "LINE", "class": "#32770", "rect": (0, 0, 500, 300), "pid": 10},
+        }
+
+        with self._patch_windows(windows), patch.object(rpa, "_line_process_ids", return_value={10}):
+            self.assertIsNone(rpa.find_line_window())
+
+    @staticmethod
+    @contextmanager
+    def _patch_windows(windows):
+        def enum_windows(callback, param):
+            for hwnd in windows:
+                callback(hwnd, param)
+
+        with patch.multiple(
+            app.win32gui,
+            EnumWindows=enum_windows,
+            IsWindowVisible=lambda hwnd: windows[hwnd]["visible"],
+            GetWindowText=lambda hwnd: windows[hwnd]["title"],
+            GetClassName=lambda hwnd: windows[hwnd]["class"],
+            GetWindowRect=lambda hwnd: windows[hwnd]["rect"],
+        ), patch.object(
+            app.win32process,
+            "GetWindowThreadProcessId",
+            side_effect=lambda hwnd: (0, windows[hwnd]["pid"]),
+        ):
+            yield
 
     def test_try_close_viewer_closes_viewer_window_when_available(self):
         rpa = app.LineRpa({"wait_seconds": 0, "coordinates": app.DEFAULT_CONFIG["coordinates"]})
