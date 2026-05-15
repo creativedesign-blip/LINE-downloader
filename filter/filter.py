@@ -12,11 +12,18 @@ PaddleOCR 3.x 圖片過濾 — 判定「旅遊行程簡介」vs「非旅遊」
 """
 import os
 import sys
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
 import re
 import time
 import json
 import shutil
+import hashlib
 import argparse
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -59,11 +66,22 @@ def move_with_sidecar(src: Path, dest: Path) -> None:
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
+
+# Mirror tools/indexing/ocr_enrich.py:_hash_file so the cache key matches
+# byte-for-byte; ocr_enrich skips the second OCR pass only when both sides
+# compute the same SHA256 over the image bytes.
+def hash_image_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open('rb') as f:
+        for chunk in iter(lambda: f.read(65536), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
 os.environ.setdefault('FLAGS_use_mkldnn', 'false')          # 關掉 oneDNN 避開 PIR bug
 os.environ.setdefault('PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK', 'True')
 
 try:
-    from paddleocr import PaddleOCR
+    from rapidocr_onnxruntime import RapidOCR
     import numpy as np
     import cv2
 except ImportError as e:
@@ -120,36 +138,81 @@ def load_keywords(path: Path):
 
 
 STRONG_KEYWORDS, WEAK_KEYWORDS = load_keywords(KEYWORDS_FILE)
-MONEY_RE = re.compile(r'(NT\$|NTD|TWD|USD|JPY|¥|\$|元|萬)\s*[\d,]+|[\d,]+\s*元')
-DATE_RE = re.compile(r'\d+\s*天\s*\d+\s*夜|\d+\s*日\s*\d+\s*夜|第\s*\d+\s*天')
+MONEY_RE = re.compile(
+    r'(NT\$|NTD|TWD|USD|JPY|¥|\$|元|萬)\s*[\d,]+'
+    r'|[\d,]+\s*(元|萬|起|起售)'
+    r'|\b\d{1,3}(?:,\d{3})+\b'
+    r'|(?<!\d)\d{4,6}\s*起(?!\d)'
+)
+DATE_RE = re.compile(
+    r'\d+\s*天\s*\d+\s*夜'
+    r'|\d+\s*日\s*\d+\s*夜'
+    r'|第\s*\d+\s*天'
+    r'|(?<!\d)\d{1,2}\s*(日|天)(?!\d)'
+    r'|(?<!\d)\d{1,2}\s*/\s*\d{1,2}(?!\d)'
+    r'|(?<!\d)\d{1,2}\s*月\s*\d{1,2}\s*日(?!\d)'
+)
 
-def parse_args():
+
+def normalize_ocr_text(text: str) -> str:
+    """Normalize OCR text for matching.
+
+    RapidOCR sometimes inserts spaces/newlines inside words, emits full-width
+    digits, or mixes Simplified/Traditional variants.  Keep the original text
+    for logs/indexing, but classify against this compact version to avoid false
+    OTHER results for obvious travel DM images.
+    """
+    text = unicodedata.normalize('NFKC', text or '')
+    replacements = {
+        '韩国': '韓國',
+        '冲绳': '沖繩',
+        '冲縄': '沖繩',
+        '美丽海水族馆': '美麗海水族館',
+        '答里岛': '峇里島',
+        '巴里島': '峇里島',
+        '開囊': '開賣',  # common OCR miss for 可樂 DM「開賣」
+    }
+    for src, dst in replacements.items():
+        text = text.replace(src, dst)
+    return re.sub(r'\s+', '', text)
+
+
+def keyword_hits(keywords, raw_text: str, compact_text: str):
+    hits = []
+    for kw in keywords:
+        norm_kw = normalize_ocr_text(kw)
+        if kw in raw_text or (norm_kw and norm_kw in compact_text):
+            hits.append(kw)
+    return hits
+
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description='PaddleOCR travel-image classifier')
-    parser.add_argument('--input-dir', type=Path, default=DEFAULT_INPUT_DIR)
-    parser.add_argument('--travel-dir', type=Path, default=DEFAULT_TRAVEL_DIR)
-    parser.add_argument('--other-dir', type=Path, default=DEFAULT_OTHER_DIR)
-    parser.add_argument('--error-dir', type=Path, default=DEFAULT_ERROR_DIR)
+    parser.add_argument('--input-dir', type=Path, default=None,
+                        help='Single-target legacy mode: source folder (defaults to project root).')
+    parser.add_argument('--travel-dir', type=Path, default=None,
+                        help='Single-target legacy mode: travel destination.')
+    parser.add_argument('--other-dir', type=Path, default=None,
+                        help='Single-target legacy mode: other destination.')
+    parser.add_argument('--error-dir', type=Path, default=None,
+                        help='Single-target legacy mode: error destination.')
+    parser.add_argument('--target', action='append', default=None, metavar='ID',
+                        help='Repeatable target id under line-rpa/download/<ID>/. '
+                             'Mutually exclusive with --input-dir/--travel-dir/etc. '
+                             'Multi-target mode shares one OCR engine load.')
     parser.add_argument('--min-weak-hits', type=int, default=DEFAULT_MIN_WEAK_HITS)
-    parser.add_argument('--watch', action='store_true')
-    return parser.parse_args()
+    parser.add_argument('--watch', action='store_true',
+                        help='Watch mode polls a single input dir; not allowed with --target.')
+    return parser.parse_args(argv)
 
 
-ARGS = parse_args()
-INPUT_DIR = ARGS.input_dir.resolve()
-TRAVEL_DIR = ARGS.travel_dir.resolve()
-OTHER_DIR = ARGS.other_dir.resolve()
-ERROR_DIR = ARGS.error_dir.resolve()
-MIN_WEAK_HITS = ARGS.min_weak_hits
-WATCH = ARGS.watch
-
-TRAVEL_DIR.mkdir(parents=True, exist_ok=True)
-OTHER_DIR.mkdir(parents=True, exist_ok=True)
-ERROR_DIR.mkdir(parents=True, exist_ok=True)
+# Mutated by main(); kept module-level so classify_text() and other helpers
+# can be imported and unit-tested without re-deriving the threshold.
+MIN_WEAK_HITS = DEFAULT_MIN_WEAK_HITS
 
 
-def list_pending():
+def list_pending(input_dir: Path):
     return [
-        f for f in INPUT_DIR.iterdir()
+        f for f in input_dir.iterdir()
         if f.is_file() and f.suffix.lower() in SUPPORTED_EXT
     ]
 
@@ -166,20 +229,18 @@ def unique_path(dest_dir: Path, name: str) -> Path:
 
 
 def extract_text(ocr, img_path: Path) -> str:
-    # 用 unicode-safe 方式讀檔 → numpy array → PaddleOCR
+    # 用 RapidOCR；傳入 numpy image 可避開 Windows 中文路徑/命令列編碼問題。
     img = imread_unicode(img_path)
     try:
-        result = ocr.predict(input=img)
+        result, _ = ocr(img)
     except Exception as e:
         raise RuntimeError(f"predict 失敗：{e}")
     if not result:
         return ''
     lines = []
     for item in result:
-        if isinstance(item, dict):
-            texts = item.get('rec_texts') or []
-            if isinstance(texts, (list, tuple)):
-                lines.extend(str(t) for t in texts if t)
+        if len(item) >= 2 and item[1]:
+            lines.append(str(item[1]))
     return '\n'.join(lines)
 
 
@@ -189,14 +250,8 @@ OCR_INSTANCE = None
 def get_ocr():
     global OCR_INSTANCE
     if OCR_INSTANCE is None:
-        print("載入 PaddleOCR 模型（首次會下載，之後用快取）…")
-        OCR_INSTANCE = PaddleOCR(
-            lang='ch',
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-            enable_mkldnn=False,
-        )
+        print("載入 RapidOCR 模型…")
+        OCR_INSTANCE = RapidOCR()
         print("模型就緒\n")
     return OCR_INSTANCE
 
@@ -206,12 +261,14 @@ def classify_text(text: str):
     規則：強信號任一命中 → True；否則弱信號+金額/日期 bonus ≥ MIN_WEAK_HITS → True"""
     if not text:
         return False, 'empty', ''
-    strong = [kw for kw in STRONG_KEYWORDS if kw in text]
-    weak = [kw for kw in WEAK_KEYWORDS if kw in text]
+    raw_text = unicodedata.normalize('NFKC', text)
+    compact_text = normalize_ocr_text(raw_text)
+    strong = keyword_hits(STRONG_KEYWORDS, raw_text, compact_text)
+    weak = keyword_hits(WEAK_KEYWORDS, raw_text, compact_text)
     bonus = []
-    if MONEY_RE.search(text):
+    if MONEY_RE.search(raw_text) or MONEY_RE.search(compact_text):
         bonus.append('<金額>')
-    if DATE_RE.search(text):
+    if DATE_RE.search(raw_text) or DATE_RE.search(compact_text):
         bonus.append('<日期>')
 
     if strong:
@@ -232,6 +289,13 @@ def update_sidecar_with_ocr(img_path: Path, *, classification: str, text: str = 
     ocr_block['classification'] = classification
     if text:
         ocr_block['text'] = text
+        # Stamp engine + image hash so ocr_enrich.py's cache check
+        # (ocr_enrich.py:143) hits and skips a redundant OCR pass.
+        ocr_block['engine'] = 'rapidocr-onnxruntime'
+        try:
+            ocr_block['imageSha256'] = hash_image_file(img_path)
+        except (FileNotFoundError, PermissionError, OSError) as hash_err:
+            print(f"  [警告] sidecar hash 計算失敗 {img_path.name}: {hash_err}")
     if reason:
         ocr_block['reason'] = reason
     if hits:
@@ -245,7 +309,8 @@ def update_sidecar_with_ocr(img_path: Path, *, classification: str, text: str = 
         print(f"  [警告] sidecar 寫入失敗 {img_path.name}: {save_err}")
 
 
-def process_one(ocr, img_path: Path):
+def process_one(ocr, img_path: Path, *,
+                travel_dir: Path, other_dir: Path, error_dir: Path):
     # 先檢查檔案是否還在——另一個 classifier 行程（例如 UI server 內部的）可能已經搬走
     if not img_path.exists():
         return 'skip'
@@ -256,7 +321,7 @@ def process_one(ocr, img_path: Path):
             return 'skip'
         update_sidecar_with_ocr(img_path, classification='error', error=str(e))
         try:
-            err_path = unique_path(ERROR_DIR, img_path.name)
+            err_path = unique_path(error_dir, img_path.name)
             move_with_sidecar(img_path, err_path)
         except FileNotFoundError:
             # 另一個行程搬走了，清掉我們剛寫的 sidecar 避免 orphan
@@ -270,7 +335,7 @@ def process_one(ocr, img_path: Path):
         return 'err'
 
     is_travel, reason, hits_display = classify_text(text)
-    dest = TRAVEL_DIR if is_travel else OTHER_DIR
+    dest = travel_dir if is_travel else other_dir
     classification = 'travel' if is_travel else 'other'
     if not img_path.exists():
         return 'skip'
@@ -320,49 +385,137 @@ def wait_stable(path: Path) -> bool:
     return st2.st_size == st1.st_size and st2.st_mtime == st1.st_mtime
 
 
-print("=" * 60)
-print("  PaddleOCR 3.x 圖片過濾 — 旅遊相關" + ("（監看模式）" if WATCH else ""))
-print("=" * 60)
-print(f"  根目錄：{INPUT_DIR}")
-print(f"  旅遊相關 → {TRAVEL_DIR.name}/")
-print(f"  非旅遊   → {OTHER_DIR.name}/")
-print(f"  錯誤檔   → {ERROR_DIR.name}/")
-print(f"  關鍵字：強信號 {len(STRONG_KEYWORDS)} 個（任一即過）/ 弱信號 {len(WEAK_KEYWORDS)} 個（需 >={MIN_WEAK_HITS}，含金額/日期 bonus）")
-print()
+def resolve_target_specs(args):
+    """Return list of (input_dir, travel_dir, other_dir, error_dir).
 
-if not WATCH:
-    files = list_pending()
-    if not files:
-        print("根目錄沒有待過濾的圖片。")
-        sys.exit(0)
-    print(f"找到 {len(files)} 張，開始處理\n")
-    stats = {'travel': 0, 'other': 0, 'err': 0, 'skip': 0}
-    for i, f in enumerate(files, 1):
-        print(f"  [{i:3d}/{len(files)}]", end=' ')
-        stats[process_one(get_ocr(), f)] += 1
+    --target mode: derives paths from line-rpa/download/<id>/{,inbox} and
+    routes outputs to <id>/{travel,other,error}. inbox/ entry only emitted
+    when it exists.
+
+    Legacy mode: a single spec from --input-dir/--travel-dir/etc. with the
+    same defaults the script has used since v1.
+    """
+    legacy_dirs_provided = any([
+        args.input_dir, args.travel_dir, args.other_dir, args.error_dir,
+    ])
+    if args.target and legacy_dirs_provided:
+        raise SystemExit(
+            '--target cannot be combined with --input-dir/--travel-dir/'
+            '--other-dir/--error-dir; pick one mode.'
+        )
+    if args.target and args.watch:
+        raise SystemExit('--watch is single-folder polling and cannot be combined with --target.')
+
+    if args.target:
+        from tools.common.targets import DOWNLOADS_DIR
+        specs = []
+        for tid in args.target:
+            base = (DOWNLOADS_DIR / tid).resolve()
+            if not base.exists():
+                # Skip silently rather than mkdir-creating a phantom group folder.
+                # main() reports "沒有待過濾的圖片" if every target is skipped.
+                print(f"[skip] target 不存在：{base}")
+                continue
+            travel = base / 'travel'
+            other = base / 'other'
+            error = base / 'error'
+            specs.append((base, travel, other, error))
+            inbox = base / 'inbox'
+            if inbox.exists():
+                specs.append((inbox.resolve(), travel, other, error))
+        return specs
+
+    return [(
+        (args.input_dir or DEFAULT_INPUT_DIR).resolve(),
+        (args.travel_dir or DEFAULT_TRAVEL_DIR).resolve(),
+        (args.other_dir or DEFAULT_OTHER_DIR).resolve(),
+        (args.error_dir or DEFAULT_ERROR_DIR).resolve(),
+    )]
+
+
+def main(argv=None) -> int:
+    global MIN_WEAK_HITS
+    args = parse_args(argv)
+    MIN_WEAK_HITS = args.min_weak_hits
+
+    specs = resolve_target_specs(args)
+
+    seen_outputs = set()
+    for _, travel, other, error in specs:
+        for d in (travel, other, error):
+            if d not in seen_outputs:
+                d.mkdir(parents=True, exist_ok=True)
+                seen_outputs.add(d)
+
+    print("=" * 60)
+    print("  PaddleOCR 3.x 圖片過濾 — 旅遊相關" + ("（監看模式）" if args.watch else ""))
+    print("=" * 60)
+    if args.target:
+        print(f"  Targets: {', '.join(args.target)} ({len(specs)} input folders)")
+    else:
+        in_dir, tr, ot, er = specs[0]
+        print(f"  根目錄：{in_dir}")
+        print(f"  旅遊相關 → {tr.name}/")
+        print(f"  非旅遊   → {ot.name}/")
+        print(f"  錯誤檔   → {er.name}/")
+    print(f"  關鍵字：強信號 {len(STRONG_KEYWORDS)} 個（任一即過）/ 弱信號 {len(WEAK_KEYWORDS)} 個（需 >={MIN_WEAK_HITS}，含金額/日期 bonus）")
     print()
+
+    if args.watch:
+        in_dir, tr, ot, er = specs[0]
+        return _watch_loop(in_dir, tr, ot, er)
+
+    stats = {'travel': 0, 'other': 0, 'err': 0, 'skip': 0}
+    any_files = False
+    for in_dir, tr, ot, er in specs:
+        if not in_dir.exists():
+            print(f"[skip] 來源不存在：{in_dir}")
+            continue
+        files = list_pending(in_dir)
+        if not files:
+            continue
+        any_files = True
+        print(f"[{in_dir}] 找到 {len(files)} 張，開始處理")
+        for i, f in enumerate(files, 1):
+            print(f"  [{i:3d}/{len(files)}]", end=' ')
+            stats[process_one(get_ocr(), f, travel_dir=tr, other_dir=ot, error_dir=er)] += 1
+        print()
+
+    if not any_files:
+        print("沒有待過濾的圖片。")
+        return 0
     print(f"完成：{stats['travel']} 旅遊相關 / {stats['other']} 非旅遊 / {stats['err']} 錯誤 / {stats['skip']} 略過(另一行程已處理)")
-    sys.exit(0)
+    return 0
 
-print("監看中：新進根目錄的圖片會自動分類")
-print("按 Ctrl+C 結束\n")
-processed = set()
-total = {'travel': 0, 'other': 0, 'err': 0, 'skip': 0}
-try:
-    while True:
-        for f in list_pending():
-            if f in processed:
-                continue
-            if not wait_stable(f):
-                continue
-            total[process_one(get_ocr(), f)] += 1
-            processed.add(f)
-        processed = {p for p in processed if p.exists()}
-        time.sleep(WATCH_POLL_SEC)
-except KeyboardInterrupt:
-    print("\n手動結束")
 
-print()
-print("=" * 60)
-print(f"  累計：{total['travel']} 旅遊相關 / {total['other']} 非旅遊 / {total['err']} 錯誤")
-print("=" * 60)
+def _watch_loop(input_dir: Path, travel_dir: Path, other_dir: Path, error_dir: Path) -> int:
+    print("監看中：新進根目錄的圖片會自動分類")
+    print("按 Ctrl+C 結束\n")
+    processed = set()
+    total = {'travel': 0, 'other': 0, 'err': 0, 'skip': 0}
+    try:
+        while True:
+            for f in list_pending(input_dir):
+                if f in processed:
+                    continue
+                if not wait_stable(f):
+                    continue
+                total[process_one(get_ocr(), f,
+                                   travel_dir=travel_dir,
+                                   other_dir=other_dir,
+                                   error_dir=error_dir)] += 1
+                processed.add(f)
+            processed = {p for p in processed if p.exists()}
+            time.sleep(WATCH_POLL_SEC)
+    except KeyboardInterrupt:
+        print("\n手動結束")
+
+    print()
+    print("=" * 60)
+    print(f"  累計：{total['travel']} 旅遊相關 / {total['other']} 非旅遊 / {total['err']} 錯誤")
+    print("=" * 60)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
