@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS itineraries (
@@ -43,6 +43,54 @@ CREATE INDEX IF NOT EXISTS idx_target   ON itineraries(target_id);
 CREATE INDEX IF NOT EXISTS idx_airline  ON itineraries(airline_csv);
 CREATE INDEX IF NOT EXISTS idx_region   ON itineraries(region_csv);
 CREATE INDEX IF NOT EXISTS idx_duration ON itineraries(duration_days);
+
+CREATE TABLE IF NOT EXISTS itinerary_plans (
+    plan_id        TEXT PRIMARY KEY,
+    sidecar_path   TEXT NOT NULL,
+    image_path     TEXT NOT NULL,
+    branded_path   TEXT,
+    target_id      TEXT,
+    group_name     TEXT,
+    plan_no        INTEGER NOT NULL,
+    title          TEXT,
+    raw_text       TEXT,
+    country_csv    TEXT,
+    region_csv     TEXT,
+    airline_csv    TEXT,
+    features_csv   TEXT,
+    months_csv     TEXT,
+    price_from     INTEGER,
+    duration_days  INTEGER,
+    indexed_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plan_sidecar  ON itinerary_plans(sidecar_path);
+CREATE INDEX IF NOT EXISTS idx_plan_country  ON itinerary_plans(country_csv);
+CREATE INDEX IF NOT EXISTS idx_plan_region   ON itinerary_plans(region_csv);
+CREATE INDEX IF NOT EXISTS idx_plan_months   ON itinerary_plans(months_csv);
+CREATE INDEX IF NOT EXISTS idx_plan_price    ON itinerary_plans(price_from);
+
+CREATE TABLE IF NOT EXISTS itinerary_departures (
+    departure_id   TEXT PRIMARY KEY,
+    plan_id        TEXT NOT NULL,
+    sidecar_path   TEXT NOT NULL,
+    image_path     TEXT NOT NULL,
+    branded_path   TEXT,
+    target_id      TEXT,
+    group_name     TEXT,
+    departure_date TEXT NOT NULL,
+    date_text      TEXT,
+    month          INTEGER NOT NULL,
+    day            INTEGER NOT NULL,
+    weekday        INTEGER NOT NULL,
+    price_from     INTEGER,
+    duration_days  INTEGER,
+    indexed_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dep_plan     ON itinerary_departures(plan_id);
+CREATE INDEX IF NOT EXISTS idx_dep_date     ON itinerary_departures(departure_date);
+CREATE INDEX IF NOT EXISTS idx_dep_weekday  ON itinerary_departures(weekday);
+CREATE INDEX IF NOT EXISTS idx_dep_month    ON itinerary_departures(month);
+CREATE INDEX IF NOT EXISTS idx_dep_target   ON itinerary_departures(target_id);
 """
 
 
@@ -55,6 +103,27 @@ COLUMNS = (
 _INSERT_SQL = (
     f"INSERT OR REPLACE INTO itineraries ({', '.join(COLUMNS)}) "
     f"VALUES ({', '.join('?' * len(COLUMNS))})"
+)
+
+PLAN_COLUMNS = (
+    "plan_id", "sidecar_path", "image_path", "branded_path", "target_id",
+    "group_name", "plan_no", "title", "raw_text", "country_csv",
+    "region_csv", "airline_csv", "features_csv", "months_csv",
+    "price_from", "duration_days", "indexed_at",
+)
+_INSERT_PLAN_SQL = (
+    f"INSERT OR REPLACE INTO itinerary_plans ({', '.join(PLAN_COLUMNS)}) "
+    f"VALUES ({', '.join('?' * len(PLAN_COLUMNS))})"
+)
+
+DEPARTURE_COLUMNS = (
+    "departure_id", "plan_id", "sidecar_path", "image_path", "branded_path",
+    "target_id", "group_name", "departure_date", "date_text", "month", "day",
+    "weekday", "price_from", "duration_days", "indexed_at",
+)
+_INSERT_DEPARTURE_SQL = (
+    f"INSERT OR REPLACE INTO itinerary_departures ({', '.join(DEPARTURE_COLUMNS)}) "
+    f"VALUES ({', '.join('?' * len(DEPARTURE_COLUMNS))})"
 )
 
 
@@ -104,7 +173,11 @@ class TravelIndex:
             return
 
         if migrate:
-            self.conn.executescript("DROP TABLE IF EXISTS itineraries;")
+            self.conn.executescript(
+                "DROP TABLE IF EXISTS itinerary_departures;"
+                "DROP TABLE IF EXISTS itinerary_plans;"
+                "DROP TABLE IF EXISTS itineraries;"
+            )
             self.conn.executescript(SCHEMA)
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.conn.commit()
@@ -187,13 +260,83 @@ class TravelIndex:
         self.conn.execute(_INSERT_SQL, row)
         self._maybe_commit()
 
+    def upsert_plan(
+        self,
+        *,
+        plan_id: str,
+        sidecar_path: str,
+        image_path: str,
+        branded_path: Optional[str] = None,
+        target_id: Optional[str] = None,
+        group_name: Optional[str] = None,
+        plan_no: int,
+        title: Optional[str] = None,
+        raw_text: Optional[str] = None,
+        countries: Optional[Iterable[str]] = None,
+        regions: Optional[Iterable[str]] = None,
+        airlines: Optional[Iterable[str]] = None,
+        features: Optional[Iterable[str]] = None,
+        months: Optional[Iterable[int]] = None,
+        price_from: Optional[int] = None,
+        duration_days: Optional[int] = None,
+    ) -> None:
+        row = (
+            plan_id, sidecar_path, image_path, branded_path, target_id,
+            group_name, int(plan_no), title, raw_text,
+            _wrap_csv(countries or ()), _wrap_csv(regions or ()),
+            _wrap_csv(airlines or ()), _wrap_csv(features or ()),
+            _wrap_csv(months or ()),
+            int(price_from) if price_from is not None else None,
+            int(duration_days) if duration_days is not None else None,
+            _iso_now(),
+        )
+        self.conn.execute(_INSERT_PLAN_SQL, row)
+        self._maybe_commit()
+
+    def upsert_departure(
+        self,
+        *,
+        departure_id: str,
+        plan_id: str,
+        sidecar_path: str,
+        image_path: str,
+        branded_path: Optional[str] = None,
+        target_id: Optional[str] = None,
+        group_name: Optional[str] = None,
+        departure_date: str,
+        date_text: Optional[str] = None,
+        month: int,
+        day: int,
+        weekday: int,
+        price_from: Optional[int] = None,
+        duration_days: Optional[int] = None,
+    ) -> None:
+        row = (
+            departure_id, plan_id, sidecar_path, image_path, branded_path,
+            target_id, group_name, departure_date, date_text, int(month),
+            int(day), int(weekday),
+            int(price_from) if price_from is not None else None,
+            int(duration_days) if duration_days is not None else None,
+            _iso_now(),
+        )
+        self.conn.execute(_INSERT_DEPARTURE_SQL, row)
+        self._maybe_commit()
+
     def delete(self, sidecar_path: str) -> None:
+        self.conn.execute(
+            "DELETE FROM itinerary_departures WHERE sidecar_path = ?", (sidecar_path,)
+        )
+        self.conn.execute(
+            "DELETE FROM itinerary_plans WHERE sidecar_path = ?", (sidecar_path,)
+        )
         self.conn.execute(
             "DELETE FROM itineraries WHERE sidecar_path = ?", (sidecar_path,)
         )
         self._maybe_commit()
 
     def clear(self) -> None:
+        self.conn.execute("DELETE FROM itinerary_departures")
+        self.conn.execute("DELETE FROM itinerary_plans")
         self.conn.execute("DELETE FROM itineraries")
         self._maybe_commit()
 
@@ -201,6 +344,14 @@ class TravelIndex:
 
     def count(self) -> int:
         cur = self.conn.execute("SELECT COUNT(*) FROM itineraries")
+        return int(cur.fetchone()[0])
+
+    def plan_count(self) -> int:
+        cur = self.conn.execute("SELECT COUNT(*) FROM itinerary_plans")
+        return int(cur.fetchone()[0])
+
+    def departure_count(self) -> int:
+        cur = self.conn.execute("SELECT COUNT(*) FROM itinerary_departures")
         return int(cur.fetchone()[0])
 
     def query(

@@ -11,15 +11,39 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 TARGETS_PATH = PROJECT_ROOT / "config" / "targets.json"
+DOWNLOADS_DIR = PROJECT_ROOT / "line-rpa" / "download"
 
 
 def load_target_ids() -> list[str]:
-    """Return all target ids from config/targets.json, or [] if unreadable."""
+    """Return configured target ids plus discovered downloads folders.
+
+    The original UI-driven flow stores target ids in config/targets.json.
+    The RPA/OpenClaw flow creates folders under line-rpa/download/<name>, so
+    tools that process images must also discover those folders.
+    """
+    ids: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str | None) -> None:
+        if value and value not in seen:
+            ids.append(value)
+            seen.add(value)
+
     if not TARGETS_PATH.exists():
-        return []
-    with open(TARGETS_PATH, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return [t["id"] for t in data.get("targets", []) if t.get("id")]
+        data = {"targets": []}
+    else:
+        with open(TARGETS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+    for target in data.get("targets", []):
+        add(target.get("id"))
+
+    if DOWNLOADS_DIR.exists():
+        for child in sorted(DOWNLOADS_DIR.iterdir()):
+            if child.is_dir() and not child.name.startswith((".", "_")):
+                add(child.name)
+
+    return ids
 
 
 def relpath_from_root(p: Path) -> str:

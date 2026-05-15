@@ -1,8 +1,8 @@
 """Batch CLI + single-image API for stitching the company logo onto travel images.
 
-Reads the classified images under `downloads/<targetId>/travel/`, overlays the
+Reads classified images under `line-rpa/download/<targetId>/travel/`, overlays the
 logo defined in `config/branding.json`, and writes the result to
-`downloads/<targetId>/branded/` along with a branded sidecar JSON.
+`line-rpa/download/<targetId>/branded/` along with a branded sidecar JSON.
 
 Idempotent: tracks a 3-tuple key (logo sha256, config hash, image mtime).
 If none changed since the last stitch, the image is skipped.
@@ -43,11 +43,12 @@ from tools.branding.io_utils import (
     imwrite_unicode,
     sidecar_of,
 )
-from tools.common.targets import PROJECT_ROOT, load_target_ids, relpath_from_root
+from tools.common.targets import DOWNLOADS_DIR, PROJECT_ROOT, load_target_ids, relpath_from_root
 
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "branding.json"
 BRANDED_SIDECAR_VERSION = 1
+SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 
 logger = logging.getLogger("branding")
 
@@ -67,6 +68,9 @@ REQUIRED_KEYS = (
     "minLogoPixelWidthRequired",
     "logoHorizontalAlign",
     "logoPaddingRatio",
+    "detectExistingBottomBand",
+    "whiteThreshold",
+    "whiteMinCoverageRatio",
     "outputFormat",
     "outputQuality",
 )
@@ -124,6 +128,107 @@ Result = Literal["processed", "skipped", "error"]
 
 
 # ---------------------------------------------------------------------------
+# Old CTA footer detection/cropping
+# ---------------------------------------------------------------------------
+
+CTA_KEYWORDS = (
+    "請洽",
+    "请洽",
+    "洽詢",
+    "洽询",
+    "詳情",
+    "详情",
+    "查詢",
+    "查询",
+    # Common OCR confusions seen in current LINE samples.
+    "群情請洽",
+    "詳情請治",
+)
+
+
+def _has_cta_keyword(ocr_text: str) -> bool:
+    text = "".join(str(ocr_text or "").split())
+    return any(k in text for k in CTA_KEYWORDS)
+
+
+def detect_old_cta_cut_y(base: np.ndarray, ocr_text: str, cfg: dict) -> Optional[int]:
+    """Return y where an old bottom CTA/contact box should be cut off.
+
+    Conservative by design: current samples show true old CTA boxes contain OCR
+    text like 「詳情請洽」 and have a bottom-anchored low-content white rectangle.
+    White-heavy itinerary/price areas without CTA text must not be cropped.
+    """
+    if not _has_cta_keyword(ocr_text):
+        return None
+
+    H, W = base.shape[:2]
+    if H < 200 or W < 200:
+        return None
+
+    threshold = int(cfg.get("whiteThreshold", 240))
+    near_white = np.all(base >= threshold, axis=2)
+    row_coverage = near_white.mean(axis=1)
+
+    # Smooth so 「詳情請洽」 text strokes do not break the white box.
+    window = max(9, min(31, (H // 90) * 2 + 1))
+    smooth = np.convolve(row_coverage, np.ones(window) / float(window), mode="same")
+
+    search_top = int(H * 0.60)
+    white_threshold = 0.90 if H >= 2000 else 0.84
+    gap_limit = max(6, int(H * 0.008))
+
+    # The CTA box must be attached to, or very close to, the bottom.
+    y = H - 1
+    while y >= search_top and smooth[y] < white_threshold:
+        y -= 1
+    if H - 1 - y > max(18, int(H * 0.025)):
+        return None
+
+    bottom = y
+    gap = 0
+    top = y
+    while y >= search_top:
+        if smooth[y] >= white_threshold:
+            top = y
+            gap = 0
+        else:
+            gap += 1
+            if gap > gap_limit:
+                break
+        y -= 1
+
+    box_h = bottom - top + 1
+    # Some suppliers use a very short one-line 「詳情請洽」 box (e.g. 九寨溝
+    # sample: ~52px on a 1492px image), so keep the minimum a bit lower.
+    if box_h < max(45, int(H * 0.03)) or box_h > int(H * 0.22):
+        return None
+    if float(smooth[top:bottom + 1].mean()) < 0.80:
+        return None
+
+    # Refine to the upper border/separator line if present.
+    gray = cv2.cvtColor(base, cv2.COLOR_BGR2GRAY).astype(np.int16)
+    row_diff = np.abs(np.diff(gray, axis=0)).mean(axis=1)
+    # Keep refinement close to the detected white-box top.  A larger window can
+    # jump to price/table separators above the CTA box on tall itinerary sheets.
+    lo = max(search_top, top - max(20, int(H * 0.006)))
+    hi = min(H - 2, top + max(10, int(H * 0.006)))
+    edge_y = int(lo + np.argmax(row_diff[lo:hi + 1])) if hi >= lo else top
+
+    # The edge must be plausible; otherwise use the detected white-box top.
+    cut_y = edge_y if row_diff[edge_y] >= max(18.0, row_diff[search_top:H - 1].mean() * 1.8) else top
+
+    # Crop a little above the detected CTA top so the old box border/shadow is
+    # removed too.  Keep it small to avoid eating itinerary/price content.
+    crop_margin = max(5, min(12, int(round(H * 0.004))))
+    cut_y = max(1, cut_y - crop_margin)
+
+    removed = H - cut_y
+    if removed < max(60, int(H * 0.04)) or removed > int(H * 0.25):
+        return None
+    return max(1, min(cut_y, H - 1))
+
+
+# ---------------------------------------------------------------------------
 # Per-image pipeline
 # ---------------------------------------------------------------------------
 
@@ -151,7 +256,8 @@ def stitch_one(sidecar_path: Path, ctx: StitchContext) -> Result:
         return "error"
 
     branded_dir = orig_img.parent.parent / "branded"
-    branded_img_path = branded_dir / f"{orig_img.stem}_branded{orig_img.suffix}"
+    ext = "." + ctx.cfg["outputFormat"].lower().lstrip(".")
+    branded_img_path = branded_dir / f"{orig_img.stem}_branded{ext}"
     branded_sidecar_path = sidecar_of(branded_img_path)
 
     orig_mtime_ms = orig_img.stat().st_mtime_ns // 1_000_000
@@ -187,6 +293,22 @@ def stitch_one(sidecar_path: Path, ctx: StitchContext) -> Result:
         logger.warning("base image too small (%dx%d): %s", W, H, orig_img.name)
         return "skipped"
 
+    old_cta_cut_y = detect_old_cta_cut_y(
+        base,
+        (sidecar.get("ocr") or {}).get("text", ""),
+        ctx.cfg,
+    )
+    original_h_for_meta = H
+    if old_cta_cut_y is not None:
+        logger.info(
+            "crop old CTA footer: %s y=%d removed=%dpx",
+            orig_img.name,
+            old_cta_cut_y,
+            H - old_cta_cut_y,
+        )
+        base = base[:old_cta_cut_y, :, :].copy()
+        H, W = base.shape[:2]
+
     try:
         out = composite(base, ctx.logo_img, ctx.cfg)
     except LogoTooSmallError as e:
@@ -196,7 +318,6 @@ def stitch_one(sidecar_path: Path, ctx: StitchContext) -> Result:
         logger.error("composite failed for %s: %s", orig_img.name, e)
         return "error"
 
-    ext = "." + ctx.cfg["outputFormat"].lower().lstrip(".")
     quality = int(ctx.cfg["outputQuality"])
     if not imwrite_unicode(branded_img_path, out, ext=ext, quality=quality):
         logger.error("failed to write branded image: %s", branded_img_path)
@@ -223,7 +344,10 @@ def stitch_one(sidecar_path: Path, ctx: StitchContext) -> Result:
         "output": {
             "path": relpath_from_root(branded_img_path),
             "dimensions": {"w": int(out.shape[1]), "h": int(out.shape[0])},
-            "originalDimensions": {"w": int(W), "h": int(H)},
+            "originalDimensions": {"w": int(W), "h": int(original_h_for_meta)},
+            "compositeBaseDimensions": {"w": int(W), "h": int(H)},
+            "oldCtaCropY": int(old_cta_cut_y) if old_cta_cut_y is not None else None,
+            "oldCtaRemovedPx": int(original_h_for_meta - old_cta_cut_y) if old_cta_cut_y is not None else 0,
             "bandHeightPx": int(band_h),
         },
         "configHash": ctx.config_hash,
@@ -306,10 +430,12 @@ def collect_sidecars(target_id: Optional[str] = None) -> list[Path]:
 
     out: list[Path] = []
     for tid in target_ids:
-        travel_dir = PROJECT_ROOT / "downloads" / tid / "travel"
+        travel_dir = DOWNLOADS_DIR / tid / "travel"
         if not travel_dir.exists():
             continue
-        out.extend(sorted(travel_dir.glob("*.jpg.json")))
+        for sidecar in sorted(travel_dir.glob("*.*.json")):
+            if image_of_sidecar(sidecar).suffix.lower() in SUPPORTED_IMAGE_SUFFIXES:
+                out.append(sidecar)
     return out
 
 
@@ -324,8 +450,8 @@ def _iso_now() -> str:
 def _target_of(sidecar: Path) -> str:
     try:
         parts = sidecar.resolve().relative_to(PROJECT_ROOT).parts
-        if len(parts) >= 3 and parts[0] == "downloads":
-            return parts[1]
+        if len(parts) >= 4 and parts[0] == "line-rpa" and parts[1] == "download":
+            return parts[2]
     except ValueError:
         pass
     return "?"

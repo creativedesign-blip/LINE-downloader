@@ -55,6 +55,28 @@ class TestExtractCountry(unittest.TestCase):
         # But we're just testing that 馬來西亞 matches correctly.
         self.assertIn("馬來西亞", extract_country("馬來西亞沙巴自由行"))
 
+    def test_english_country_hint(self):
+        self.assertEqual(extract_country("JAPAN TRAVEL 名古屋"), ["日本"])
+
+    def test_country_group_hint(self):
+        self.assertEqual(extract_country("法比荷 Paris 阿姆斯特丹"), ["法國", "比利時", "荷蘭"])
+
+    def test_common_region_implies_country(self):
+        self.assertEqual(extract_country("关西自由行"), ["日本"])
+        self.assertEqual(extract_country("京阪神溫泉之旅"), ["日本"])
+        self.assertEqual(extract_country("富國島自由行"), ["越南"])
+        self.assertEqual(extract_country("馬六甲古城"), ["馬來西亞"])
+        self.assertEqual(extract_country("日惹婆羅浮屠"), ["印尼"])
+        self.assertEqual(extract_country("馬尼拉宿霧"), ["菲律賓"])
+        self.assertEqual(extract_country("布里斯本黃金海岸"), ["澳洲"])
+        self.assertEqual(extract_country("西雅圖波士頓"), ["美國"])
+
+    def test_country_hints_from_ocr_keywords(self):
+        self.assertEqual(extract_country("AIRNEWZEALAND 享纽西蘭 皇后天際車"), ["紐西蘭"])
+        self.assertEqual(extract_country("okinawa 美麗海水族館 玉泉洞王國村"), ["日本"])
+        self.assertEqual(extract_country("嗨玩答里岛 小婆罗浮屠塔 Bali"), ["印尼"])
+        self.assertEqual(extract_country("魔幻西葡 里斯本 巴塞隆納"), ["西班牙", "葡萄牙"])
+
 
 class TestExtractMonths(unittest.TestCase):
     def test_full_date(self):
@@ -150,6 +172,19 @@ class TestExtractPriceFrom(unittest.TestCase):
     def test_comma_thousands(self):
         self.assertEqual(extract_price_from("129,900起"), 129900)
 
+    def test_multiline_tax_included_price(self):
+        self.assertEqual(extract_price_from("18,999\n含税\n起"), 18999)
+        self.assertEqual(extract_price_from("28,300\n無購物站\n含税\n起"), 28300)
+
+    def test_year_is_not_price(self):
+        self.assertIsNone(extract_price_from("2026/05/30 索引資料"))
+
+    def test_dot_thousands_price(self):
+        self.assertEqual(extract_price_from("89.900\n含税\n起"), 89900)
+
+    def test_day_badge_merged_with_price(self):
+        self.assertEqual(extract_price_from("519.888\n含稅\n起"), 19888)
+
 
 class TestExtractAirline(unittest.TestCase):
     def test_hua_hang(self):
@@ -186,6 +221,15 @@ class TestExtractRegion(unittest.TestCase):
         self.assertIn("東京", result)
         self.assertIn("大阪", result)
 
+    def test_common_japan_region_aliases(self):
+        self.assertIn("關西", extract_region("关西自由行"))
+        self.assertIn("京阪神", extract_region("京阪神溫泉之旅"))
+
+    def test_common_international_regions(self):
+        result = extract_region("富國島 馬六甲 日惹 馬尼拉 布里斯本 西雅圖")
+        for region in ["富國島", "馬六甲", "日惹", "馬尼拉", "布裡斯本", "西雅圖"]:
+            self.assertIn(region, result)
+
     def test_no_match(self):
         self.assertEqual(extract_region("早鳥優惠"), [])
 
@@ -196,6 +240,14 @@ class TestExtractDuration(unittest.TestCase):
 
     def test_5d4n(self):
         self.assertEqual(extract_duration("5天4夜輕旅行"), 5)
+
+    def test_plus_day_package(self):
+        self.assertEqual(extract_duration("曼谷自由行 5+1日 含稅起"), 6)
+        self.assertEqual(extract_duration("泰國機加酒 5＋1日"), 6)
+
+    def test_chinese_days_and_nights(self):
+        self.assertEqual(extract_duration("五天四夜輕旅行"), 5)
+        self.assertEqual(extract_duration("十二天十一夜行程"), 12)
 
     def test_nichi_ri(self):
         self.assertEqual(extract_duration("8日遊"), 8)
@@ -210,6 +262,9 @@ class TestExtractDuration(unittest.TestCase):
     def test_out_of_range_rejected(self):
         # '100 天' gets filtered; '2 天' should be ok though.
         self.assertEqual(extract_duration("100 天"), None)
+
+    def test_sixty_days_rejected(self):
+        self.assertIsNone(extract_duration("60 天"))
 
     def test_no_duration(self):
         self.assertIsNone(extract_duration("賞花美食"))

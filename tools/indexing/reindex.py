@@ -1,6 +1,6 @@
 """Batch CLI to (re)build the travel itinerary SQLite index.
 
-Reads every `downloads/<targetId>/travel/*.jpg.json` sidecar with
+Reads every `line-rpa/download/<targetId>/travel/*.json` sidecar with
 classification='travel', runs the three extractors, detects whether a
 branded version exists, and upserts one row per sidecar.
 
@@ -30,7 +30,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from tools.branding.io_utils import image_of_sidecar
-from tools.common.targets import PROJECT_ROOT, load_target_ids, relpath_from_root
+from tools.common.targets import DOWNLOADS_DIR, PROJECT_ROOT, load_target_ids, relpath_from_root
 from tools.indexing.extractor import (
     extract_airline,
     extract_country,
@@ -41,11 +41,13 @@ from tools.indexing.extractor import (
     extract_region,
 )
 from tools.indexing.index_db import TravelIndex
+from tools.indexing.plan_extractor import extract_plans
 
 Result = Literal["indexed", "skipped", "error"]
 
 
 DEFAULT_DB_PATH = PROJECT_ROOT / "config" / "travel_index.db"
+SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 
 logger = logging.getLogger("indexing")
 
@@ -53,10 +55,12 @@ logger = logging.getLogger("indexing")
 def collect_travel_sidecars(target_ids: Iterable[str]) -> list[Path]:
     out: list[Path] = []
     for tid in target_ids:
-        travel_dir = PROJECT_ROOT / "downloads" / tid / "travel"
+        travel_dir = DOWNLOADS_DIR / tid / "travel"
         if not travel_dir.exists():
             continue
-        out.extend(sorted(travel_dir.glob("*.jpg.json")))
+        for sidecar in sorted(travel_dir.glob("*.*.json")):
+            if image_of_sidecar(sidecar).suffix.lower() in SUPPORTED_IMAGE_SUFFIXES:
+                out.append(sidecar)
     return out
 
 
@@ -64,8 +68,11 @@ def _find_branded(orig_image: Path) -> Optional[Path]:
     """Given a travel image path, return the matching branded image path
     if it exists, else None."""
     branded_dir = orig_image.parent.parent / "branded"
-    candidate = branded_dir / f"{orig_image.stem}_branded{orig_image.suffix}"
-    return candidate if candidate.exists() else None
+    for suffix in (".jpg", ".jpeg", ".png", orig_image.suffix):
+        candidate = branded_dir / f"{orig_image.stem}_branded{suffix}"
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def index_one(sidecar_path: Path, index: TravelIndex) -> Result:
@@ -85,6 +92,9 @@ def index_one(sidecar_path: Path, index: TravelIndex) -> Result:
     text = ocr.get("text") or ""
     source = sidecar.get("source") or {}
     orig_img = image_of_sidecar(sidecar_path)
+    fallback_target_id = orig_img.parent.parent.name if orig_img.parent.name == "travel" else None
+    target_id = source.get("targetId") or fallback_target_id
+    group_name = source.get("groupName") or target_id
 
     countries = extract_country(text)
     months = extract_months(text)
@@ -98,8 +108,8 @@ def index_one(sidecar_path: Path, index: TravelIndex) -> Result:
     index.upsert(
         sidecar_path=relpath_from_root(sidecar_path),
         image_path=relpath_from_root(orig_img),
-        target_id=source.get("targetId"),
-        group_name=source.get("groupName"),
+        target_id=target_id,
+        group_name=group_name,
         branded_path=relpath_from_root(branded) if branded else None,
         countries=countries,
         months=months,
@@ -110,6 +120,48 @@ def index_one(sidecar_path: Path, index: TravelIndex) -> Result:
         features=features,
         source_time=sidecar.get("savedAt"),
     )
+    sidecar_rel = relpath_from_root(sidecar_path)
+    image_rel = relpath_from_root(orig_img)
+    branded_rel = relpath_from_root(branded) if branded else None
+    for plan in extract_plans(text):
+        plan_id = f"{sidecar_rel}#plan:{plan.plan_no}"
+        index.upsert_plan(
+            plan_id=plan_id,
+            sidecar_path=sidecar_rel,
+            image_path=image_rel,
+            branded_path=branded_rel,
+            target_id=target_id,
+            group_name=group_name,
+            plan_no=plan.plan_no,
+            title=plan.title,
+            raw_text=plan.raw_text,
+            countries=plan.countries or countries,
+            regions=plan.regions or regions,
+            airlines=plan.airlines or airlines,
+            features=plan.features or features,
+            months=plan.months,
+            price_from=plan.price_from,
+            duration_days=plan.duration_days,
+        )
+        for dep in plan.departures:
+            dep_id = f"{plan_id}#dep:{dep.date_iso}"
+            index.upsert_departure(
+                departure_id=dep_id,
+                plan_id=plan_id,
+                sidecar_path=sidecar_rel,
+                image_path=image_rel,
+                branded_path=branded_rel,
+                target_id=target_id,
+                group_name=group_name,
+                departure_date=dep.date_iso,
+                date_text=dep.date_text,
+                month=dep.month,
+                day=dep.day,
+                weekday=dep.weekday,
+                price_from=plan.price_from,
+                duration_days=plan.duration_days,
+            )
+
     logger.debug(
         "indexed: %s (countries=%s months=%s price=%s duration=%s "
         "airlines=%s regions=%s features=%d branded=%s)",
@@ -202,11 +254,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             for sc in sidecars:
                 stats[index_one(sc, index)] += 1
         total_in_db = index.count()
+        total_plans = index.plan_count()
+        total_departures = index.departure_count()
 
     elapsed = time.perf_counter() - t_start
     logger.info(
-        "[indexing] indexed=%d skipped=%d errors=%d in_db=%d elapsed=%.1fs",
-        stats["indexed"], stats["skipped"], stats["error"], total_in_db, elapsed,
+        "[indexing] indexed=%d skipped=%d errors=%d in_db=%d plans=%d departures=%d elapsed=%.1fs",
+        stats["indexed"], stats["skipped"], stats["error"], total_in_db,
+        total_plans, total_departures, elapsed,
     )
     return 0 if stats["error"] == 0 else 1
 
