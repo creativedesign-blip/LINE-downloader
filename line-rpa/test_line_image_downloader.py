@@ -17,8 +17,16 @@ _TEMP_COUNTER = count(1)
 
 
 class LocalTemporaryDirectory:
+    """Stand-in for tempfile.TemporaryDirectory that puts test data under
+    a predictable path. Mirror the cleanup() API too — this module
+    monkeypatches tempfile.TemporaryDirectory globally, so other test
+    suites in the same process (e.g. tools/branding/tests/test_io_utils)
+    that call .cleanup() must keep working.
+    """
+
     def __init__(self):
         self.name = str(TEST_TEMP_ROOT / f"case-{next(_TEMP_COUNTER)}")
+        Path(self.name).mkdir(parents=True, exist_ok=True)
 
     def __enter__(self):
         path = Path(self.name)
@@ -27,8 +35,11 @@ class LocalTemporaryDirectory:
         return self.name
 
     def __exit__(self, exc_type, exc, tb):
-        shutil.rmtree(self.name, ignore_errors=True)
+        self.cleanup()
         return False
+
+    def cleanup(self):
+        shutil.rmtree(self.name, ignore_errors=True)
 
 
 tempfile.TemporaryDirectory = LocalTemporaryDirectory
@@ -79,9 +90,11 @@ class LineImageDownloaderTests(unittest.TestCase):
                 app.GroupResult(
                     group_name="group-a",
                     status="ok",
+                    failure_category="",
                     expected_count=3,
                     success_count=2,
                     skipped_count=1,
+                    duplicate_count=0,
                     failed_count=0,
                     save_path=str(Path(tmp) / "group-a"),
                     failure_reason="",
@@ -98,9 +111,11 @@ class LineImageDownloaderTests(unittest.TestCase):
                     "executed_at",
                     "group_name",
                     "status",
+                    "failure_category",
                     "expected_count",
                     "success_count",
                     "skipped_count",
+                    "duplicate_count",
                     "failed_count",
                     "save_path",
                     "failure_reason",
@@ -111,7 +126,8 @@ class LineImageDownloaderTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(ws["B2"].value, "group-a")
-            self.assertEqual(ws["E2"].value, 2)
+            # success_count moved from column E -> F after failure_category was inserted at D
+            self.assertEqual(ws["F2"].value, 2)
 
     def test_process_all_ignores_config_test_limit(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -201,7 +217,7 @@ class LineImageDownloaderTests(unittest.TestCase):
         rpa = app.LineRpa({"wait_seconds": 0, "coordinates": app.DEFAULT_CONFIG["coordinates"]})
         calls = []
 
-        rpa.find_viewer_window = lambda: 400
+        rpa.find_viewer_window = lambda **_: 400
         rpa.click_window_ratio = lambda hwnd, key: calls.append((hwnd, key))
         rpa.click_ratio = lambda key: calls.append(("main", key))
 
@@ -215,7 +231,12 @@ class LineImageDownloaderTests(unittest.TestCase):
             calls = []
 
             rpa.find_media_window = lambda: 300
-            rpa.find_viewer_window = lambda: 400
+            rpa.find_viewer_window = lambda **_: 400
+            # wait_for_viewer_window + apply_window_layout call win32gui APIs
+            # (IsWindow / MoveWindow) on the result; both need a real HWND.
+            # Bypass by stubbing the wrappers.
+            rpa.wait_for_viewer_window = lambda **_: 400
+            rpa.apply_window_layout = lambda *args, **kwargs: None
             rpa.double_click_window_ratio = lambda hwnd, key: calls.append(("double", hwnd, key))
             rpa.hover_window_ratio = lambda hwnd, key: calls.append(("hover", hwnd, key))
             rpa.click_window_ratio = lambda hwnd, key: calls.append(("click", hwnd, key))
@@ -223,7 +244,8 @@ class LineImageDownloaderTests(unittest.TestCase):
             rpa.handle_save_dialog = lambda save_dir: None
             rpa.move_new_downloads = lambda before, save_dir: []
 
-            with patch.object(app.time, "sleep"):
+            with patch.object(app.time, "sleep"), \
+                 patch.object(app.win32gui, "IsWindow", return_value=True):
                 rpa.download_all_visible_images(Path(tmp))
 
             self.assertEqual(calls[0], ("double", 300, "first_photo_thumbnail"))
@@ -243,17 +265,17 @@ class LineImageDownloaderTests(unittest.TestCase):
             seen_hashes = set()
             seen_names = set()
 
-            unique_count, duplicate_found, duplicate_paths = app.LineRpa.register_unique_images([first], seen_hashes, seen_names)
+            unique_count, duplicate_found, duplicate_paths, _seen_log_changed = app.LineRpa.register_unique_images([first], seen_hashes, seen_names)
             self.assertEqual(unique_count, 1)
             self.assertFalse(duplicate_found)
             self.assertEqual(duplicate_paths, [])
 
-            unique_count, duplicate_found, duplicate_paths = app.LineRpa.register_unique_images([duplicate, other], seen_hashes, seen_names)
+            unique_count, duplicate_found, duplicate_paths, _seen_log_changed = app.LineRpa.register_unique_images([duplicate, other], seen_hashes, seen_names)
             self.assertEqual(unique_count, 1)
             self.assertTrue(duplicate_found)
             self.assertEqual(duplicate_paths, [duplicate])
 
-            unique_count, duplicate_found, duplicate_paths = app.LineRpa.register_unique_images([same_name], seen_hashes, seen_names)
+            unique_count, duplicate_found, duplicate_paths, _seen_log_changed = app.LineRpa.register_unique_images([same_name], seen_hashes, seen_names)
             self.assertEqual(unique_count, 0)
             self.assertTrue(duplicate_found)
             self.assertEqual(duplicate_paths, [same_name])
@@ -282,7 +304,12 @@ class LineImageDownloaderTests(unittest.TestCase):
             calls = []
 
             rpa.find_media_window = lambda: 300
-            rpa.find_viewer_window = lambda: 400
+            rpa.find_viewer_window = lambda **_: 400
+            # wait_for_viewer_window + apply_window_layout call win32gui APIs
+            # (IsWindow / MoveWindow) on the result; both need a real HWND.
+            # Bypass by stubbing the wrappers.
+            rpa.wait_for_viewer_window = lambda **_: 400
+            rpa.apply_window_layout = lambda *args, **kwargs: None
             rpa.double_click_window_ratio = lambda hwnd, key: calls.append(("double", hwnd, key))
             rpa.hover_window_ratio = lambda hwnd, key: calls.append(("hover", hwnd, key))
             rpa.click_window_ratio = lambda hwnd, key: calls.append(("click", hwnd, key))
@@ -290,7 +317,8 @@ class LineImageDownloaderTests(unittest.TestCase):
             rpa.handle_save_dialog = lambda target_dir: None
             rpa.move_new_downloads = lambda before, target_dir: [duplicate]
 
-            with patch.object(app.time, "sleep"):
+            with patch.object(app.time, "sleep"), \
+                 patch.object(app.win32gui, "IsWindow", return_value=True):
                 counts = rpa.download_all_visible_images(save_dir, "group-a", app.load_image_index(index_path), index_path)
 
             self.assertEqual(counts["attempted"], 1)
@@ -325,7 +353,7 @@ class LineImageDownloaderTests(unittest.TestCase):
 
                 def run_group(self, group_name, save_dir):
                     calls.append(("run_group", group_name, save_dir))
-                    return app.GroupResult(group_name, "ok", 1, 1, 0, 0, str(save_dir), "")
+                    return app.GroupResult(group_name, "ok", "", 1, 1, 0, 0, 0, str(save_dir), "")
 
             with patch.object(app, "LineRpa", FakeRpa):
                 result = app.download_group_images(
@@ -361,7 +389,7 @@ class LineImageDownloaderTests(unittest.TestCase):
 
                 def run_group(self, group_name, save_dir):
                     calls.append((group_name, save_dir))
-                    return app.GroupResult(group_name, "ok", 1, 1, 0, 0, str(save_dir), "")
+                    return app.GroupResult(group_name, "ok", "", 1, 1, 0, 0, 0, str(save_dir), "")
 
             with patch.object(app, "LineRpa", FakeRpa):
                 result = app.download_group_images("A:B", config_path=config_path, run_pipeline=False)
@@ -387,7 +415,7 @@ class LineImageDownloaderTests(unittest.TestCase):
                     pass
 
                 def run_group(self, group_name, save_dir):
-                    return app.GroupResult(group_name, "ok", 0, 0, 0, 0, str(save_dir), "")
+                    return app.GroupResult(group_name, "ok", "", 0, 0, 0, 0, 0, str(save_dir), "")
 
             with patch.object(app, "LineRpa", FakeRpa):
                 app.download_group_images("group-a", config_path=config_path, run_pipeline=False)
@@ -412,7 +440,7 @@ class LineImageDownloaderTests(unittest.TestCase):
                     pass
 
                 def run_group(self, group_name, save_dir):
-                    return app.GroupResult(group_name, "ok", 0, 0, 0, 0, str(save_dir), "")
+                    return app.GroupResult(group_name, "ok", "", 0, 0, 0, 0, 0, str(save_dir), "")
 
             with patch.object(app, "LineRpa", FakeRpa):
                 app.download_group_images("group-a", config_path=config_path, reset_hash=True, run_pipeline=False)
@@ -448,7 +476,7 @@ class LineImageDownloaderTests(unittest.TestCase):
 
                 def run_group(self, group_name, save_dir):
                     calls.append(("run_group", group_name))
-                    return app.GroupResult(group_name, "ok", 1, 1, 0, 0, str(save_dir), "")
+                    return app.GroupResult(group_name, "ok", "", 1, 1, 0, 0, 0, str(save_dir), "")
 
             def fake_attach(record, config):
                 calls.append(("pipeline", record.group_name))
@@ -496,7 +524,7 @@ class LineImageDownloaderTests(unittest.TestCase):
 
                 def run_group(self, group_name, save_dir):
                     calls.append(("run_group", group_name))
-                    return app.GroupResult(group_name, "failed", 1, 0, 0, 1, str(save_dir), "download failed")
+                    return app.GroupResult(group_name, "failed", "UNKNOWN", 1, 0, 0, 0, 1, str(save_dir), "download failed")
 
             def fake_attach(record, config):
                 calls.append(("pipeline", record.group_name))
@@ -516,11 +544,13 @@ class LineImageDownloaderTests(unittest.TestCase):
             rpa.close_extra_line_windows = lambda: calls.append("close_extra")
             rpa.search_and_open_group = lambda group_name: calls.append("search")
             rpa.open_photos_videos = lambda: calls.append("open_photos")
-            rpa.download_all_visible_images = lambda *args: calls.append("download") or {
+            rpa.download_all_visible_images = lambda *args, **kwargs: calls.append("download") or {
                 "attempted": 1,
                 "success": 1,
                 "skipped": 0,
+                "duplicate": 0,
                 "failed": 0,
+                "save_dialog_seen": 0,
             }
             rpa.try_close_viewer = lambda: calls.append("close_viewer")
 
