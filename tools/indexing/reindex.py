@@ -54,7 +54,9 @@ SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 # even if their sidecar mtime is unchanged.
 # v2: removed ambiguous 松山 -> 日本 region hint that mis-tagged Taiwan
 #     travel DM with "松山出發" as containing 日本.
-EXTRACTOR_VERSION = "2"
+# v3: schema v5 added image_sha256 column for query-time dedup of
+#     RPA-missed duplicates; existing rows must be re-upserted to fill it.
+EXTRACTOR_VERSION = "3"
 
 logger = logging.getLogger("indexing")
 
@@ -139,6 +141,7 @@ def index_one(sidecar_path: Path, index: TravelIndex,
         source_time=sidecar.get("savedAt"),
         sidecar_mtime=sidecar_mtime,
         extractor_version=EXTRACTOR_VERSION,
+        image_sha256=ocr.get("imageSha256"),
     )
     sidecar_rel = relpath_from_root(sidecar_path)
     image_rel = relpath_from_root(orig_img)

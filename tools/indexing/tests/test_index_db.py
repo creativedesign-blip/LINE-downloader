@@ -304,6 +304,46 @@ class TestClear(unittest.TestCase):
             self.assertEqual(idx.count(), 0)
 
 
+class TestQueryDedupesByImageHash(unittest.TestCase):
+    def test_query_collapses_rows_sharing_image_sha256(self):
+        with make_index() as idx:
+            idx.upsert(**base_row(
+                sidecar_path="downloads/metro/travel/older.jpg.json",
+                image_sha256="abc123",
+            ))
+            # Newer row with same hash — should win the dedup tiebreak.
+            idx.upsert(**base_row(
+                sidecar_path="downloads/metro/travel/newer.jpg.json",
+                image_sha256="abc123",
+            ))
+            results = idx.query(countries=["日本"], limit=10)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(
+                results[0]["sidecar_path"],
+                "downloads/metro/travel/newer.jpg.json",
+            )
+
+    def test_query_keeps_rows_with_distinct_hashes(self):
+        with make_index() as idx:
+            idx.upsert(**base_row(
+                sidecar_path="downloads/metro/travel/a.jpg.json",
+                image_sha256="hash-a",
+            ))
+            idx.upsert(**base_row(
+                sidecar_path="downloads/metro/travel/b.jpg.json",
+                image_sha256="hash-b",
+            ))
+            self.assertEqual(len(idx.query(countries=["日本"], limit=10)), 2)
+
+    def test_query_keeps_legacy_null_hash_rows_separate(self):
+        # Pre-schema-v5 rows have NULL image_sha256; they must NOT collapse
+        # into one bucket — fall back to per-sidecar grouping via COALESCE.
+        with make_index() as idx:
+            idx.upsert(**base_row(sidecar_path="downloads/metro/travel/legacy1.jpg.json"))
+            idx.upsert(**base_row(sidecar_path="downloads/metro/travel/legacy2.jpg.json"))
+            self.assertEqual(len(idx.query(countries=["日本"], limit=10)), 2)
+
+
 class TestFreshness(unittest.TestCase):
     def test_get_freshness_returns_none_for_unknown(self):
         with make_index() as idx:
