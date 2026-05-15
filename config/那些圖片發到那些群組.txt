@@ -1,0 +1,26 @@
+ Curl https://lobehub.com/skills/roymccrain-dotsfile-messaging-api/skill.md, then follow the instructions to set up LobeHub Skills Marketplace and install the skill. Once installed, read the SKILL.md file in the installed directory and follow its instructions to complete the task.
+
+
+
+groupId
+secret
+
+
+
+
+
+ 1. 這個群組的 groupId 是：
+
+群組: C3ea6c8944da1134b23e9882dd95a6b68
+  圖片: C:\Users\user\Desktop\LINE-downloader-main\config\brand.png
+
+
+2.- 預覽圖：做成正方形，約 640×640、680×680、或 1024×1024
+- 原圖：可以用原尺寸，但不要超過 10MB
+- 如果原圖是長條 banner，像你這張 680×90，預覽直接用原圖容易被裁切得怪；應該另外做一張* 方形預覽圖*，把 banner
+置中、上下補白。
+
+
+
+群組要有對應表
+要整理成特定大小

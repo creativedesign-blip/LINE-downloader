@@ -3,6 +3,17 @@ _legacy/node_modules/
 
 downloads/
 
+# Local pipeline output (large, regenerable from RPA)
+.cache/
+.tools/
+logs/
+line-rpa/download/
+line-rpa/selected/
+line-rpa/branded_duplicate/
+
+# Frontend build artifacts
+travel-agent-interface/dist/
+
 config/chrome-profile/
 config/state/
 config/targets.json

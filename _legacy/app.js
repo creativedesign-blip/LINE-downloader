@@ -2,7 +2,7 @@
 const controller = require('./src/controller');
 const { closeSharedBrowsers } = require('./src/browser-attach');
 
-const PERSISTENT_COMMANDS = new Set(['ui', 'watch']);
+const PERSISTENT_COMMANDS = new Set(['watch']);
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -24,7 +24,6 @@ function parseArgs(argv) {
 
 function printUsage() {
   console.log(`Usage:
-  node app.js ui [--port 8787] [--no-open]
   node app.js pages [--cdp-url http://127.0.0.1:9333]
   node app.js bind --target metro [--label "大都會"] [--page 0] [--cdp-url http://127.0.0.1:9333]
   node app.js list
@@ -44,12 +43,6 @@ async function main() {
   let shouldCleanup = !PERSISTENT_COMMANDS.has(command);
   try {
     switch (command) {
-      case 'ui':
-        require('./src/ui-server').startServer({
-          port: options.port,
-          open: options['no-open'] !== true,
-        });
-        break;
       case 'pages':
         await controller.listPages(options);
         break;

@@ -1,0 +1,38 @@
+{
+  "1c956d14e4a52d2f072c96c41422824ec924a384c035734b9ca804add0222b0a": {
+    "first_seen_at": "2026-05-14T07:31:43Z",
+    "image_path": "line-rpa/download/可樂同業公佈欄/line_20260514_153141_973583.png",
+    "source": "rpa",
+    "target_id": "可樂同業公佈欄"
+  },
+  "1ca193126c8d045178b35db4a5f501520e6e1eb265e2c4a92dad7a96af9db2f3": {
+    "first_seen_at": "2026-05-14T07:31:37Z",
+    "image_path": "line-rpa/download/可樂同業公佈欄/line_20260514_153136_123848.png",
+    "source": "rpa",
+    "target_id": "可樂同業公佈欄"
+  },
+  "3dcc5ebb552f081aa1a1fc8d4c2998d4644391e8eee953bfa5a72d54e40dfdd2": {
+    "first_seen_at": "2026-05-14T07:31:31Z",
+    "image_path": "line-rpa/download/可樂同業公佈欄/line_20260514_153130_257148.png",
+    "source": "rpa",
+    "target_id": "可樂同業公佈欄"
+  },
+  "46ab0b5b94e973cd6b815a09a4f2e6721b3b16239cd6c3c48617d1323f633e13": {
+    "first_seen_at": "2026-05-13T08:45:35Z",
+    "image_path": "line-rpa/download/可樂同業公佈欄/line_20260513_164533_761180.png",
+    "source": "rpa",
+    "target_id": "可樂同業公佈欄"
+  },
+  "72480e47ab5bb7a3e7eccc1985a5452d9007eee6c77a658621ec5681de7b04b5": {
+    "first_seen_at": "2026-05-14T07:31:49Z",
+    "image_path": "line-rpa/download/可樂同業公佈欄/line_20260514_153147_841348.png",
+    "source": "rpa",
+    "target_id": "可樂同業公佈欄"
+  },
+  "aa2a64da034500950fd1a0f0d0a98b7c50af0e81fe8ac9f4ed599167309049bc": {
+    "first_seen_at": "2026-05-13T08:45:29Z",
+    "image_path": "line-rpa/download/可樂同業公佈欄/line_20260513_164527_877966.png",
+    "source": "rpa",
+    "target_id": "可樂同業公佈欄"
+  }
+}
