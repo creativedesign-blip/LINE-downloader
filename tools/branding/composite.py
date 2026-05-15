@@ -52,25 +52,24 @@ def composite(
     logo = _normalize_logo_channels(logo)
 
     H, W = base.shape[:2]
-    band_h = max(
-        int(cfg["bandMinHeightPx"]),
-        int(H * float(cfg["bandHeightRatio"])),
-    )
-
-    canvas = _build_canvas(H, W, band_h, cfg["bandColor"])
-    canvas[0:H, 0:W] = base
-
     h0, w0 = logo.shape[:2]
 
-    target_w = W * float(cfg["logoWidthRatio"])
+    pad = int(W * float(cfg["logoPaddingRatio"]))
+    existing_band_h = 0
+    if cfg.get("detectExistingBottomBand", False):
+        existing_band_h = _detect_bottom_band_height(
+            base,
+            threshold=int(cfg.get("whiteThreshold", 240)),
+            min_coverage=float(cfg.get("whiteMinCoverageRatio", 0.96)),
+        )
+
+    available_w = max(1, W - (pad * 2))
+    target_w = available_w * float(cfg["logoWidthRatio"])
     scale_ideal = target_w / w0 if w0 > 0 else 0.0
     scale_max = float(cfg["logoScaleMax"])
     scale_min = float(cfg["logoScaleMin"])
 
     scale = min(scale_ideal, scale_max)
-    if h0 > 0:
-        scale = min(scale, (band_h * 0.85) / h0)
-
     if scale < scale_min:
         raise LogoTooSmallError(
             f"scale={scale:.3f} < logoScaleMin={scale_min}; "
@@ -80,23 +79,35 @@ def composite(
     new_h = max(1, int(round(h0 * scale)))
     new_w = max(1, int(round(w0 * scale)))
 
+    required_band_h = max(
+        int(cfg["bandMinHeightPx"]),
+        int(H * float(cfg["bandHeightRatio"])),
+        new_h + (pad * 2),
+    )
+    band_h = max(existing_band_h, required_band_h)
+    added_band_h = max(0, band_h - existing_band_h)
+
+    canvas = _build_canvas(H, W, added_band_h, cfg["bandColor"])
+    canvas[0:H, 0:W] = base
+
+    band_top = H - existing_band_h
+
     if (new_h, new_w) != (h0, w0):
         interp = cv2.INTER_CUBIC if scale > 1.0 else cv2.INTER_AREA
         logo_r = cv2.resize(logo, (new_w, new_h), interpolation=interp)
     else:
         logo_r = logo
 
-    pad = int(W * float(cfg["logoPaddingRatio"]))
     if cfg["logoHorizontalAlign"] == "left":
         x = pad
     elif cfg["logoHorizontalAlign"] == "right":
         x = W - new_w - pad
     else:
         x = (W - new_w) // 2
-    y = H + (band_h - new_h) // 2
+    y = band_top + (band_h - new_h) // 2
 
     x = max(0, min(x, W - new_w))
-    y = max(H, min(y, H + band_h - new_h))
+    y = max(band_top, min(y, band_top + band_h - new_h))
 
     if logo_r.ndim == 3 and logo_r.shape[2] == 4:
         _alpha_blend_into(canvas, logo_r, x, y)
@@ -138,6 +149,60 @@ def _normalize_logo_channels(logo: np.ndarray) -> np.ndarray:
         if c == 4:
             return logo
     raise ValueError(f"Unsupported logo shape: {logo.shape}")
+
+
+def _detect_bottom_band_height(
+    base: np.ndarray,
+    threshold: int = 240,
+    min_coverage: float = 0.96,
+) -> int:
+    """Return height of a bottom CTA/white band touching image bottom.
+
+    The old implementation required every row to be almost entirely white.
+    That misses common travel DM footers where a white band contains black text
+    like 「請洽查詢」.  This version still anchors at the image bottom, but uses a
+    rolling row-coverage score and allows short dark gaps caused by text.
+    """
+    H, W = base.shape[:2]
+    if H <= 0 or W <= 0:
+        return 0
+
+    near_white = np.all(base >= threshold, axis=2)
+    row_coverage = near_white.mean(axis=1)
+
+    # Smooth row coverage so text strokes do not split one white footer into
+    # many tiny fragments.  For config default 0.96, use ~0.88 after smoothing.
+    window = max(9, min(31, H // 80 * 2 + 1))
+    kernel = np.ones(window, dtype=np.float32) / float(window)
+    smooth = np.convolve(row_coverage, kernel, mode="same")
+    coverage_threshold = max(0.82, min(0.95, min_coverage - 0.08))
+
+    max_scan = max(1, int(H * 0.35))
+    min_band_h = max(60, int(H * 0.04))
+    gap_limit = max(8, int(H * 0.015))
+    anchor_h = min(max(8, int(H * 0.01)), max_scan)
+
+    # Must be actually white/light at the very bottom; otherwise this is a
+    # normal image and we should append a new logo band instead of replacing.
+    if float(row_coverage[H - anchor_h:H].mean()) < coverage_threshold:
+        return 0
+
+    top_limit = H - max_scan
+    gap = 0
+    top = H
+    for y in range(H - 1, top_limit - 1, -1):
+        if smooth[y] >= coverage_threshold:
+            gap = 0
+            top = y
+        else:
+            gap += 1
+            if gap > gap_limit:
+                break
+
+    band_h = H - top
+    if band_h < min_band_h:
+        return 0
+    return band_h
 
 
 def _build_canvas(
