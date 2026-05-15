@@ -18,7 +18,6 @@ OpenClaw or an RPA scheduler should call after images are downloaded.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import subprocess
 import sys
@@ -30,6 +29,7 @@ from typing import Optional
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from tools.common.image_seen import file_sha256
 from tools.common.targets import DOWNLOADS_DIR, PROJECT_ROOT, load_target_ids
 
 
@@ -73,10 +73,6 @@ def has_pending_images(input_dir: Path) -> bool:
         item.is_file() and item.suffix.lower() in SUPPORTED_EXT
         for item in input_dir.iterdir()
     )
-
-
-def file_sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def load_image_index(path: Path = IMAGE_INDEX_PATH) -> dict[str, list[str]]:

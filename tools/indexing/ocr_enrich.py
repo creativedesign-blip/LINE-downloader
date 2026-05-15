@@ -10,8 +10,6 @@ sidecars with OCR text are skipped unless --force is supplied.
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import logging
 import sys
 from datetime import datetime, timezone
@@ -21,7 +19,8 @@ from typing import Optional
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from tools.branding.io_utils import sidecar_of
+from tools.branding.io_utils import load_sidecar, save_sidecar
+from tools.common.image_seen import file_sha256
 from tools.common.targets import DOWNLOADS_DIR, load_target_ids
 from tools.indexing.extractor import extract_price_from
 
@@ -33,27 +32,6 @@ logger = logging.getLogger("ocr-enrich")
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _hash_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _load_json(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def _save_json(path: Path, data: dict) -> None:
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def collect_images(target_id: Optional[str] = None) -> list[Path]:
@@ -135,10 +113,9 @@ def _price_ocr_text(engine, image_path: Path, current_text: str) -> str:
 
 
 def enrich_one(engine, image_path: Path, *, force: bool = False) -> str:
-    sidecar_path = sidecar_of(image_path)
-    sidecar = _load_json(sidecar_path)
+    sidecar = load_sidecar(image_path)
     ocr = sidecar.get("ocr") or {}
-    image_hash = _hash_file(image_path)
+    image_hash = file_sha256(image_path)
 
     if not force and ocr.get("text") and ocr.get("imageSha256") == image_hash:
         price_ocr = ocr.get("priceOcr") or {}
@@ -154,7 +131,7 @@ def enrich_one(engine, image_path: Path, *, force: bool = False) -> str:
                 "status": "not_found",
             }
             sidecar["ocr"] = ocr
-            _save_json(sidecar_path, sidecar)
+            save_sidecar(image_path, sidecar)
             return "skipped"
         ocr["priceOcr"] = {
             "text": price_text,
@@ -165,7 +142,7 @@ def enrich_one(engine, image_path: Path, *, force: bool = False) -> str:
         }
         ocr["text"] = f"{ocr.get('text') or ''}\n{price_text}".strip()
         sidecar["ocr"] = ocr
-        _save_json(sidecar_path, sidecar)
+        save_sidecar(image_path, sidecar)
         return "enriched"
 
     text = _ocr_text(engine, image_path)
@@ -198,7 +175,7 @@ def enrich_one(engine, image_path: Path, *, force: bool = False) -> str:
     sidecar["source"] = source
     sidecar["ocr"] = ocr
     sidecar.setdefault("savedAt", _iso_now())
-    _save_json(sidecar_path, sidecar)
+    save_sidecar(image_path, sidecar)
     return "enriched"
 
 

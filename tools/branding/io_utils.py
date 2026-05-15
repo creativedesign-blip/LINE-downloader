@@ -12,6 +12,7 @@ handling).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -56,6 +57,26 @@ def sidecar_of(image_path: Path) -> Path:
 def image_of_sidecar(sidecar_path: Path) -> Path:
     """Return the image path a `<image>.json` sidecar refers to."""
     return sidecar_path.with_suffix("")
+
+
+def load_sidecar(image_path: Path) -> dict:
+    """Read the JSON sidecar for an image; missing/corrupt → empty dict."""
+    sp = sidecar_of(image_path)
+    if not sp.exists():
+        return {}
+    try:
+        return json.loads(sp.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_sidecar(image_path: Path, data: dict) -> None:
+    """Write the JSON sidecar for an image (UTF-8, indent=2, trailing newline)."""
+    sp = sidecar_of(image_path)
+    sp.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def imwrite_unicode(

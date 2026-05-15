@@ -19,7 +19,6 @@ except Exception:
     pass
 import re
 import time
-import json
 import shutil
 import hashlib
 import argparse
@@ -29,34 +28,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-
-def sidecar_path(img_path: Path) -> Path:
-    return img_path.with_suffix(img_path.suffix + '.json')
-
-
-def load_sidecar(img_path: Path) -> dict:
-    sp = sidecar_path(img_path)
-    if not sp.exists():
-        return {}
-    try:
-        return json.loads(sp.read_text(encoding='utf-8'))
-    except Exception:
-        return {}
-
-
-def save_sidecar(img_path: Path, data: dict) -> None:
-    sp = sidecar_path(img_path)
-    sp.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding='utf-8',
-    )
+from tools.branding.io_utils import sidecar_of, load_sidecar, save_sidecar
 
 
 def move_with_sidecar(src: Path, dest: Path) -> None:
     shutil.move(str(src), str(dest))
-    src_side = sidecar_path(src)
+    src_side = sidecar_of(src)
     if src_side.exists():
-        dest_side = sidecar_path(dest)
+        dest_side = sidecar_of(dest)
         try:
             shutil.move(str(src_side), str(dest_side))
         except Exception:
@@ -66,16 +45,6 @@ def move_with_sidecar(src: Path, dest: Path) -> None:
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
-
-# Mirror tools/indexing/ocr_enrich.py:_hash_file so the cache key matches
-# byte-for-byte; ocr_enrich skips the second OCR pass only when both sides
-# compute the same SHA256 over the image bytes.
-def hash_image_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open('rb') as f:
-        for chunk in iter(lambda: f.read(65536), b''):
-            h.update(chunk)
-    return h.hexdigest()
 
 os.environ.setdefault('FLAGS_use_mkldnn', 'false')          # 關掉 oneDNN 避開 PIR bug
 os.environ.setdefault('PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK', 'True')
@@ -89,14 +58,15 @@ except ImportError as e:
     sys.exit(1)
 
 
-def imread_unicode(path: Path):
-    """Windows 中文路徑安全讀取 → 回傳 numpy BGR 陣列"""
-    with open(path, 'rb') as f:
-        buf = f.read()
+from tools.common.targets import DOWNLOADS_DIR
+
+
+def decode_image_bytes(buf: bytes):
+    """Decode raw image bytes to BGR ndarray. Raises on decode failure."""
     arr = np.frombuffer(buf, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
-        raise RuntimeError(f"cv2.imdecode 失敗（格式不支援或檔案損壞）")
+        raise RuntimeError("cv2.imdecode 失敗（格式不支援或檔案損壞）")
     return img
 
 # ============== 設定 ==============
@@ -228,9 +198,9 @@ def unique_path(dest_dir: Path, name: str) -> Path:
     return dest_dir / f"{stem}_{k}{suf}"
 
 
-def extract_text(ocr, img_path: Path) -> str:
-    # 用 RapidOCR；傳入 numpy image 可避開 Windows 中文路徑/命令列編碼問題。
-    img = imread_unicode(img_path)
+def extract_text(ocr, img) -> str:
+    # img is a decoded BGR ndarray. Passing the array (rather than a path)
+    # avoids re-reading the file and works around Windows codepage issues.
     try:
         result, _ = ocr(img)
     except Exception as e:
@@ -282,20 +252,19 @@ def classify_text(text: str):
 
 
 def update_sidecar_with_ocr(img_path: Path, *, classification: str, text: str = '',
-                            reason: str = '', hits: str = '', error: str = '') -> None:
+                            reason: str = '', hits: str = '', error: str = '',
+                            image_sha256: str = '') -> None:
     side = load_sidecar(img_path)
     ocr_block = side.get('ocr') or {}
     ocr_block['classifiedAt'] = utc_now_iso()
     ocr_block['classification'] = classification
     if text:
         ocr_block['text'] = text
-        # Stamp engine + image hash so ocr_enrich.py's cache check
-        # (ocr_enrich.py:143) hits and skips a redundant OCR pass.
+        # Stamp engine + image hash so ocr_enrich's cache check
+        # (text + matching imageSha256) hits and skips a redundant OCR pass.
         ocr_block['engine'] = 'rapidocr-onnxruntime'
-        try:
-            ocr_block['imageSha256'] = hash_image_file(img_path)
-        except (FileNotFoundError, PermissionError, OSError) as hash_err:
-            print(f"  [警告] sidecar hash 計算失敗 {img_path.name}: {hash_err}")
+        if image_sha256:
+            ocr_block['imageSha256'] = image_sha256
     if reason:
         ocr_block['reason'] = reason
     if hits:
@@ -314,8 +283,20 @@ def process_one(ocr, img_path: Path, *,
     # 先檢查檔案是否還在——另一個 classifier 行程（例如 UI server 內部的）可能已經搬走
     if not img_path.exists():
         return 'skip'
+    # Read the file exactly once: hash from the buffer and decode from the
+    # same bytes, so OCR sees the same image as the recorded imageSha256.
     try:
-        text = extract_text(ocr, img_path)
+        with open(img_path, 'rb') as f:
+            buf = f.read()
+    except (FileNotFoundError, PermissionError, OSError):
+        return 'skip'
+    if not buf:
+        return 'skip'
+    img_hash = hashlib.sha256(buf).hexdigest()
+
+    try:
+        img = decode_image_bytes(buf)
+        text = extract_text(ocr, img)
     except Exception as e:
         if not img_path.exists():
             return 'skip'
@@ -325,7 +306,7 @@ def process_one(ocr, img_path: Path, *,
             move_with_sidecar(img_path, err_path)
         except FileNotFoundError:
             # 另一個行程搬走了，清掉我們剛寫的 sidecar 避免 orphan
-            try: sidecar_path(img_path).unlink()
+            try: sidecar_of(img_path).unlink()
             except FileNotFoundError: pass
             return 'skip'
         except Exception as move_err:
@@ -345,12 +326,13 @@ def process_one(ocr, img_path: Path, *,
         text=text,
         reason=reason,
         hits=hits_display,
+        image_sha256=img_hash,
     )
     try:
         new_path = unique_path(dest, img_path.name)
         move_with_sidecar(img_path, new_path)
     except FileNotFoundError:
-        try: sidecar_path(img_path).unlink()
+        try: sidecar_of(img_path).unlink()
         except FileNotFoundError: pass
         return 'skip'
     except Exception as move_err:
@@ -360,7 +342,7 @@ def process_one(ocr, img_path: Path, *,
     print(f"  {flag} {reason:<8} {img_path.name}  {hits_display}")
 
     if is_travel:
-        sc = sidecar_path(new_path)
+        sc = sidecar_of(new_path)
         from tools.branding.brand_stitcher import stitch_one_auto
         from tools.indexing.reindex import reindex_one_auto
         stitch_one_auto(sc)
@@ -407,7 +389,6 @@ def resolve_target_specs(args):
         raise SystemExit('--watch is single-folder polling and cannot be combined with --target.')
 
     if args.target:
-        from tools.common.targets import DOWNLOADS_DIR
         specs = []
         for tid in args.target:
             base = (DOWNLOADS_DIR / tid).resolve()
