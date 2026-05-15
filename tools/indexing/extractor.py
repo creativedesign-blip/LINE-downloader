@@ -278,9 +278,34 @@ def extract_airline(text: str) -> list[str]:
     return _match_vocab(text, _get_vocab("airlines.txt"))
 
 
+# Landmark / sub-region keywords that strongly imply a canonical region
+# tag. Use only highly-specific terms that are unlikely to appear outside
+# their region (avoid generic ones like "AEONMALL" or "PARCOCITY" that
+# exist in many places). Mainly catches OCR-mangled cases — e.g.
+# "美麗海水族館" survives OCR but the literal "沖繩" character often gets
+# read as just "冲" and lost — so the row would never match a "沖繩"
+# query without this expansion.
+_LANDMARK_REGION_HINTS = {
+    "沖繩": ["美麗海", "美丽海", "玉泉洞", "琉球", "古宇利", "瀨長島",
+             "濑長岛", "OKINAWA", "Okinawa", "okinawa"],
+}
+
+
 def extract_region(text: str) -> list[str]:
-    """Sub-region / city names (vocab/regions.txt) — '九州', '荷比盧', '京都'…"""
-    return _match_vocab(text, _get_vocab("regions.txt"))
+    """Sub-region / city names (vocab/regions.txt) — '九州', '荷比盧', '京都'…
+
+    Also synthesises canonical regions from well-known landmarks
+    (_LANDMARK_REGION_HINTS) so a DM whose OCR lost the literal
+    region name still gets the region tag — e.g. "美麗海水族館 + 玉泉洞"
+    -> 沖繩 even when "沖繩" itself didn't survive OCR.
+    """
+    direct = _match_vocab(text, _get_vocab("regions.txt"))
+    for region, landmarks in _LANDMARK_REGION_HINTS.items():
+        if region in direct:
+            continue
+        if any(landmark in text for landmark in landmarks):
+            direct.append(region)
+    return direct
 
 
 def extract_features(text: str) -> list[str]:

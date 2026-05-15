@@ -56,7 +56,10 @@ SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 #     travel DM with "松山出發" as containing 日本.
 # v3: schema v5 added image_sha256 column for query-time dedup of
 #     RPA-missed duplicates; existing rows must be re-upserted to fill it.
-EXTRACTOR_VERSION = "3"
+# v4: extract_region now synthesises canonical regions from landmarks
+#     (e.g. 美麗海/玉泉洞/琉球 -> 沖繩) so OCR-mangled DM is still
+#     reachable by region search.
+EXTRACTOR_VERSION = "4"
 
 logger = logging.getLogger("indexing")
 
