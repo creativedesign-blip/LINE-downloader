@@ -40,7 +40,16 @@ if (-not $existing -or -not $healthy) {
     npm run build
     Pop-Location
   }
-  Start-Process -FilePath python -ArgumentList @(".\openclaw_web.py", "$Port") -WorkingDirectory $Root -WindowStyle Hidden | Out-Null
+  # Background server: route stdout/stderr to project-level logs/openclaw/
+  # so the per-process log files don't pile up next to the React source.
+  $LogDir = Join-Path (Split-Path -Parent $Root) "logs\openclaw"
+  if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
+  Start-Process -FilePath python `
+    -ArgumentList @(".\openclaw_web.py", "$Port") `
+    -WorkingDirectory $Root `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput (Join-Path $LogDir "openclaw_web.out.log") `
+    -RedirectStandardError (Join-Path $LogDir "openclaw_web.err.log") | Out-Null
   Start-Sleep -Seconds 2
 }
 

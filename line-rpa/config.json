@@ -6,7 +6,7 @@
   "test_limit": 1,
   "wait_seconds": 2,
   "run_pipeline_after_group": true,
-  "pipeline_python": "C:\\Users\\user\\anaconda3\\envs\\paddleocr\\python.exe",
+  "pipeline_python": "",
   "max_images_per_group": 500,
   "max_no_new_download_rounds": 5,
   "next_image_wait_seconds": 1.0,

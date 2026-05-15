@@ -5,9 +5,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ProjectRoot = "C:\Users\user\Desktop\LINE-downloader-main"
-$RpaPython = "C:\Users\user\anaconda3\python.exe"
-$PipelinePython = "C:\Users\user\anaconda3\envs\paddleocr\python.exe"
+# Resolve project root from this script's location so the .ps1 isn't
+# pinned to a single user account. RPA / pipeline python interpreters
+# can be overridden per-machine via env vars (RPA_PYTHON,
+# PIPELINE_PYTHON); defaults below match the original Anaconda layout.
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$RpaPython = if ($env:RPA_PYTHON) { $env:RPA_PYTHON } else { "C:\Users\user\anaconda3\python.exe" }
+$PipelinePython = if ($env:PIPELINE_PYTHON) { $env:PIPELINE_PYTHON } else { "C:\Users\user\anaconda3\envs\paddleocr\python.exe" }
 $ConfigPath = Join-Path $ProjectRoot "line-rpa\config.json"
 $LogDir = Join-Path $ProjectRoot "logs\openclaw"
 $LockPath = Join-Path $LogDir "line-rpa-scheduled.lock"

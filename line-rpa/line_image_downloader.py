@@ -195,9 +195,28 @@ def should_run_pipeline(config: dict[str, Any], override: bool | None = None) ->
     return bool(config.get("run_pipeline_after_group", True))
 
 
+def resolve_pipeline_python(config: dict[str, Any]) -> str:
+    """Pick the python executable used to run the pipeline subprocess.
+
+    Order of precedence:
+      1. PIPELINE_PYTHON env var (per-machine override; lets the same
+         config.json work on different boxes without edits)
+      2. config['pipeline_python'] (pinned in line-rpa/config.json)
+      3. sys.executable (whatever interpreter is running the RPA)
+      4. literal "python" on PATH (last resort)
+    """
+    env_value = os.environ.get("PIPELINE_PYTHON")
+    if env_value:
+        return env_value
+    config_value = config.get("pipeline_python")
+    if config_value:
+        return str(config_value)
+    return sys.executable or "python"
+
+
 def run_pipeline_after_group(group_name: str, config: dict[str, Any]) -> tuple[str, int | None, str, str]:
     project_root = APP_DIR.parent
-    python_bin = str(config.get("pipeline_python") or sys.executable or "python")
+    python_bin = resolve_pipeline_python(config)
     # Pipeline targets are filesystem folder names. LINE display names may
     # contain characters such as '/', so use the sanitized target id here.
     target_id = sanitize_folder_name(group_name)
