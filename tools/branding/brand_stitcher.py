@@ -93,6 +93,15 @@ def load_config(path: Path) -> dict:
         raise ValueError(
             f"outputFormat must be jpg|jpeg|png, got {cfg['outputFormat']!r}"
         )
+    if cfg.get("outputMaxWidth") is not None:
+        try:
+            max_w = int(cfg["outputMaxWidth"])
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"outputMaxWidth must be a positive int, got {cfg['outputMaxWidth']!r}"
+            )
+        if max_w <= 0:
+            raise ValueError(f"outputMaxWidth must be positive, got {max_w}")
     return cfg
 
 
@@ -308,6 +317,19 @@ def stitch_one(sidecar_path: Path, ctx: StitchContext) -> Result:
         )
         base = base[:old_cta_cut_y, :, :].copy()
         H, W = base.shape[:2]
+
+    # Cap output resolution at outputMaxWidth (if set). Source LINE images
+    # are often 2480px+ wide which is wasteful for both /media/thumbnail
+    # generation and final delivery — LINE Messaging API auto-compresses
+    # to ~1280px on mobile clients anyway. CTA detection runs before this
+    # resize so the heuristics keep their full-resolution accuracy.
+    max_width = int(ctx.cfg.get("outputMaxWidth") or 0)
+    if max_width and W > max_width:
+        new_w = max_width
+        new_h = max(1, int(round(H * (max_width / W))))
+        base = cv2.resize(base, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        H, W = base.shape[:2]
+        logger.debug("resized base to %dx%d (cap %dpx)", W, H, max_width)
 
     try:
         out = composite(base, ctx.logo_img, ctx.cfg)

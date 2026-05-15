@@ -14,7 +14,8 @@
   "logoHorizontalAlign": "center",
   "logoPaddingRatio": 0,
   "outputFormat": "jpg",
-  "outputQuality": 98,
+  "outputQuality": 92,
+  "outputMaxWidth": 1200,
   "detectExistingBottomBand": true,
   "whiteThreshold": 240,
   "whiteMinCoverageRatio": 0.96
