@@ -50,6 +50,42 @@ class TestSecondPassCandidates(unittest.TestCase):
         self.assertFalse(has_split_duration_marker("關西\n日本 5日 49,800"))
 
 
+    def test_missing_duration_alone_does_not_need_second_pass(self):
+        text = "Early bird notice"
+        ok, reasons = needs_second_pass(text)
+
+        self.assertFalse(ok)
+        self.assertEqual(reasons, [])
+
+    def test_missing_duration_with_itinerary_hint_is_not_enough_alone(self):
+        text = "日本東京行程 出發日 06/20 團費 NT$49,800"
+        ok, reasons = needs_second_pass(text)
+
+        self.assertFalse(ok)
+        self.assertEqual(reasons, [])
+
+    def test_missing_price_only_when_price_context_exists(self):
+        ok, reasons = needs_second_pass("日本東京 5天 行程")
+        self.assertFalse(ok)
+        self.assertNotIn("missing_price", reasons)
+
+        ok, reasons = needs_second_pass("日本東京 5天 行程 團費請洽")
+        self.assertFalse(ok)
+        self.assertEqual(reasons, [])
+
+    def test_missing_region_needs_two_context_signals(self):
+        ok, reasons = needs_second_pass("日本 5天 06/20 NT$49,800")
+
+        self.assertFalse(ok)
+        self.assertEqual(reasons, [])
+
+    def test_multiple_missing_fields_together_are_candidate(self):
+        ok, reasons = needs_second_pass("日本行程 出發日 06/20 團費請洽")
+
+        self.assertTrue(ok)
+        self.assertIn("missing_duration", reasons)
+        self.assertIn("missing_price", reasons)
+
     def test_prioritizes_duration_and_price_candidates_first(self):
         rows = [
             (Path("multi.json"), ["multi_plan_layout"]),
@@ -63,7 +99,7 @@ class TestSecondPassCandidates(unittest.TestCase):
 
         self.assertEqual(
             [path.name for path, _reasons in ordered],
-            ["duration.json", "price.json", "split.json", "region.json", "multi.json"],
+            ["split.json", "multi.json", "duration.json", "price.json", "region.json"],
         )
 
 
