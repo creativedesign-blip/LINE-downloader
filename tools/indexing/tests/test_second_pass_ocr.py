@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from tools.common.image_seen import file_sha256
 from tools.indexing.second_pass_ocr import (
+    call_codex_vision_structured,
     candidate_priority,
     has_split_duration_marker,
     needs_second_pass,
+    refresh_sidecar_with_codex_vision,
     refresh_sidecar_with_paddle_ocr,
     validate_structured_output,
 )
@@ -144,6 +148,66 @@ class TestSecondPassOcrCache(unittest.TestCase):
             self.assertEqual(saved["secondPassOcr"]["provider"], "paddle-ocr")
             self.assertEqual(saved["secondPassOcr"]["reasons"], ["missing_region"])
             self.assertEqual(saved["ocr"]["engine"], "paddleocr")
+
+    def test_codex_vision_records_structured_products(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "sample.png"
+            sidecar = Path(tmp) / "sample.png.json"
+            image.write_bytes(b"image")
+            sidecar.write_text(json.dumps({"ocr": {"text": "日本東京 5天 NT$49,800"}}), encoding="utf-8")
+            raw = {
+                "products": [
+                    {
+                        "title": "日本東京",
+                        "country": "日本",
+                        "regions": ["東京"],
+                        "duration_days": 5,
+                        "price_from": 49800,
+                        "departures": ["2026-06-20"],
+                        "evidence": ["日本東京", "5天", "49,800"],
+                        "confidence": "high",
+                    }
+                ],
+                "warnings": [],
+            }
+
+            with patch("tools.indexing.second_pass_ocr.call_codex_vision_structured", return_value=raw):
+                result = refresh_sidecar_with_codex_vision(sidecar, reasons=["multi_plan_layout"])
+
+            saved = json.loads(sidecar.read_text(encoding="utf-8"))
+            self.assertEqual(result.provider, "codex")
+            self.assertEqual(result.status, "enriched")
+            self.assertEqual(result.after["plan_count"], 1)
+            self.assertEqual(saved["secondPassOcr"]["provider"], "codex")
+            self.assertEqual(saved["secondPassOcr"]["engine"], "codex-exec")
+            self.assertEqual(saved["secondPassOcr"]["products"][0]["price_from"], 49800)
+
+    def test_call_codex_vision_structured_uses_image_and_output_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "sample.png"
+            image.write_bytes(b"image")
+            calls = []
+
+            def fake_run(command, **_kwargs):
+                calls.append(command)
+                output_path = Path(command[command.index("--output-last-message") + 1])
+                output_path.write_text(json.dumps({"products": [], "warnings": []}), encoding="utf-8")
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with patch("tools.indexing.second_pass_ocr.subprocess.run", side_effect=fake_run):
+                result = call_codex_vision_structured(
+                    image,
+                    "OCR text",
+                    codex_command="codex",
+                    codex_model="gpt-test",
+                    timeout_seconds=123,
+                )
+
+            self.assertEqual(result, {"products": [], "warnings": []})
+            self.assertIn("--image", calls[0])
+            self.assertIn(str(image), calls[0])
+            self.assertIn("--output-schema", calls[0])
+            self.assertIn("--model", calls[0])
 
 
 class TestSecondPassValidation(unittest.TestCase):

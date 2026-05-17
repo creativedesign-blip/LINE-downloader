@@ -23,6 +23,7 @@ import logging
 import sqlite3
 import sys
 import time
+from datetime import date
 from pathlib import Path
 from typing import Iterable, Literal, Optional
 
@@ -59,7 +60,7 @@ SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 # v4: extract_region now synthesises canonical regions from landmarks
 #     (e.g. 美麗海/玉泉洞/琉球 -> 沖繩) so OCR-mangled DM is still
 #     reachable by region search.
-EXTRACTOR_VERSION = "4"
+EXTRACTOR_VERSION = "5"
 
 logger = logging.getLogger("indexing")
 
@@ -85,6 +86,42 @@ def _find_branded(orig_image: Path) -> Optional[Path]:
         if candidate.exists():
             return candidate
     return None
+
+
+def _valid_iso_date(value: str) -> bool:
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _second_pass_products(sidecar: dict) -> list[dict]:
+    block = sidecar.get("secondPassOcr") or {}
+    if not isinstance(block, dict):
+        return []
+    if block.get("provider") != "codex" or block.get("status") != "enriched":
+        return []
+    products = block.get("products") or []
+    return [item for item in products if isinstance(item, dict)]
+
+
+def _int_or_none(value: object, *, min_value: int, max_value: int) -> Optional[int]:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        return None
+    if min_value <= parsed <= max_value:
+        return parsed
+    return None
+
+
+def _months_from_departures(departures: Iterable[str]) -> list[int]:
+    months: set[int] = set()
+    for departure in departures:
+        if _valid_iso_date(departure):
+            months.add(int(departure[5:7]))
+    return sorted(months)
 
 
 def index_one(sidecar_path: Path, index: TravelIndex,
@@ -126,6 +163,42 @@ def index_one(sidecar_path: Path, index: TravelIndex,
     regions = extract_region(text)
     duration_days = extract_duration(text)
     features = extract_features(text)
+    second_pass_products = _second_pass_products(sidecar)
+    if second_pass_products:
+        product_countries = [str(p.get("country") or "").strip() for p in second_pass_products]
+        product_regions = [
+            str(region).strip()
+            for p in second_pass_products
+            for region in (p.get("regions") or [])
+            if str(region).strip()
+        ]
+        product_departures = [
+            str(departure).strip()
+            for p in second_pass_products
+            for departure in (p.get("departures") or [])
+            if _valid_iso_date(str(departure).strip())
+        ]
+        product_prices = [
+            price for price in (
+                _int_or_none(p.get("price_from"), min_value=5000, max_value=999999)
+                for p in second_pass_products
+            )
+            if price is not None
+        ]
+        product_durations = [
+            days for days in (
+                _int_or_none(p.get("duration_days"), min_value=1, max_value=30)
+                for p in second_pass_products
+            )
+            if days is not None
+        ]
+        countries = sorted(set(countries) | {country for country in product_countries if country})
+        regions = sorted(set(regions) | set(product_regions))
+        months = sorted(set(months) | set(_months_from_departures(product_departures)))
+        if product_prices:
+            price_from = min([value for value in [price_from, *product_prices] if value is not None])
+        if duration_days is None and product_durations:
+            duration_days = min(product_durations)
     branded = _find_branded(orig_img)
 
     index.upsert(
@@ -149,6 +222,60 @@ def index_one(sidecar_path: Path, index: TravelIndex,
     sidecar_rel = relpath_from_root(sidecar_path)
     image_rel = relpath_from_root(orig_img)
     branded_rel = relpath_from_root(branded) if branded else None
+    if second_pass_products:
+        for plan_no, product in enumerate(second_pass_products, 1):
+            title = str(product.get("title") or "").strip()
+            country = str(product.get("country") or "").strip()
+            plan_regions = [str(v).strip() for v in (product.get("regions") or []) if str(v).strip()]
+            departures = [
+                str(v).strip()
+                for v in (product.get("departures") or [])
+                if _valid_iso_date(str(v).strip())
+            ]
+            plan_months = _months_from_departures(departures) or months
+            plan_price = _int_or_none(product.get("price_from"), min_value=5000, max_value=999999)
+            plan_duration = _int_or_none(product.get("duration_days"), min_value=1, max_value=30)
+            evidence = [str(v).strip() for v in (product.get("evidence") or []) if str(v).strip()]
+            plan_id = f"{sidecar_rel}#codex-plan:{plan_no}"
+            index.upsert_plan(
+                plan_id=plan_id,
+                sidecar_path=sidecar_rel,
+                image_path=image_rel,
+                branded_path=branded_rel,
+                target_id=target_id,
+                group_name=group_name,
+                plan_no=plan_no,
+                title=title,
+                raw_text="\n".join(evidence) or title,
+                countries=[country] if country else countries,
+                regions=plan_regions or regions,
+                airlines=airlines,
+                features=features,
+                months=plan_months,
+                price_from=plan_price,
+                duration_days=plan_duration,
+            )
+            for departure in departures:
+                dt = date.fromisoformat(departure)
+                dep_id = f"{plan_id}#dep:{departure}"
+                index.upsert_departure(
+                    departure_id=dep_id,
+                    plan_id=plan_id,
+                    sidecar_path=sidecar_rel,
+                    image_path=image_rel,
+                    branded_path=branded_rel,
+                    target_id=target_id,
+                    group_name=group_name,
+                    departure_date=departure,
+                    date_text=departure,
+                    month=dt.month,
+                    day=dt.day,
+                    weekday=dt.isoweekday(),
+                    price_from=plan_price,
+                    duration_days=plan_duration,
+                )
+        return "indexed"
+
     for plan in extract_plans(text):
         plan_id = f"{sidecar_rel}#plan:{plan.plan_no}"
         index.upsert_plan(

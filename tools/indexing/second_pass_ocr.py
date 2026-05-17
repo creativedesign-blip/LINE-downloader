@@ -4,7 +4,8 @@ Run it directly, or through process_downloads.py --second-pass-ocr, to refresh
 only sidecars whose first-pass extraction looks ambiguous or incomplete.
 
 Provider behavior:
-- auto / paddle-ocr: refresh only suspicious sidecars with PaddleOCR.
+- auto / codex: inspect suspicious sidecars with `codex exec --image`.
+- paddle-ocr: legacy local OCR refresh fallback.
 - openai: explicit structured extraction provider for manual experiments.
 
 OpenAI Structured Outputs is kept as an explicit provider only; it is not the
@@ -17,9 +18,12 @@ import argparse
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -36,7 +40,7 @@ if __package__ in (None, ""):
 
 from tools.branding.io_utils import image_of_sidecar, save_sidecar
 from tools.common.image_seen import file_sha256
-from tools.common.targets import load_target_ids, relpath_from_root
+from tools.common.targets import PROJECT_ROOT, load_target_ids, relpath_from_root
 from tools.indexing.extractor import (
     extract_country,
     extract_duration,
@@ -55,8 +59,11 @@ DEFAULT_YEAR = 2026
 MIN_PRICE = 5000
 MAX_PRICE = 999999
 SECOND_PASS_OCR_KEY = "secondPassOcr"
-SECOND_PASS_PROVIDER = "paddle-ocr"
-SECOND_PASS_ENGINE = "paddleocr"
+DEFAULT_SECOND_PASS_PROVIDER = "codex"
+CODEX_SECOND_PASS_PROVIDER = "codex"
+CODEX_SECOND_PASS_ENGINE = "codex-exec"
+PADDLE_SECOND_PASS_PROVIDER = "paddle-ocr"
+PADDLE_SECOND_PASS_ENGINE = "paddleocr"
 REASON_PRIORITY = {
     "suspicious_duration": 0,
     "split_duration_marker": 1,
@@ -261,6 +268,23 @@ def _schema() -> dict[str, Any]:
     }
 
 
+def _codex_prompt(text: str, first_pass: dict[str, Any]) -> str:
+    return (
+        "Read the attached Taiwan travel agency DM image and return structured travel products.\n"
+        "Use the image as the primary source. Use OCR text only as a helper because OCR may be broken.\n"
+        "Detect separate products when the image contains multiple price/date/title blocks.\n"
+        "Do not collapse multiple visible itineraries into one product.\n"
+        "Rules:\n"
+        "- duration_days is trip length, not a departure day number.\n"
+        "- Treat strings like 7/29 or 08/20 as departure dates, not 29-day or 20-day trips.\n"
+        "- If unknown, use 0 for numeric fields and an empty string/list for text/list fields.\n"
+        "- Use ISO dates with year 2026 when the image gives month/day without a year.\n"
+        "- Put short exact visible snippets that justify each product in evidence.\n\n"
+        f"First pass summary: {json.dumps(first_pass, ensure_ascii=False)}\n\n"
+        f"OCR text, possibly noisy:\n{text}"
+    )
+
+
 def _prompt(text: str, first_pass: dict[str, Any]) -> str:
     return (
         "You are extracting Taiwan travel agency DM products from OCR text.\n"
@@ -300,12 +324,12 @@ def _image_hash_for_sidecar(path: Path) -> Optional[str]:
         return None
 
 
-def _second_pass_cache_matches(sidecar: dict[str, Any], image_hash: Optional[str]) -> bool:
+def _second_pass_cache_matches(sidecar: dict[str, Any], image_hash: Optional[str], *, provider: str) -> bool:
     block = sidecar.get(SECOND_PASS_OCR_KEY) or {}
     return bool(
         image_hash
         and isinstance(block, dict)
-        and block.get("provider") == SECOND_PASS_PROVIDER
+        and block.get("provider") == provider
         and block.get("imageSha256") == image_hash
     )
 
@@ -313,16 +337,20 @@ def _second_pass_cache_matches(sidecar: dict[str, Any], image_hash: Optional[str
 def _write_second_pass_status(
     path: Path,
     *,
+    provider: str,
+    engine: str,
     image_hash: Optional[str],
     reasons: list[str],
     status: str,
     before: dict[str, Any],
     after: dict[str, Any],
+    products: Optional[list[SecondPassProduct]] = None,
+    warnings: Optional[list[str]] = None,
 ) -> None:
     sidecar = load_sidecar(path)
     sidecar[SECOND_PASS_OCR_KEY] = {
-        "provider": SECOND_PASS_PROVIDER,
-        "engine": SECOND_PASS_ENGINE,
+        "provider": provider,
+        "engine": engine,
         "imageSha256": image_hash,
         "processedAt": _iso_now(),
         "reasons": reasons,
@@ -330,6 +358,10 @@ def _write_second_pass_status(
         "before": before,
         "after": after,
     }
+    if products is not None:
+        sidecar[SECOND_PASS_OCR_KEY]["products"] = [asdict(product) for product in products]
+    if warnings is not None:
+        sidecar[SECOND_PASS_OCR_KEY]["warnings"] = warnings
     save_sidecar(image_of_sidecar(path), sidecar)
 
 
@@ -381,6 +413,56 @@ def call_openai_structured(text: str, *, model: str, api_key: str) -> dict[str, 
     return json.loads(text_output)
 
 
+def call_codex_vision_structured(
+    image_path: Path,
+    text: str,
+    *,
+    codex_command: str = "codex",
+    codex_model: Optional[str] = None,
+    timeout_seconds: int = 600,
+) -> dict[str, Any]:
+    first_pass = _first_pass_summary(text)
+    tmp_path = PROJECT_ROOT / ".cache" / "codex-second-pass" / uuid.uuid4().hex
+    tmp_path.mkdir(parents=True, exist_ok=False)
+    try:
+        schema_path = tmp_path / "travel_dm_schema.json"
+        output_path = tmp_path / "codex_result.json"
+        schema_path.write_text(json.dumps(_schema(), ensure_ascii=False, indent=2), encoding="utf-8")
+        resolved_codex = shutil.which(codex_command) or codex_command
+        command = [
+            resolved_codex,
+            "exec",
+            "--image",
+            str(image_path),
+            "--output-schema",
+            str(schema_path),
+            "--output-last-message",
+            str(output_path),
+            "--sandbox",
+            "read-only",
+        ]
+        if codex_model:
+            command.extend(["--model", codex_model])
+        command.append(_codex_prompt(text, first_pass))
+        completed = subprocess.run(
+            command,
+            cwd=PROJECT_ROOT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            raise RuntimeError(f"codex exec failed with exit code {completed.returncode}: {detail}")
+        if not output_path.exists():
+            raise RuntimeError("codex exec did not write an output message")
+        return json.loads(output_path.read_text(encoding="utf-8"))
+    finally:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+
+
 def _valid_date(value: str) -> bool:
     try:
         date.fromisoformat(value)
@@ -389,7 +471,12 @@ def _valid_date(value: str) -> bool:
     return True
 
 
-def validate_structured_output(raw: dict[str, Any], source_text: str) -> tuple[list[SecondPassProduct], list[str]]:
+def validate_structured_output(
+    raw: dict[str, Any],
+    source_text: str,
+    *,
+    require_ocr_evidence: bool = True,
+) -> tuple[list[SecondPassProduct], list[str]]:
     products: list[SecondPassProduct] = []
     warnings: list[str] = []
     for index, item in enumerate(raw.get("products") or [], 1):
@@ -418,10 +505,11 @@ def validate_structured_output(raw: dict[str, Any], source_text: str) -> tuple[l
         if not MIN_PRICE <= price_from <= MAX_PRICE:
             price_from = None
 
-        missing_evidence = [snippet for snippet in evidence if snippet and snippet not in source_text]
-        if missing_evidence:
-            warnings.append(f"product_{index}: evidence_not_in_ocr={missing_evidence[:3]}")
-            continue
+        if require_ocr_evidence:
+            missing_evidence = [snippet for snippet in evidence if snippet and snippet not in source_text]
+            if missing_evidence:
+                warnings.append(f"product_{index}: evidence_not_in_ocr={missing_evidence[:3]}")
+                continue
         if not any([title, regions, duration_days, price_from, departures]):
             warnings.append(f"product_{index}: empty product")
             continue
@@ -454,6 +542,27 @@ def _call_provider(
             raise RuntimeError("OPENAI_API_KEY is required for provider=openai")
         return "openai", call_openai_structured(text, model=openai_model, api_key=api_key)
     raise ValueError(f"unknown provider: {provider}")
+
+
+def _summary_from_products(products: list[SecondPassProduct]) -> dict[str, Any]:
+    countries = sorted({product.country for product in products if product.country})
+    regions = sorted({region for product in products for region in product.regions})
+    months = sorted({
+        int(departure[5:7])
+        for product in products
+        for departure in product.departures
+        if len(departure) >= 7 and departure[5:7].isdigit()
+    })
+    durations = [product.duration_days for product in products if product.duration_days]
+    prices = [product.price_from for product in products if product.price_from]
+    return {
+        "countries": countries,
+        "regions": regions,
+        "months": months,
+        "duration_days": min(durations) if durations else None,
+        "price_from": min(prices) if prices else None,
+        "plan_count": len(products),
+    }
 
 
 def extract_sidecar(
@@ -493,10 +602,10 @@ def refresh_sidecar_with_paddle_ocr(
     before = _summary_from_sidecar(path)
     image_hash = _image_hash_for_sidecar(path)
     sidecar = load_sidecar(path)
-    if not force and _second_pass_cache_matches(sidecar, image_hash):
+    if not force and _second_pass_cache_matches(sidecar, image_hash, provider=PADDLE_SECOND_PASS_PROVIDER):
         return OcrRefreshResult(
             sidecar_path=relpath_from_root(path),
-            provider=SECOND_PASS_PROVIDER,
+            provider=PADDLE_SECOND_PASS_PROVIDER,
             status="skipped_second_pass_cache",
             before=before,
             after=before,
@@ -507,12 +616,14 @@ def refresh_sidecar_with_paddle_ocr(
         engine,
         image_of_sidecar(path),
         force=True,
-        engine_name=SECOND_PASS_ENGINE,
+        engine_name=PADDLE_SECOND_PASS_ENGINE,
         include_price_ocr=False,
     )
     after = _summary_from_sidecar(path)
     _write_second_pass_status(
         path,
+        provider=PADDLE_SECOND_PASS_PROVIDER,
+        engine=PADDLE_SECOND_PASS_ENGINE,
         image_hash=image_hash,
         reasons=reasons,
         status=status,
@@ -521,11 +632,66 @@ def refresh_sidecar_with_paddle_ocr(
     )
     return OcrRefreshResult(
         sidecar_path=relpath_from_root(path),
-        provider=SECOND_PASS_PROVIDER,
+        provider=PADDLE_SECOND_PASS_PROVIDER,
         status=status,
         before=before,
         after=after,
         fallback_reason=fallback_reason,
+    )
+
+
+def refresh_sidecar_with_codex_vision(
+    path: Path,
+    *,
+    force: bool = False,
+    reasons: Optional[list[str]] = None,
+    codex_command: str = "codex",
+    codex_model: Optional[str] = None,
+    codex_timeout_seconds: int = 600,
+) -> OcrRefreshResult:
+    reasons = reasons or []
+    before = _summary_from_sidecar(path)
+    image_hash = _image_hash_for_sidecar(path)
+    sidecar = load_sidecar(path)
+    if not force and _second_pass_cache_matches(sidecar, image_hash, provider=CODEX_SECOND_PASS_PROVIDER):
+        after = (sidecar.get(SECOND_PASS_OCR_KEY) or {}).get("after") or before
+        return OcrRefreshResult(
+            sidecar_path=relpath_from_root(path),
+            provider=CODEX_SECOND_PASS_PROVIDER,
+            status="skipped_second_pass_cache",
+            before=before,
+            after=after,
+        )
+
+    text = _ocr_text(sidecar)
+    raw = call_codex_vision_structured(
+        image_of_sidecar(path),
+        text,
+        codex_command=codex_command,
+        codex_model=codex_model,
+        timeout_seconds=codex_timeout_seconds,
+    )
+    products, warnings = validate_structured_output(raw, text, require_ocr_evidence=False)
+    status = "enriched" if products else "empty"
+    after = _summary_from_products(products) if products else before
+    _write_second_pass_status(
+        path,
+        provider=CODEX_SECOND_PASS_PROVIDER,
+        engine=CODEX_SECOND_PASS_ENGINE,
+        image_hash=image_hash,
+        reasons=reasons,
+        status=status,
+        before=before,
+        after=after,
+        products=products,
+        warnings=warnings,
+    )
+    return OcrRefreshResult(
+        sidecar_path=relpath_from_root(path),
+        provider=CODEX_SECOND_PASS_PROVIDER,
+        status=status,
+        before=before,
+        after=after,
     )
 
 
@@ -539,19 +705,22 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="scan one target id when sidecars are omitted; repeat for multiple targets",
     )
     parser.add_argument("--limit", type=int, default=10, help="maximum candidates to process; 0 or less processes all")
-    parser.add_argument("--provider", choices=["auto", "paddle-ocr", "openai"], default="auto")
+    parser.add_argument("--provider", choices=["auto", "codex", "paddle-ocr", "openai"], default="auto")
     parser.add_argument("--openai-model", default=os.environ.get("OPENAI_SECOND_PASS_MODEL", DEFAULT_OPENAI_MODEL))
+    parser.add_argument("--codex-command", default=os.environ.get("CODEX_COMMAND", "codex"))
+    parser.add_argument("--codex-model", default=os.environ.get("CODEX_SECOND_PASS_MODEL"))
+    parser.add_argument("--codex-timeout", type=int, default=int(os.environ.get("CODEX_SECOND_PASS_TIMEOUT", "600")))
     parser.add_argument(
         "--force-ocr",
         dest="force_ocr",
         action="store_true",
-        help="force PaddleOCR refresh even when second-pass cache matches",
+        help="force second-pass provider refresh even when cache matches",
     )
     parser.add_argument(
         "--no-force-ocr",
         dest="force_ocr",
         action="store_false",
-        help="skip sidecars already processed by second-pass OCR for the same image hash",
+        help="skip sidecars already processed by the same provider for the same image hash",
     )
     parser.set_defaults(force_ocr=False)
     parser.add_argument("--jsonl", action="store_true", help="stream one JSON result per line")
@@ -588,7 +757,26 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     resolved_provider = args.provider
     if args.provider == "auto":
-        resolved_provider = "paddle-ocr"
+        resolved_provider = DEFAULT_SECOND_PASS_PROVIDER
+
+    if resolved_provider == "codex":
+        results = []
+        for index, (path, _reasons) in enumerate(candidates, 1):
+            print(f"[second-pass] {index}/{len(candidates)} {relpath_from_root(path)}", file=sys.stderr, flush=True)
+            result = refresh_sidecar_with_codex_vision(
+                path,
+                force=args.force_ocr,
+                reasons=_reasons,
+                codex_command=args.codex_command,
+                codex_model=args.codex_model,
+                codex_timeout_seconds=args.codex_timeout,
+            )
+            results.append(result)
+            _print_result(result, jsonl=args.jsonl)
+        if args.jsonl:
+            return 0
+        print(json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2))
+        return 0
 
     if resolved_provider == "paddle-ocr":
         results = []
@@ -598,11 +786,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             if not args.force_ocr:
                 image_hash = _image_hash_for_sidecar(path)
                 sidecar = load_sidecar(path)
-                if _second_pass_cache_matches(sidecar, image_hash):
+                if _second_pass_cache_matches(sidecar, image_hash, provider=PADDLE_SECOND_PASS_PROVIDER):
                     before = _summary_from_sidecar(path)
                     result = OcrRefreshResult(
                         sidecar_path=relpath_from_root(path),
-                        provider=SECOND_PASS_PROVIDER,
+                        provider=PADDLE_SECOND_PASS_PROVIDER,
                         status="skipped_second_pass_cache",
                         before=before,
                         after=before,

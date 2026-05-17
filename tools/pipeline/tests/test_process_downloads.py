@@ -96,7 +96,7 @@ class TestPipelineTargetDiscovery(unittest.TestCase):
         ]
         self.assertEqual(len(second_pass_commands), 1)
         self.assertIn("--provider", second_pass_commands[0])
-        self.assertIn("paddle-ocr", second_pass_commands[0])
+        self.assertIn("codex", second_pass_commands[0])
         self.assertIn("--limit", second_pass_commands[0])
         self.assertIn("0", second_pass_commands[0])
         self.assertIn("--target", second_pass_commands[0])

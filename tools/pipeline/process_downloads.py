@@ -280,7 +280,7 @@ def build_commands(args: argparse.Namespace, target_ids: list[str]) -> list[tupl
             args.python,
             str(SECOND_PASS_OCR_SCRIPT),
             "--provider",
-            "paddle-ocr",
+            "codex",
             "--limit",
             str(second_pass_limit),
         ]
@@ -330,7 +330,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--skip-ocr-enrich", action="store_true",
                         help="skip cached OCR enrichment for travel sidecars")
     parser.add_argument("--second-pass-ocr", action="store_true",
-                        help="rerun PaddleOCR only for suspicious travel sidecars before indexing")
+                        help="run Codex vision only for suspicious travel sidecars before indexing")
     parser.add_argument("--second-pass-limit", type=int, default=DEFAULT_SECOND_PASS_LIMIT,
                         help="maximum suspicious sidecars to refresh per run; default 0 processes all")
     parser.add_argument("--force-branding", action="store_true",
