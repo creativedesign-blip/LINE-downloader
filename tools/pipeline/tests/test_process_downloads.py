@@ -35,6 +35,7 @@ def make_args(**overrides):
         "second_pass_ocr": False,
         "second_pass_limit": 0,
         "force_branding": False,
+        "target": None,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -114,6 +115,14 @@ class TestPipelineTargetDiscovery(unittest.TestCase):
         self.assertEqual(len(second_pass_commands), 1)
         limit_index = second_pass_commands[0].index("--limit")
         self.assertEqual(second_pass_commands[0][limit_index + 1], "0")
+
+    def test_targeted_pipeline_runs_targeted_reindex(self):
+        commands = build_commands(make_args(target=TEST_TARGET), [TEST_TARGET])
+        index_commands = [command for name, command in commands if name == "index:all"]
+
+        self.assertEqual(len(index_commands), 1)
+        self.assertIn("--target", index_commands[0])
+        self.assertIn(TEST_TARGET, index_commands[0])
 
     def test_indexing_collects_non_jpg_sidecars(self):
         travel_dir = self.target_dir / "travel"

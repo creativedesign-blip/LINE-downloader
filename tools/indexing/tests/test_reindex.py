@@ -47,6 +47,13 @@ class TestReindexSecondPassProducts(unittest.TestCase):
             )
 
             with TravelIndex(":memory:") as index:
+                index.upsert_plan(
+                    plan_id=f"{sidecar.as_posix()}#stale",
+                    sidecar_path=sidecar.as_posix(),
+                    image_path=image.as_posix(),
+                    plan_no=99,
+                    title="stale",
+                )
                 self.assertEqual(index_one(sidecar, index), "indexed")
                 self.assertEqual(index.plan_count(), 1)
                 self.assertEqual(index.departure_count(), 1)

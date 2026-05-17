@@ -289,7 +289,10 @@ def build_commands(args: argparse.Namespace, target_ids: list[str]) -> list[tupl
         commands.append(("second-pass-ocr:all", cmd))
 
     if not args.skip_index and target_ids:
-        commands.append(("index:all", [args.python, str(REINDEX_SCRIPT)]))
+        cmd = [args.python, str(REINDEX_SCRIPT)]
+        if getattr(args, "target", None):
+            cmd.extend(["--target", args.target])
+        commands.append(("index:all", cmd))
 
     return commands
 

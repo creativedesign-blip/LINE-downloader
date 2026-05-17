@@ -25,7 +25,7 @@ import sys
 import time
 from datetime import date
 from pathlib import Path
-from typing import Iterable, Literal, Optional
+from typing import Any, Iterable, Literal, Optional
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -124,38 +124,8 @@ def _months_from_departures(departures: Iterable[str]) -> list[int]:
     return sorted(months)
 
 
-def index_one(sidecar_path: Path, index: TravelIndex,
-              sidecar_mtime: Optional[float] = None) -> Result:
-    """Parse one sidecar and upsert a row."""
-    try:
-        with open(sidecar_path, "r", encoding="utf-8") as f:
-            sidecar = json.load(f)
-    except FileNotFoundError:
-        # Disappeared between stat() and open() — treat as a soft-skip so
-        # the prune step in main() picks it up via list_sidecar_paths next
-        # cycle rather than counting it as a hard error this cycle.
-        return "skipped"
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning("broken sidecar %s: %s", sidecar_path.name, e)
-        return "error"
-
-    ocr = sidecar.get("ocr") or {}
-    # The directory location is the source of truth: collect_travel_sidecars
-    # only feeds us files from travel/. Any classification value other than
-    # 'other' or 'error' is treated as a confirmed travel item — including
-    # 'review' images that a human moved into travel/ without re-running
-    # filter, and older sidecars with no classification field set.
-    if ocr.get("classification") in ("other", "error"):
-        logger.debug("skip non-travel: %s", sidecar_path.name)
-        return "skipped"
-
-    text = ocr.get("text") or ""
-    source = sidecar.get("source") or {}
-    orig_img = image_of_sidecar(sidecar_path)
-    fallback_target_id = orig_img.parent.parent.name if orig_img.parent.name == "travel" else None
-    target_id = source.get("targetId") or fallback_target_id
-    group_name = source.get("groupName") or target_id
-
+def build_index_document(sidecar: dict[str, Any], text: str) -> dict[str, Any]:
+    """Normalize one sidecar into the aggregate fields used by DB rows."""
     countries = extract_country(text)
     months = extract_months(text)
     price_from = extract_price_from(text)
@@ -164,6 +134,7 @@ def index_one(sidecar_path: Path, index: TravelIndex,
     duration_days = extract_duration(text)
     features = extract_features(text)
     second_pass_products = _second_pass_products(sidecar)
+
     if second_pass_products:
         product_countries = [str(p.get("country") or "").strip() for p in second_pass_products]
         product_regions = [
@@ -199,14 +170,72 @@ def index_one(sidecar_path: Path, index: TravelIndex,
             price_from = min([value for value in [price_from, *product_prices] if value is not None])
         if duration_days is None and product_durations:
             duration_days = min(product_durations)
+
+    return {
+        "countries": countries,
+        "months": months,
+        "price_from": price_from,
+        "airlines": airlines,
+        "regions": regions,
+        "duration_days": duration_days,
+        "features": features,
+        "second_pass_products": second_pass_products,
+    }
+
+
+def index_one(sidecar_path: Path, index: TravelIndex,
+              sidecar_mtime: Optional[float] = None) -> Result:
+    """Parse one sidecar and upsert a row."""
+    try:
+        with open(sidecar_path, "r", encoding="utf-8") as f:
+            sidecar = json.load(f)
+    except FileNotFoundError:
+        # Disappeared between stat() and open() — treat as a soft-skip so
+        # the prune step in main() picks it up via list_sidecar_paths next
+        # cycle rather than counting it as a hard error this cycle.
+        return "skipped"
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("broken sidecar %s: %s", sidecar_path.name, e)
+        return "error"
+
+    ocr = sidecar.get("ocr") or {}
+    # The directory location is the source of truth: collect_travel_sidecars
+    # only feeds us files from travel/. Any classification value other than
+    # 'other' or 'error' is treated as a confirmed travel item — including
+    # 'review' images that a human moved into travel/ without re-running
+    # filter, and older sidecars with no classification field set.
+    if ocr.get("classification") in ("other", "error"):
+        logger.debug("skip non-travel: %s", sidecar_path.name)
+        return "skipped"
+
+    text = ocr.get("text") or ""
+    source = sidecar.get("source") or {}
+    orig_img = image_of_sidecar(sidecar_path)
+    fallback_target_id = orig_img.parent.parent.name if orig_img.parent.name == "travel" else None
+    target_id = source.get("targetId") or fallback_target_id
+    group_name = source.get("groupName") or target_id
+
+    doc = build_index_document(sidecar, text)
+    countries = doc["countries"]
+    months = doc["months"]
+    price_from = doc["price_from"]
+    airlines = doc["airlines"]
+    regions = doc["regions"]
+    duration_days = doc["duration_days"]
+    features = doc["features"]
+    second_pass_products = doc["second_pass_products"]
     branded = _find_branded(orig_img)
+    sidecar_rel = relpath_from_root(sidecar_path)
+    image_rel = relpath_from_root(orig_img)
+    branded_rel = relpath_from_root(branded) if branded else None
+    index.delete(sidecar_rel)
 
     index.upsert(
-        sidecar_path=relpath_from_root(sidecar_path),
-        image_path=relpath_from_root(orig_img),
+        sidecar_path=sidecar_rel,
+        image_path=image_rel,
         target_id=target_id,
         group_name=group_name,
-        branded_path=relpath_from_root(branded) if branded else None,
+        branded_path=branded_rel,
         countries=countries,
         months=months,
         price_from=price_from,
@@ -219,9 +248,6 @@ def index_one(sidecar_path: Path, index: TravelIndex,
         extractor_version=EXTRACTOR_VERSION,
         image_sha256=ocr.get("imageSha256"),
     )
-    sidecar_rel = relpath_from_root(sidecar_path)
-    image_rel = relpath_from_root(orig_img)
-    branded_rel = relpath_from_root(branded) if branded else None
     if second_pass_products:
         for plan_no, product in enumerate(second_pass_products, 1):
             title = str(product.get("title") or "").strip()

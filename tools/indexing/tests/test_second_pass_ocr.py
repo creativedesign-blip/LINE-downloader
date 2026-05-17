@@ -13,6 +13,7 @@ from tools.indexing.second_pass_ocr import (
     candidate_priority,
     has_split_duration_marker,
     needs_second_pass,
+    refresh_first_pass_annotations,
     refresh_sidecar_with_codex_vision,
     refresh_sidecar_with_paddle_ocr,
     validate_structured_output,
@@ -108,6 +109,33 @@ class TestSecondPassCandidates(unittest.TestCase):
 
 
 class TestSecondPassOcrCache(unittest.TestCase):
+    def test_refresh_first_pass_annotations_writes_candidate_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "sample.png"
+            sidecar = Path(tmp) / "sample.png.json"
+            image.write_bytes(b"image")
+            text = """?正
+5???交?啁?敶勗?
+47,800
+07/12,07/23,08/18,08/20
+敹恍???52,800
+07/02,07/09"""
+            sidecar.write_text(
+                json.dumps({"ocr": {"text": text}}),
+                encoding="utf-8",
+            )
+
+            summary, candidate = refresh_first_pass_annotations(
+                sidecar,
+                json.loads(sidecar.read_text(encoding="utf-8")),
+            )
+
+            saved = json.loads(sidecar.read_text(encoding="utf-8"))
+            self.assertEqual(saved["firstPassSummary"], summary)
+            self.assertEqual(saved["secondPassCandidate"], candidate)
+            self.assertTrue(saved["secondPassCandidate"]["needed"])
+            self.assertIn("multi_plan_layout", saved["secondPassCandidate"]["reasons"])
+
     def test_skips_when_second_pass_cache_matches_image_hash(self):
         with tempfile.TemporaryDirectory() as tmp:
             image = Path(tmp) / "sample.png"
