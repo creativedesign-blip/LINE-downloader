@@ -344,6 +344,15 @@ def write_log(log_path: Path, records: list[GroupResult]) -> None:
     wb.save(log_path)
 
 
+def exit_code_for_records(records: list[GroupResult]) -> int:
+    for record in records:
+        if record.status == "failed":
+            return 1
+        if record.pipeline_exit_code not in (None, 0):
+            return 1
+    return 0
+
+
 class LineRpa:
     def __init__(self, config: dict[str, Any]):
         self.config = config
@@ -1223,7 +1232,7 @@ def run(
         failure = f", category={record.failure_category}, reason={record.failure_reason}" if record.status == "failed" else ""
         print(f"{record.status}: {record.group_name} -> {record.save_path}{pipeline}{failure}")
     print(f"log: {save_root / 'line_download_log.xlsx'}")
-    return 0
+    return exit_code_for_records(records)
 
 
 def download_group_images(

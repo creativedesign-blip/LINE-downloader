@@ -130,6 +130,28 @@ class LineImageDownloaderTests(unittest.TestCase):
             # success_count moved from column E -> F after failure_category was inserted at D
             self.assertEqual(ws["F2"].value, 2)
 
+    def test_exit_code_for_records_fails_when_any_group_failed(self):
+        records = [
+            app.GroupResult("group-a", "failed", "LINE_NOT_READY", 0, 0, 0, 0, 1, "out", "LINE window not found"),
+            app.GroupResult("group-b", "ok", "", 1, 1, 0, 0, 0, "out", ""),
+        ]
+
+        self.assertEqual(app.exit_code_for_records(records), 1)
+
+    def test_exit_code_for_records_succeeds_for_ok_and_skipped_pipeline(self):
+        records = [
+            app.GroupResult("group-a", "ok", "", 1, 1, 0, 0, 0, "out", ""),
+            app.GroupResult("group-b", "partial", "", 2, 1, 1, 0, 0, "out", ""),
+        ]
+
+        self.assertEqual(app.exit_code_for_records(records), 0)
+
+    def test_exit_code_for_records_fails_when_pipeline_failed(self):
+        record = app.GroupResult("group-a", "ok", "", 1, 1, 0, 0, 0, "out", "")
+        record.pipeline_exit_code = 2
+
+        self.assertEqual(app.exit_code_for_records([record]), 1)
+
     def test_process_all_ignores_config_test_limit(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

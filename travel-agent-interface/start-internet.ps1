@@ -14,43 +14,54 @@ if (-not (Test-Path $Cloudflared)) {
   $Cloudflared = $cmd.Source
 }
 
-$existing = netstat -ano | Select-String "0.0.0.0:$Port" | Select-Object -First 1
-$healthy = $false
-if ($existing) {
+function Get-PortProcessId {
+  $line = netstat -ano | Select-String "0.0.0.0:$Port" | Select-Object -First 1
+  if (-not $line) { return $null }
+  $pidText = (($line.ToString() -split "\s+") | Where-Object { $_ })[-1]
+  if ($pidText -and $pidText -ne "0") { return [int]$pidText }
+  return $null
+}
+
+function Test-WebServerHealthy {
   try {
     $status = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$Port/api/auth/session" -TimeoutSec 3
-    $healthy = $status.StatusCode -eq 200
+    return $status.StatusCode -eq 200
   } catch {
-    $healthy = $false
+    return $false
   }
 }
 
-if ($existing -and -not $healthy) {
-  $pidText = (($existing.ToString() -split "\s+") | Where-Object { $_ })[-1]
-  if ($pidText -and $pidText -ne "0") {
-    Stop-Process -Id ([int]$pidText) -Force
-    Start-Sleep -Seconds 1
-  }
+$existingPid = Get-PortProcessId
+if ($existingPid) {
+  Write-Host "Stopping existing web server on port $Port (PID $existingPid) so RPA starts from this desktop session." -ForegroundColor Yellow
+  Stop-Process -Id $existingPid -Force
+  Start-Sleep -Seconds 1
+  $existingPid = Get-PortProcessId
 }
 
-if (-not $existing -or -not $healthy) {
-  if (-not (Test-Path (Join-Path $Root "dist\index.html"))) {
-    Write-Host "dist not found; building React interface..." -ForegroundColor Yellow
-    Push-Location $Root
-    npm run build
-    Pop-Location
-  }
-  # Background server: route stdout/stderr to project-level logs/openclaw/
-  # so the per-process log files don't pile up next to the React source.
-  $LogDir = Join-Path (Split-Path -Parent $Root) "logs\openclaw"
-  if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
-  Start-Process -FilePath python `
-    -ArgumentList @(".\openclaw_web.py", "$Port") `
-    -WorkingDirectory $Root `
-    -WindowStyle Hidden `
-    -RedirectStandardOutput (Join-Path $LogDir "openclaw_web.out.log") `
-    -RedirectStandardError (Join-Path $LogDir "openclaw_web.err.log") | Out-Null
-  Start-Sleep -Seconds 2
+if ($existingPid) {
+  throw "Port $Port is still occupied by PID $existingPid after stop attempt."
+}
+
+if (-not (Test-Path (Join-Path $Root "dist\index.html"))) {
+  Write-Host "dist not found; building React interface..." -ForegroundColor Yellow
+  Push-Location $Root
+  npm run build
+  Pop-Location
+}
+
+$serverCommand = "Set-Location -LiteralPath '$($Root.Replace("'", "''"))'; python .\openclaw_web.py $Port"
+Start-Process -FilePath powershell.exe `
+  -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $serverCommand) `
+  -WindowStyle Normal | Out-Null
+
+for ($i = 0; $i -lt 15; $i++) {
+  Start-Sleep -Seconds 1
+  if (Test-WebServerHealthy) { break }
+}
+
+if (-not (Test-WebServerHealthy)) {
+  throw "openclaw_web.py did not become healthy on http://127.0.0.1:$Port/"
 }
 
 Write-Host ""

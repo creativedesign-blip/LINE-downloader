@@ -217,6 +217,14 @@ try {
             --skip-pipeline
     }
 
+    if ($rpaExit -ne 0) {
+        Set-JobStep -Name "ocr" -Status "skipped" -ErrorMessage "Skipped because LINE RPA download failed."
+        Set-JobStep -Name "compose" -Status "skipped" -ErrorMessage "Skipped because LINE RPA download failed."
+        Set-JobStep -Name "index" -Status "skipped" -ErrorMessage "Skipped because LINE RPA download failed."
+        Complete-JobStatus -Status "failed" -ReturnCode $rpaExit -ErrorMessage "LINE RPA download exited with code $rpaExit"
+        exit $rpaExit
+    }
+
     [int]$ocrExit = Invoke-LoggedJobStep -StepName "ocr" -DisplayName "Agent OCR sync" -Command {
         & $RpaPython "-X" "utf8" ".\tools\pipeline\process_downloads.py" `
             --python $PipelinePython `
@@ -253,10 +261,6 @@ try {
         Set-JobStep -Name "index" -Status "skipped" -ErrorMessage "Skipped because an earlier Agent sync step failed."
     }
 
-    if ($rpaExit -ne 0) {
-        Complete-JobStatus -Status "failed" -ReturnCode $rpaExit -ErrorMessage "LINE RPA download exited with code $rpaExit"
-        exit $rpaExit
-    }
     if ($ocrExit -ne 0) {
         Complete-JobStatus -Status "failed" -ReturnCode $ocrExit -ErrorMessage "Agent OCR sync exited with code $ocrExit"
         exit $ocrExit
