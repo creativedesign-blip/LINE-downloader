@@ -382,7 +382,12 @@ class LineRpa:
             self.close_extra_line_windows()
             self.search_and_open_group(group_name)
             self.open_photos_videos()
-            save_root = Path(self.config.get("save_root", DEFAULT_CONFIG["save_root"]))
+            # Use the actual destination root passed by run()/download_group_images().
+            # In scheduled runs the working directory is the project root, while
+            # save_root in config is relative to line-rpa/config.json. Re-reading
+            # the raw config value here points duplicate detection at the wrong
+            # image_index.json.
+            save_root = save_dir.parent
             index_path = image_index_path(save_root)
             seen_log_path = image_seen_log_path(save_root)
             image_index = load_image_index(index_path)

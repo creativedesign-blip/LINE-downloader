@@ -414,6 +414,48 @@ class LineImageDownloaderTests(unittest.TestCase):
             self.assertEqual(counts["success"], 0)
             self.assertFalse(duplicate.exists())
 
+    def test_run_group_uses_actual_save_root_for_duplicate_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            actual_root = tmp_path / "line-rpa" / "download"
+            wrong_root = tmp_path / "download"
+            save_dir = actual_root / "group-a"
+            save_dir.mkdir(parents=True)
+            wrong_root.mkdir()
+            app.save_image_index(actual_root / "image_index.json", {"group-a": ["actual"]})
+            app.save_image_index(wrong_root / "image_index.json", {"group-a": ["wrong"]})
+
+            rpa = app.LineRpa({"save_root": "download", "wait_seconds": 0, "coordinates": app.DEFAULT_CONFIG["coordinates"]})
+            captured = {}
+
+            rpa.open_or_focus_line = lambda: None
+            rpa.close_extra_line_windows = lambda: None
+            rpa.search_and_open_group = lambda group_name: None
+            rpa.open_photos_videos = lambda: None
+            rpa.try_close_viewer = lambda: None
+
+            def fake_download(_save_dir, group_name, image_index, index_path, *_args):
+                captured["group_name"] = group_name
+                captured["image_index"] = image_index
+                captured["index_path"] = index_path
+                return {
+                    "attempted": 1,
+                    "success": 0,
+                    "skipped": 0,
+                    "duplicate": 1,
+                    "failed": 0,
+                    "save_dialog_seen": 1,
+                }
+
+            rpa.download_all_visible_images = fake_download
+
+            result = rpa.run_group("group-a", save_dir)
+
+            self.assertEqual(result.status, "no-new")
+            self.assertEqual(captured["group_name"], "group-a")
+            self.assertEqual(captured["image_index"], {"group-a": ["actual"]})
+            self.assertEqual(captured["index_path"], actual_root / "image_index.json")
+
     def test_download_group_images_uses_custom_download_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
