@@ -11,11 +11,16 @@ $ErrorActionPreference = "Stop"
 # PIPELINE_PYTHON); defaults below match the original Anaconda layout.
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $RpaPython = if ($env:RPA_PYTHON) { $env:RPA_PYTHON } else { "C:\Users\user\anaconda3\python.exe" }
-$PipelinePython = if ($env:PIPELINE_PYTHON) { $env:PIPELINE_PYTHON } else { "C:\Users\user\anaconda3\python.exe" }
+$DefaultPipelinePython = "C:\Users\user\anaconda3\envs\asr\python.exe"
+if (-not (Test-Path $DefaultPipelinePython)) {
+    $DefaultPipelinePython = "C:\Users\user\anaconda3\python.exe"
+}
+$PipelinePython = if ($env:PIPELINE_PYTHON) { $env:PIPELINE_PYTHON } else { $DefaultPipelinePython }
 $ConfigPath = Join-Path $ProjectRoot "line-rpa\config.json"
 $LogDir = Join-Path $ProjectRoot "logs\openclaw"
 $LockPath = Join-Path $LogDir "line-rpa-scheduled.lock"
 $JobStatusPath = Join-Path $LogDir "latest_job.json"
+$RapidOcrModelDir = Join-Path $ProjectRoot ".cache\rapidocr-models"
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
@@ -194,6 +199,10 @@ try {
     Set-Location $ProjectRoot
     $env:PYTHONIOENCODING = "utf-8"
     $env:PYTHONUTF8 = "1"
+    $env:RAPIDOCR_MODEL_DIR = $RapidOcrModelDir
+    foreach ($name in @("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "GIT_HTTP_PROXY", "GIT_HTTPS_PROXY")) {
+        Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+    }
 
     # Tier A: RPA only downloads here. The OCR/compose/index steps below
     # do all pipeline work in three shared subprocesses (one OCR-engine

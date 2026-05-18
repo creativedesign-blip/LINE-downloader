@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tools.branding.io_utils import sidecar_of, load_sidecar, save_sidecar
+from tools.common.rapidocr_adapter import create_rapidocr, rapidocr_lines
 from tools.domains.travel.policy import apply_sidecar_metadata
 
 
@@ -52,7 +53,6 @@ os.environ.setdefault('FLAGS_use_mkldnn', 'false')          # 關掉 oneDNN 避�
 os.environ.setdefault('PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK', 'True')
 
 try:
-    from rapidocr_onnxruntime import RapidOCR
     import numpy as np
     import cv2
 except ImportError as e:
@@ -218,16 +218,10 @@ def extract_text(ocr, img) -> str:
     # img is a decoded BGR ndarray. Passing the array (rather than a path)
     # avoids re-reading the file and works around Windows codepage issues.
     try:
-        result, _ = ocr(img)
+        result = ocr(img)
     except Exception as e:
         raise RuntimeError(f"predict 失敗：{e}")
-    if not result:
-        return ''
-    lines = []
-    for item in result:
-        if len(item) >= 2 and item[1]:
-            lines.append(str(item[1]))
-    return '\n'.join(lines)
+    return '\n'.join(rapidocr_lines(result))
 
 
 OCR_INSTANCE = None
@@ -237,7 +231,7 @@ def get_ocr():
     global OCR_INSTANCE
     if OCR_INSTANCE is None:
         print("載入 RapidOCR 模型…")
-        OCR_INSTANCE = RapidOCR()
+        OCR_INSTANCE = create_rapidocr()
         print("模型就緒\n")
     return OCR_INSTANCE
 

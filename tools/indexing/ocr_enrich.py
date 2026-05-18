@@ -21,6 +21,7 @@ if __package__ in (None, ""):
 
 from tools.branding.io_utils import load_sidecar, save_sidecar
 from tools.common.image_seen import file_sha256
+from tools.common.rapidocr_adapter import create_rapidocr, rapidocr_lines
 from tools.common.targets import DOWNLOADS_DIR, load_target_ids
 from tools.domains.travel.policy import apply_sidecar_metadata
 from tools.indexing.extractor import extract_price_from
@@ -49,14 +50,8 @@ def collect_images(target_id: Optional[str] = None) -> list[Path]:
 
 
 def _ocr_text(engine, image_path: Path) -> str:
-    result, _ = engine(str(image_path))
-    if not result:
-        return ""
-    lines: list[str] = []
-    for item in result:
-        if len(item) >= 2 and item[1]:
-            lines.append(str(item[1]))
-    return "\n".join(lines)
+    result = engine(str(image_path))
+    return "\n".join(rapidocr_lines(result))
 
 
 def _has_price_area_cue(text: str) -> bool:
@@ -68,14 +63,8 @@ def _ocr_image(engine, image: Image.Image) -> str:
 
     if image.mode != "RGB":
         image = image.convert("RGB")
-    result, _ = engine(np.array(image))
-    if not result:
-        return ""
-    lines: list[str] = []
-    for item in result:
-        if len(item) >= 2 and item[1]:
-            lines.append(str(item[1]))
-    return "\n".join(lines)
+    result = engine(np.array(image))
+    return "\n".join(rapidocr_lines(result))
 
 
 def _price_crop_candidates(image: Image.Image) -> list[tuple[str, Image.Image]]:
@@ -224,11 +213,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     try:
-        from rapidocr_onnxruntime import RapidOCR
+        engine = create_rapidocr()
     except ImportError as e:
-        logger.critical("rapidocr-onnxruntime is not installed in this Python: %s", e)
+        logger.critical("RapidOCR is not installed in this Python: %s", e)
         return 2
-    engine = RapidOCR()
     stats = {"enriched": 0, "skipped": 0, "error": 0}
     for img in images:
         try:
