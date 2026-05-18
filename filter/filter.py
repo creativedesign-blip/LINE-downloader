@@ -1,5 +1,5 @@
 """
-PaddleOCR 3.x 圖片過濾 — 判定「旅遊行程簡介」vs「非旅遊」
+RapidOCR image classifier for travel-related LINE downloads.
 流程：
   OCR 抽取文字 → 比對 travel_keywords.txt
   強信號命中任 1 個 → 旅遊相關
@@ -141,7 +141,7 @@ DATE_RE = re.compile(
 def normalize_ocr_text(text: str) -> str:
     """Normalize OCR text for matching.
 
-    PaddleOCR sometimes inserts spaces/newlines inside words, emits full-width
+    OCR engines sometimes insert spaces/newlines inside words, emit full-width
     digits, or mixes Simplified/Traditional variants.  Keep the original text
     for logs/indexing, but classify against this compact version to avoid false
     OTHER results for obvious travel DM images.
@@ -170,7 +170,7 @@ def keyword_hits(keywords, raw_text: str, compact_text: str):
     return hits
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description='PaddleOCR travel-image classifier')
+    parser = argparse.ArgumentParser(description='RapidOCR travel-image classifier')
     parser.add_argument('--input-dir', type=Path, default=None,
                         help='Single-target legacy mode: source folder (defaults to project root).')
     parser.add_argument('--travel-dir', type=Path, default=None,
@@ -469,7 +469,7 @@ def main(argv=None) -> int:
                 seen_outputs.add(d)
 
     print("=" * 60)
-    print("  PaddleOCR 3.x 圖片過濾 — 旅遊相關" + ("（監看模式）" if args.watch else ""))
+    print("  RapidOCR 圖片過濾 — 旅遊相關" + ("（監看模式）" if args.watch else ""))
     print("=" * 60)
     if args.target:
         print(f"  Targets: {', '.join(args.target)} ({len(specs)} input folders)")

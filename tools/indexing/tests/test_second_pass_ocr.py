@@ -7,7 +7,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.common.image_seen import file_sha256
 from tools.indexing.second_pass_ocr import (
     call_codex_vision_structured,
     candidate_priority,
@@ -15,18 +14,9 @@ from tools.indexing.second_pass_ocr import (
     needs_second_pass,
     refresh_first_pass_annotations,
     refresh_sidecar_with_codex_vision,
-    refresh_sidecar_with_paddle_ocr,
     validate_structured_output,
 )
 
-
-class FakeOcrEngine:
-    def __init__(self):
-        self.calls = 0
-
-    def __call__(self, _image_input):
-        self.calls += 1
-        return [(None, "日本 5天 49,800")], None
 
 
 class TestSecondPassCandidates(unittest.TestCase):
@@ -135,47 +125,6 @@ class TestSecondPassOcrCache(unittest.TestCase):
             self.assertEqual(saved["secondPassCandidate"], candidate)
             self.assertTrue(saved["secondPassCandidate"]["needed"])
             self.assertIn("multi_plan_layout", saved["secondPassCandidate"]["reasons"])
-
-    def test_skips_when_second_pass_cache_matches_image_hash(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            image = Path(tmp) / "sample.png"
-            sidecar = Path(tmp) / "sample.png.json"
-            image.write_bytes(b"image")
-            digest = file_sha256(image)
-            sidecar.write_text(
-                json.dumps({
-                    "ocr": {"text": "日本 5天 49,800", "imageSha256": digest},
-                    "secondPassOcr": {
-                        "provider": "paddle-ocr",
-                        "imageSha256": digest,
-                        "status": "enriched",
-                    },
-                }),
-                encoding="utf-8",
-            )
-
-            engine = FakeOcrEngine()
-            result = refresh_sidecar_with_paddle_ocr(engine, sidecar, reasons=["missing_region"])
-
-            self.assertEqual(result.status, "skipped_second_pass_cache")
-            self.assertEqual(engine.calls, 0)
-
-    def test_records_second_pass_status_after_refresh(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            image = Path(tmp) / "sample.png"
-            sidecar = Path(tmp) / "sample.png.json"
-            image.write_bytes(b"image")
-            sidecar.write_text(json.dumps({"ocr": {"text": ""}}), encoding="utf-8")
-
-            engine = FakeOcrEngine()
-            result = refresh_sidecar_with_paddle_ocr(engine, sidecar, reasons=["missing_region"])
-
-            saved = json.loads(sidecar.read_text(encoding="utf-8"))
-            self.assertEqual(result.status, "enriched")
-            self.assertEqual(engine.calls, 1)
-            self.assertEqual(saved["secondPassOcr"]["provider"], "paddle-ocr")
-            self.assertEqual(saved["secondPassOcr"]["reasons"], ["missing_region"])
-            self.assertEqual(saved["ocr"]["engine"], "paddleocr")
 
     def test_codex_vision_records_structured_products(self):
         with tempfile.TemporaryDirectory() as tmp:

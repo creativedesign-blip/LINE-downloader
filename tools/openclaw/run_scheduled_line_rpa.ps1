@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 # PIPELINE_PYTHON); defaults below match the original Anaconda layout.
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $RpaPython = if ($env:RPA_PYTHON) { $env:RPA_PYTHON } else { "C:\Users\user\anaconda3\python.exe" }
-$PipelinePython = if ($env:PIPELINE_PYTHON) { $env:PIPELINE_PYTHON } else { "C:\Users\user\anaconda3\envs\paddleocr\python.exe" }
+$PipelinePython = if ($env:PIPELINE_PYTHON) { $env:PIPELINE_PYTHON } else { "C:\Users\user\anaconda3\python.exe" }
 $ConfigPath = Join-Path $ProjectRoot "line-rpa\config.json"
 $LogDir = Join-Path $ProjectRoot "logs\openclaw"
 $LockPath = Join-Path $LogDir "line-rpa-scheduled.lock"

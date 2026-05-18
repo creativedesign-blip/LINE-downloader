@@ -142,7 +142,7 @@ OCR 慢不影響下載流程
 
 ```text
 LINE RPA 只能控制一個視窗
-PaddleOCR 吃 CPU/RAM
+RapidOCR / Codex second pass 會吃 CPU/網路等待時間
 image_index.json 是共用檔案
 travel_index.db 是共用資料庫
 平行 log 會交錯，debug 變困難

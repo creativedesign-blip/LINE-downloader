@@ -5,7 +5,6 @@ only sidecars whose first-pass extraction looks ambiguous or incomplete.
 
 Provider behavior:
 - auto / codex: inspect suspicious sidecars with `codex exec --image`.
-- paddle-ocr: legacy local OCR refresh fallback.
 - openai: explicit structured extraction provider for manual experiments.
 
 OpenAI Structured Outputs is kept as an explicit provider only; it is not the
@@ -40,14 +39,12 @@ if __package__ in (None, ""):
 from tools.branding.io_utils import image_of_sidecar, save_sidecar
 from tools.common.image_seen import file_sha256
 from tools.common.targets import PROJECT_ROOT, load_target_ids, relpath_from_root
-from tools.indexing.paddle_ocr import create_paddle_ocr_engine
 from tools.indexing.second_pass_policy import (
     REASON_PRIORITY,
     first_pass_summary,
     has_split_duration_marker,
     second_pass_candidate,
 )
-from tools.indexing.ocr_enrich import enrich_one
 from tools.indexing.reindex import collect_travel_sidecars
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
@@ -59,8 +56,6 @@ SECOND_PASS_OCR_KEY = "secondPassOcr"
 DEFAULT_SECOND_PASS_PROVIDER = "codex"
 CODEX_SECOND_PASS_PROVIDER = "codex"
 CODEX_SECOND_PASS_ENGINE = "codex-exec"
-PADDLE_SECOND_PASS_PROVIDER = "paddle-ocr"
-PADDLE_SECOND_PASS_ENGINE = "paddleocr"
 
 
 @dataclass(frozen=True)
@@ -509,56 +504,6 @@ def extract_sidecar(
     )
 
 
-def refresh_sidecar_with_paddle_ocr(
-    engine: Any,
-    path: Path,
-    *,
-    force: bool = False,
-    reasons: Optional[list[str]] = None,
-    fallback_reason: Optional[str] = None,
-) -> OcrRefreshResult:
-    reasons = reasons or []
-    before = _summary_from_sidecar(path)
-    image_hash = _image_hash_for_sidecar(path)
-    sidecar = load_sidecar(path)
-    if not force and _second_pass_cache_matches(sidecar, image_hash, provider=PADDLE_SECOND_PASS_PROVIDER):
-        return OcrRefreshResult(
-            sidecar_path=relpath_from_root(path),
-            provider=PADDLE_SECOND_PASS_PROVIDER,
-            status="skipped_second_pass_cache",
-            before=before,
-            after=before,
-            fallback_reason=fallback_reason,
-        )
-
-    status = enrich_one(
-        engine,
-        image_of_sidecar(path),
-        force=True,
-        engine_name=PADDLE_SECOND_PASS_ENGINE,
-        include_price_ocr=False,
-    )
-    after = _summary_from_sidecar(path)
-    _write_second_pass_status(
-        path,
-        provider=PADDLE_SECOND_PASS_PROVIDER,
-        engine=PADDLE_SECOND_PASS_ENGINE,
-        image_hash=image_hash,
-        reasons=reasons,
-        status=status,
-        before=before,
-        after=after,
-    )
-    return OcrRefreshResult(
-        sidecar_path=relpath_from_root(path),
-        provider=PADDLE_SECOND_PASS_PROVIDER,
-        status=status,
-        before=before,
-        after=after,
-        fallback_reason=fallback_reason,
-    )
-
-
 def refresh_sidecar_with_codex_vision(
     path: Path,
     *,
@@ -624,7 +569,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="scan one target id when sidecars are omitted; repeat for multiple targets",
     )
     parser.add_argument("--limit", type=int, default=10, help="maximum candidates to process; 0 or less processes all")
-    parser.add_argument("--provider", choices=["auto", "codex", "paddle-ocr", "openai"], default="auto")
+    parser.add_argument("--provider", choices=["auto", "codex", "openai"], default="auto")
     parser.add_argument("--openai-model", default=os.environ.get("OPENAI_SECOND_PASS_MODEL", DEFAULT_OPENAI_MODEL))
     parser.add_argument("--codex-command", default=os.environ.get("CODEX_COMMAND", "codex"))
     parser.add_argument("--codex-model", default=os.environ.get("CODEX_SECOND_PASS_MODEL"))
@@ -690,39 +635,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 codex_model=args.codex_model,
                 codex_timeout_seconds=args.codex_timeout,
             )
-            results.append(result)
-            _print_result(result, jsonl=args.jsonl)
-        if args.jsonl:
-            return 0
-        print(json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2))
-        return 0
-
-    if resolved_provider == "paddle-ocr":
-        results = []
-        engine = None
-        for index, (path, _reasons) in enumerate(candidates, 1):
-            print(f"[second-pass] {index}/{len(candidates)} {relpath_from_root(path)}", file=sys.stderr, flush=True)
-            if not args.force_ocr:
-                image_hash = _image_hash_for_sidecar(path)
-                sidecar = load_sidecar(path)
-                if _second_pass_cache_matches(sidecar, image_hash, provider=PADDLE_SECOND_PASS_PROVIDER):
-                    before = _summary_from_sidecar(path)
-                    result = OcrRefreshResult(
-                        sidecar_path=relpath_from_root(path),
-                        provider=PADDLE_SECOND_PASS_PROVIDER,
-                        status="skipped_second_pass_cache",
-                        before=before,
-                        after=before,
-                    )
-                    results.append(result)
-                    _print_result(result, jsonl=args.jsonl)
-                    continue
-            if engine is None:
-                try:
-                    engine = create_paddle_ocr_engine()
-                except ImportError as exc:
-                    raise SystemExit(f"paddleocr is required for provider=paddle-ocr: {exc}") from exc
-            result = refresh_sidecar_with_paddle_ocr(engine, path, force=args.force_ocr, reasons=_reasons)
             results.append(result)
             _print_result(result, jsonl=args.jsonl)
         if args.jsonl:
