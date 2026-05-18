@@ -11,6 +11,12 @@
     "source": "rpa",
     "target_id": "可樂同業公佈欄"
   },
+  "2d7c1747668b0ff9f440e4f446aedeb7edb2723dc8180428f5a1f264e517cf10": {
+    "first_seen_at": "2026-05-18T05:06:26Z",
+    "image_path": "line-rpa/download/凱旋旅行社_巨匠旅遊/line_20260518_130625_145678.png",
+    "source": "rpa",
+    "target_id": "凱旋旅行社_巨匠旅遊"
+  },
   "3dcc5ebb552f081aa1a1fc8d4c2998d4644391e8eee953bfa5a72d54e40dfdd2": {
     "first_seen_at": "2026-05-14T07:31:31Z",
     "image_path": "line-rpa/download/可樂同業公佈欄/line_20260514_153130_257148.png",
