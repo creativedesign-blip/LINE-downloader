@@ -165,6 +165,22 @@ def _job_compat_from_latest(latest: dict[str, object] | None) -> dict[str, objec
     }
 
 
+def _latest_matches_manual_snapshot(latest: dict[str, object] | None, snapshot: dict[str, object]) -> bool:
+    if not latest or latest.get("trigger_source") != "manual":
+        return False
+    if not snapshot.get("running"):
+        return True
+
+    latest_pid = latest.get("pid")
+    snapshot_pid = snapshot.get("pid")
+    if latest_pid and snapshot_pid and latest_pid == snapshot_pid:
+        return True
+
+    latest_started = str(latest.get("started_at") or "")
+    snapshot_started = str(snapshot.get("last_started_at") or "")
+    return bool(latest_started and snapshot_started and latest_started >= snapshot_started)
+
+
 def _latest_job_snapshot() -> dict[str, object] | None:
     latest = _read_latest_job()
     if latest and latest.get("status") == "running" and not _is_recent_run_lock():
@@ -179,7 +195,7 @@ def _manual_job_snapshot() -> dict[str, object]:
     with JOB_LOCK:
         snapshot = dict(MANUAL_JOB)
     latest = _latest_job_snapshot()
-    if latest and latest.get("trigger_source") == "manual":
+    if _latest_matches_manual_snapshot(latest, snapshot):
         compat = _job_compat_from_latest(latest)
         if compat:
             snapshot.update(compat)
@@ -868,11 +884,16 @@ class Handler(SimpleHTTPRequestHandler):
             job = _set_manual_job(
                 running=True,
                 pid=process.pid,
+                status="running",
+                job_id=None,
+                trigger_source="manual",
                 last_started_at=_utc_now_iso(),
                 last_finished_at=None,
                 last_success=None,
                 last_error=None,
                 returncode=None,
+                steps={},
+                log_path=None,
             )
             threading.Thread(target=_watch_manual_process, args=(process,), daemon=True).start()
             self._json({

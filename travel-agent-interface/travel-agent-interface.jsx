@@ -714,6 +714,20 @@ function manualJobMessage(job) {
   return parts.join("。");
 }
 
+function isJobRunning(job) {
+  return Boolean(job?.running || job?.status === "running");
+}
+
+function selectManualRunJob(status) {
+  const latest = status?.latest_job || null;
+  const manual = status?.manual_job || null;
+
+  if (isJobRunning(manual)) return manual;
+  if (isJobRunning(latest)) return latest;
+  if (latest?.trigger_source === "manual") return latest;
+  return manual || latest;
+}
+
 /* ===== MAIN APP ===== */
 /* ===== DADOVA LOGO COMPONENT ===== */
 function DadovaLogo({ size = 32, inverted = false }) {
@@ -1283,8 +1297,10 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       await sleep(attempt === 0 ? 8_000 : 10_000);
       if (token.cancelled) return;
       try {
-        const status = await (await fetch("/api/openclaw/status")).json();
-        const job = status?.latest_job || status?.manual_job;
+        const response = await fetch("/api/openclaw/status");
+        const status = await response.json();
+        if (!response.ok) throw new Error(status?.error || `HTTP ${response.status}`);
+        const job = selectManualRunJob(status);
         setOverview((current) => ({
           ...current,
           status,
@@ -1353,6 +1369,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       try {
         const apiResponse = await fetch("/api/openclaw/run", { method: "POST" });
         const payload = await apiResponse.json();
+        if (!apiResponse.ok) throw new Error(payload?.error || `HTTP ${apiResponse.status}`);
         setMessages((p) => [
           ...p,
           {
