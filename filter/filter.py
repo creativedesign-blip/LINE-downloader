@@ -30,7 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tools.branding.io_utils import sidecar_of, load_sidecar, save_sidecar
-from tools.indexing.second_pass_policy import first_pass_summary, second_pass_candidate
+from tools.domains.travel.policy import apply_sidecar_metadata
 
 
 def move_with_sidecar(src: Path, dest: Path) -> None:
@@ -297,8 +297,7 @@ def update_sidecar_with_ocr(img_path: Path, *, classification: str, text: str = 
         if image_sha256:
             ocr_block['imageSha256'] = image_sha256
         if classification == 'travel':
-            side['firstPassSummary'] = first_pass_summary(text)
-            side['secondPassCandidate'] = second_pass_candidate(text)
+            side = apply_sidecar_metadata(side, text)
     if reason:
         ocr_block['reason'] = reason
     if hits:

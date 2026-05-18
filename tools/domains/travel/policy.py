@@ -1,10 +1,11 @@
-"""Shared first-pass summary and second-pass candidate rules."""
+"""Travel first-pass summary and second-pass candidate rules."""
 
 from __future__ import annotations
 
 import re
 from typing import Any
 
+from tools.domains.travel.constants import DOMAIN_NAME, SIDECAR_SCHEMA_VERSION
 from tools.indexing.extractor import (
     extract_country,
     extract_duration,
@@ -124,3 +125,13 @@ def second_pass_candidate(text: str) -> dict[str, Any]:
         "needed": bool(reasons),
         "reasons": reasons,
     }
+
+
+def apply_sidecar_metadata(sidecar: dict[str, Any], text: str) -> dict[str, Any]:
+    """Return a copy with travel domain metadata derived from OCR text."""
+    updated = dict(sidecar)
+    updated["domain"] = DOMAIN_NAME
+    updated["schemaVersion"] = SIDECAR_SCHEMA_VERSION
+    updated["firstPassSummary"] = first_pass_summary(text)
+    updated["secondPassCandidate"] = second_pass_candidate(text)
+    return updated

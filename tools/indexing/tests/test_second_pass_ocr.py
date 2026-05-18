@@ -121,6 +121,8 @@ class TestSecondPassOcrCache(unittest.TestCase):
             )
 
             saved = json.loads(sidecar.read_text(encoding="utf-8"))
+            self.assertEqual(saved["domain"], "travel")
+            self.assertEqual(saved["schemaVersion"], 1)
             self.assertEqual(saved["firstPassSummary"], summary)
             self.assertEqual(saved["secondPassCandidate"], candidate)
             self.assertTrue(saved["secondPassCandidate"]["needed"])

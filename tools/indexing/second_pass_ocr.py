@@ -39,8 +39,9 @@ if __package__ in (None, ""):
 from tools.branding.io_utils import image_of_sidecar, save_sidecar
 from tools.common.image_seen import file_sha256
 from tools.common.targets import PROJECT_ROOT, load_target_ids, relpath_from_root
-from tools.indexing.second_pass_policy import (
+from tools.domains.travel.policy import (
     REASON_PRIORITY,
+    apply_sidecar_metadata,
     first_pass_summary,
     has_split_duration_marker,
     second_pass_candidate,
@@ -116,10 +117,8 @@ def refresh_first_pass_annotations(path: Path, sidecar: dict[str, Any]) -> tuple
     text = _ocr_text(sidecar)
     summary = first_pass_summary(text)
     candidate = second_pass_candidate(text)
-    if sidecar.get("firstPassSummary") != summary or sidecar.get("secondPassCandidate") != candidate:
-        updated = dict(sidecar)
-        updated["firstPassSummary"] = summary
-        updated["secondPassCandidate"] = candidate
+    updated = apply_sidecar_metadata(sidecar, text)
+    if updated != sidecar:
         save_sidecar(image_of_sidecar(path), updated)
     return summary, candidate
 

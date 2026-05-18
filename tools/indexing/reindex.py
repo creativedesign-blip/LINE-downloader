@@ -25,21 +25,18 @@ import sys
 import time
 from datetime import date
 from pathlib import Path
-from typing import Any, Iterable, Literal, Optional
+from typing import Iterable, Literal, Optional
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from tools.branding.io_utils import image_of_sidecar
 from tools.common.targets import DOWNLOADS_DIR, PROJECT_ROOT, load_target_ids, relpath_from_root
-from tools.indexing.extractor import (
-    extract_airline,
-    extract_country,
-    extract_duration,
-    extract_features,
-    extract_months,
-    extract_price_from,
-    extract_region,
+from tools.domains.travel.index_document import (
+    build_index_document,
+    int_or_none,
+    months_from_departures,
+    valid_iso_date,
 )
 from tools.indexing.index_db import TravelIndex
 from tools.indexing.plan_extractor import extract_plans
@@ -86,101 +83,6 @@ def _find_branded(orig_image: Path) -> Optional[Path]:
         if candidate.exists():
             return candidate
     return None
-
-
-def _valid_iso_date(value: str) -> bool:
-    try:
-        date.fromisoformat(value)
-    except ValueError:
-        return False
-    return True
-
-
-def _second_pass_products(sidecar: dict) -> list[dict]:
-    block = sidecar.get("secondPassOcr") or {}
-    if not isinstance(block, dict):
-        return []
-    if block.get("provider") != "codex" or block.get("status") != "enriched":
-        return []
-    products = block.get("products") or []
-    return [item for item in products if isinstance(item, dict)]
-
-
-def _int_or_none(value: object, *, min_value: int, max_value: int) -> Optional[int]:
-    try:
-        parsed = int(value or 0)
-    except (TypeError, ValueError):
-        return None
-    if min_value <= parsed <= max_value:
-        return parsed
-    return None
-
-
-def _months_from_departures(departures: Iterable[str]) -> list[int]:
-    months: set[int] = set()
-    for departure in departures:
-        if _valid_iso_date(departure):
-            months.add(int(departure[5:7]))
-    return sorted(months)
-
-
-def build_index_document(sidecar: dict[str, Any], text: str) -> dict[str, Any]:
-    """Normalize one sidecar into the aggregate fields used by DB rows."""
-    countries = extract_country(text)
-    months = extract_months(text)
-    price_from = extract_price_from(text)
-    airlines = extract_airline(text)
-    regions = extract_region(text)
-    duration_days = extract_duration(text)
-    features = extract_features(text)
-    second_pass_products = _second_pass_products(sidecar)
-
-    if second_pass_products:
-        product_countries = [str(p.get("country") or "").strip() for p in second_pass_products]
-        product_regions = [
-            str(region).strip()
-            for p in second_pass_products
-            for region in (p.get("regions") or [])
-            if str(region).strip()
-        ]
-        product_departures = [
-            str(departure).strip()
-            for p in second_pass_products
-            for departure in (p.get("departures") or [])
-            if _valid_iso_date(str(departure).strip())
-        ]
-        product_prices = [
-            price for price in (
-                _int_or_none(p.get("price_from"), min_value=5000, max_value=999999)
-                for p in second_pass_products
-            )
-            if price is not None
-        ]
-        product_durations = [
-            days for days in (
-                _int_or_none(p.get("duration_days"), min_value=1, max_value=30)
-                for p in second_pass_products
-            )
-            if days is not None
-        ]
-        countries = sorted(set(countries) | {country for country in product_countries if country})
-        regions = sorted(set(regions) | set(product_regions))
-        months = sorted(set(months) | set(_months_from_departures(product_departures)))
-        if product_prices:
-            price_from = min([value for value in [price_from, *product_prices] if value is not None])
-        if duration_days is None and product_durations:
-            duration_days = min(product_durations)
-
-    return {
-        "countries": countries,
-        "months": months,
-        "price_from": price_from,
-        "airlines": airlines,
-        "regions": regions,
-        "duration_days": duration_days,
-        "features": features,
-        "second_pass_products": second_pass_products,
-    }
 
 
 def index_one(sidecar_path: Path, index: TravelIndex,
@@ -256,11 +158,11 @@ def index_one(sidecar_path: Path, index: TravelIndex,
             departures = [
                 str(v).strip()
                 for v in (product.get("departures") or [])
-                if _valid_iso_date(str(v).strip())
+                if valid_iso_date(str(v).strip())
             ]
-            plan_months = _months_from_departures(departures) or months
-            plan_price = _int_or_none(product.get("price_from"), min_value=5000, max_value=999999)
-            plan_duration = _int_or_none(product.get("duration_days"), min_value=1, max_value=30)
+            plan_months = months_from_departures(departures) or months
+            plan_price = int_or_none(product.get("price_from"), min_value=5000, max_value=999999)
+            plan_duration = int_or_none(product.get("duration_days"), min_value=1, max_value=30)
             evidence = [str(v).strip() for v in (product.get("evidence") or []) if str(v).strip()]
             plan_id = f"{sidecar_rel}#codex-plan:{plan_no}"
             index.upsert_plan(

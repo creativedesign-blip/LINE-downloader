@@ -22,6 +22,7 @@ if __package__ in (None, ""):
 from tools.branding.io_utils import load_sidecar, save_sidecar
 from tools.common.image_seen import file_sha256
 from tools.common.targets import DOWNLOADS_DIR, load_target_ids
+from tools.domains.travel.policy import apply_sidecar_metadata
 from tools.indexing.extractor import extract_price_from
 
 from PIL import Image, ImageEnhance, ImageOps
@@ -140,6 +141,7 @@ def enrich_one(
                 "status": "not_found",
             }
             sidecar["ocr"] = ocr
+            sidecar = apply_sidecar_metadata(sidecar, str(ocr.get("text") or ""))
             save_sidecar(image_path, sidecar)
             return "skipped"
         ocr["priceOcr"] = {
@@ -151,6 +153,7 @@ def enrich_one(
         }
         ocr["text"] = f"{ocr.get('text') or ''}\n{price_text}".strip()
         sidecar["ocr"] = ocr
+        sidecar = apply_sidecar_metadata(sidecar, str(ocr.get("text") or ""))
         save_sidecar(image_path, sidecar)
         return "enriched"
 
@@ -183,6 +186,8 @@ def enrich_one(
         }
     sidecar["source"] = source
     sidecar["ocr"] = ocr
+    if text:
+        sidecar = apply_sidecar_metadata(sidecar, text)
     sidecar.setdefault("savedAt", _iso_now())
     save_sidecar(image_path, sidecar)
     return "enriched"
