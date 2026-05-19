@@ -29,8 +29,10 @@ PROJECT_ROOT = APP_DIR.parent
 THUMBNAIL_DIR = PROJECT_ROOT / ".cache" / "openclaw-thumbnails"
 CLIPBOARD_SCRIPT = PROJECT_ROOT / "tools" / "openclaw" / "copy_files_to_clipboard.ps1"
 RUN_RPA_SCRIPT = PROJECT_ROOT / "tools" / "openclaw" / "run_scheduled_line_rpa.ps1"
+RUN_UPLOAD_SCRIPT = PROJECT_ROOT / "tools" / "openclaw" / "run_uploaded_images.ps1"
 LATEST_JOB_PATH = PROJECT_ROOT / "logs" / "openclaw" / "latest_job.json"
 RUN_LOCK_PATH = PROJECT_ROOT / "logs" / "openclaw" / "line-rpa-scheduled.lock"
+OPENCLAW_SETTINGS_PATH = PROJECT_ROOT / "logs" / "openclaw" / "settings.json"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -57,6 +59,24 @@ from tools.openclaw.operations import (  # noqa: E402
     query_latest_results,
     record_duplicate_review,
 )
+from tools.openclaw.upload_catalog import (  # noqa: E402
+    add_image,
+    add_manual_tag,
+    archive_image,
+    create_folder,
+    delete_manual_tag,
+    folder_target_path,
+    get_folder,
+    list_folders,
+    list_images,
+    list_manual_tags,
+    safe_stored_filename,
+    stored_path_is_registered,
+    update_image_metadata,
+    update_folder_status,
+    update_manual_tag,
+)
+from tools.common.image_seen import file_sha256  # noqa: E402
 from tools.indexing.extractor import (  # noqa: E402
     extract_country,
     extract_duration,
@@ -127,6 +147,28 @@ def _as_int(value: object, default: int | None = None) -> int | None:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _read_openclaw_settings() -> dict[str, object]:
+    try:
+        payload = json.loads(OPENCLAW_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "line_auto_enabled": bool(payload.get("line_auto_enabled", True)),
+    }
+
+
+def _write_openclaw_settings(settings: dict[str, object]) -> dict[str, object]:
+    current = _read_openclaw_settings()
+    current.update(settings)
+    OPENCLAW_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = OPENCLAW_SETTINGS_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(OPENCLAW_SETTINGS_PATH)
+    return current
 
 
 def _is_recent_run_lock(max_age_hours: float = 6) -> bool:
@@ -457,6 +499,197 @@ def _prewarm_latest_thumbnails(*, limit: int = 80) -> None:
         pass
 
 
+SUPPORTED_UPLOAD_EXT = {".jpg", ".jpeg", ".png", ".webp"}
+MAX_UPLOAD_FILE_BYTES = 15 * 1024 * 1024
+MAX_UPLOAD_TOTAL_BYTES = 200 * 1024 * 1024
+MAX_UPLOAD_FILE_COUNT = 50
+
+
+def _extract_multipart_boundary(content_type: str) -> bytes:
+    match = re.search(r'boundary="?([^";]+)"?', content_type)
+    if not match:
+        raise ValueError("multipart boundary missing")
+    return match.group(1).encode("utf-8")
+
+
+def _parse_multipart_form(content_type: str, body: bytes) -> tuple[dict[str, str], list[dict[str, object]]]:
+    boundary = _extract_multipart_boundary(content_type)
+    delimiter = b"--" + boundary
+    fields: dict[str, str] = {}
+    files: list[dict[str, object]] = []
+    for part in body.split(delimiter):
+        part = part.strip()
+        if not part or part == b"--":
+            continue
+        if part.endswith(b"--"):
+            part = part[:-2].strip()
+        header_blob, sep, content = part.partition(b"\r\n\r\n")
+        if not sep:
+            continue
+        headers = header_blob.decode("utf-8", errors="replace").split("\r\n")
+        disposition = ""
+        for header in headers:
+            name, _, value = header.partition(":")
+            if name.lower() == "content-disposition":
+                disposition = value.strip()
+                break
+        name_match = re.search(r'name="([^"]+)"', disposition)
+        if not name_match:
+            continue
+        field_name = name_match.group(1)
+        filename_match = re.search(r'filename="([^"]*)"', disposition)
+        content = content.rstrip(b"\r\n")
+        if filename_match:
+            filename = Path(filename_match.group(1)).name
+            if filename:
+                files.append({"field": field_name, "filename": filename, "content": content})
+        else:
+            fields[field_name] = content.decode("utf-8", errors="replace")
+    return fields, files
+
+
+def _find_current_image_path(image: dict[str, object], folder: dict[str, object]) -> Path | None:
+    stored = _resolve_project_file(str(image.get("stored_path") or ""))
+    if stored is not None:
+        return stored
+    digest = str(image.get("sha256") or "")
+    if not digest:
+        return None
+    base = folder_target_path(folder)
+    for subdir in ("inbox", "travel", "other", "review", "error", "branded"):
+        folder_path = base / subdir
+        if not folder_path.exists():
+            continue
+        for candidate in folder_path.iterdir():
+            if not candidate.is_file() or candidate.suffix.lower() not in SUPPORTED_UPLOAD_EXT:
+                continue
+            try:
+                if file_sha256(candidate) == digest:
+                    return candidate
+            except OSError:
+                continue
+    return None
+
+
+def _system_tags_for_image(path: Path | None) -> list[dict[str, object]]:
+    if path is None:
+        return []
+    sidecar = path.with_suffix(path.suffix + ".json")
+    if not sidecar.is_file():
+        return []
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    tags: list[dict[str, object]] = []
+    for key in ("countries", "regions", "features", "months"):
+        values = payload.get(key)
+        if isinstance(values, list):
+            tags.extend({"tag": str(value), "source": "ocr", "field": key} for value in values if value)
+    duration = payload.get("duration_days")
+    if duration:
+        tags.append({"tag": f"{duration}天", "source": "ocr", "field": "duration_days"})
+    return tags
+
+
+def _folder_pipeline_counts(folder: dict[str, object]) -> dict[str, int]:
+    base = folder_target_path(folder)
+    ocr_count = 0
+    for subdir in ("travel", "review", "other", "error"):
+        folder_path = base / subdir
+        if folder_path.is_dir():
+            ocr_count += sum(1 for item in folder_path.glob("*.json") if item.is_file())
+
+    branded_dir = base / "branded"
+    composed_count = 0
+    if branded_dir.is_dir():
+        composed_count = sum(
+            1
+            for item in branded_dir.iterdir()
+            if item.is_file() and item.suffix.lower() in SUPPORTED_UPLOAD_EXT
+        )
+    return {"ocr_count": ocr_count, "composed_count": composed_count}
+
+
+def _branded_images_by_source(folder: dict[str, object]) -> dict[str, Path]:
+    branded_dir = folder_target_path(folder) / "branded"
+    if not branded_dir.is_dir():
+        return {}
+
+    by_source: dict[str, Path] = {}
+    for branded in branded_dir.iterdir():
+        if not branded.is_file() or branded.suffix.lower() not in SUPPORTED_UPLOAD_EXT:
+            continue
+        sidecar = branded.with_suffix(branded.suffix + ".json")
+        if not sidecar.is_file():
+            continue
+        try:
+            payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
+        source_path_value = (
+            source.get("imagePath")
+            or source.get("image_path")
+            or payload.get("image_path")
+            or payload.get("source_image_path")
+        )
+        source_path = _resolve_project_file(str(source_path_value or ""))
+        if source_path is None:
+            continue
+        by_source[source_path.relative_to(PROJECT_ROOT).as_posix()] = branded
+    return by_source
+
+
+def _folder_with_runtime_status(folder: dict[str, object]) -> dict[str, object]:
+    latest = _latest_job_snapshot()
+    copy = dict(folder)
+    if latest and latest.get("folder_id") == folder.get("id"):
+        copy["status"] = latest.get("status") or copy.get("status")
+        copy["current_step"] = "done" if latest.get("status") == "success" else copy.get("current_step")
+        copy["step_statuses"] = {
+            **(copy.get("step_statuses") or {}),
+            **{
+                name: step.get("status")
+                for name, step in (latest.get("steps") or {}).items()
+                if isinstance(step, dict)
+            },
+        }
+        copy["job"] = latest
+    return copy
+
+
+def _folder_detail(folder: dict[str, object]) -> dict[str, object]:
+    folder = _folder_with_runtime_status(folder)
+    folder = {**folder, **_folder_pipeline_counts(folder)}
+    branded_by_source = _branded_images_by_source(folder)
+    images = []
+    for image in list_images(int(folder["id"])):
+        current_path = _find_current_image_path(image, folder)
+        image_copy = dict(image)
+        if current_path is not None:
+            rel = current_path.relative_to(PROJECT_ROOT).as_posix()
+            image_copy["current_path"] = rel
+            image_copy["media_id"] = _media_id(rel)
+            image_copy["image_url"] = f"/media?path={rel}"
+            image_copy["thumbnail_url"] = f"/media/thumbnail?path={rel}&w=360"
+            branded = branded_by_source.get(rel)
+            if branded is not None:
+                branded_rel = branded.relative_to(PROJECT_ROOT).as_posix()
+                image_copy["branded_path"] = branded_rel
+                image_copy["branded_url"] = f"/media?path={branded_rel}"
+                image_copy["branded_thumbnail_url"] = f"/media/thumbnail?path={branded_rel}&w=360"
+        image_copy["manual_tags"] = list_manual_tags(int(image["id"]))
+        image_copy["system_tags"] = _system_tags_for_image(current_path)
+        images.append(image_copy)
+    return {"folder": folder, "images": images}
+
+
+def _folder_summary(folder: dict[str, object]) -> dict[str, object]:
+    folder = _folder_with_runtime_status(folder)
+    return {**folder, **_folder_pipeline_counts(folder)}
+
+
 def _chat_payload(message: str, limit: int, *, include_archived: bool = False) -> dict:
     lower = message.lower()
     if any(token in message for token in ["狀態", "進度", "處理狀況", "資料庫", "db"]) or "status" in lower:
@@ -637,6 +870,11 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/auth/session":
             self._handle_auth_session()
             return
+        if parsed.path.startswith("/api/uploads/") or parsed.path == "/api/uploads/folders":
+            if not self._require_auth():
+                return
+            self._handle_uploads_get(parsed.path, parse_qs(parsed.query))
+            return
         if parsed.path.startswith("/api/openclaw/"):
             if not self._require_auth():
                 return
@@ -662,7 +900,15 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/auth/logout":
             self._handle_auth_logout()
             return
+        if parsed.path.startswith("/api/uploads/") or parsed.path == "/api/uploads/folders":
+            if not self._require_auth():
+                return
+            self._handle_uploads_post(parsed.path)
+            return
         if parsed.path.startswith("/api/openclaw/") and not self._require_auth():
+            return
+        if parsed.path == "/api/openclaw/settings":
+            self._handle_settings_update()
             return
         if parsed.path == "/api/openclaw/chat":
             self._handle_chat()
@@ -681,6 +927,24 @@ class Handler(SimpleHTTPRequestHandler):
             return
         self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
 
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/uploads/") and not self._require_auth():
+            return
+        if parsed.path.startswith("/api/uploads/"):
+            self._handle_uploads_delete(parsed.path)
+            return
+        self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
+
+    def do_PATCH(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/uploads/") and not self._require_auth():
+            return
+        if parsed.path.startswith("/api/uploads/"):
+            self._handle_uploads_patch(parsed.path)
+            return
+        self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
+
     def _json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -694,6 +958,10 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             if path == "/api/openclaw/status":
                 self._json(_status_with_manual_job(target_id=_first(params, "target") or None))
+                return
+
+            if path == "/api/openclaw/settings":
+                self._json({"ok": True, "settings": _read_openclaw_settings()})
                 return
 
             if path == "/api/openclaw/run":
@@ -753,6 +1021,221 @@ class Handler(SimpleHTTPRequestHandler):
             self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
         except Exception as exc:
             self._json({"error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _handle_settings_update(self) -> None:
+        try:
+            data = self._read_json_body()
+            settings = {}
+            if "line_auto_enabled" in data:
+                settings["line_auto_enabled"] = bool(data.get("line_auto_enabled"))
+            self._json({"ok": True, "settings": _write_openclaw_settings(settings)})
+        except Exception as exc:
+            self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _start_upload_pipeline(self, folder: dict[str, object], *, trigger_source: str = "upload") -> dict[str, object]:
+        latest = _latest_job_snapshot()
+        current = _manual_job_snapshot()
+        if current.get("running") or _is_recent_run_lock() or (latest and latest.get("status") == "running"):
+            return {
+                "ok": True,
+                "started": False,
+                "job": latest or current,
+                "message": "目前已有圖片流程執行中",
+            }
+        if not RUN_UPLOAD_SCRIPT.is_file():
+            return {"ok": False, "error": "upload runner script missing"}
+        update_folder_status(
+            int(folder["id"]),
+            status="running",
+            current_step="ocr",
+            step_statuses={"upload": "success", "ocr": "pending", "compose": "pending", "index": "pending"},
+        )
+        process = subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(RUN_UPLOAD_SCRIPT),
+                "-Target",
+                str(folder["folder_slug"]),
+                "-FolderId",
+                str(folder["id"]),
+                "-TriggerSource",
+                trigger_source,
+            ],
+            cwd=str(PROJECT_ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+        )
+        return {"ok": True, "started": True, "pid": process.pid}
+
+    def _handle_uploads_get(self, path: str, params: dict[str, list[str]]) -> None:
+        try:
+            if path == "/api/uploads/folders":
+                limit = _as_int(_first(params, "limit", "50"), 50) or 50
+                folders = [_folder_summary(folder) for folder in list_folders(limit=limit)]
+                self._json({"ok": True, "folders": folders})
+                return
+
+            match = re.fullmatch(r"/api/uploads/folders/(\d+)", path)
+            if match:
+                folder = get_folder(int(match.group(1)))
+                if not folder:
+                    self._json({"ok": False, "error": "folder not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                self._json({"ok": True, **_folder_detail(folder)})
+                return
+
+            self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
+        except Exception as exc:
+            self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _handle_uploads_post(self, path: str) -> None:
+        try:
+            if path == "/api/uploads/folders":
+                data = self._read_json_body()
+                display_name = str(data.get("display_name") or "").strip()
+                note = str(data.get("note") or "").strip()
+                if not display_name:
+                    self._json({"ok": False, "error": "display_name is required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                folder = create_folder(display_name, note, source="upload")
+                self._json({"ok": True, "folder": folder})
+                return
+
+            match = re.fullmatch(r"/api/uploads/folders/(\d+)/images", path)
+            if match:
+                folder = get_folder(int(match.group(1)))
+                if not folder:
+                    self._json({"ok": False, "error": "folder not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                content_type = self.headers.get("Content-Type", "")
+                length = int(self.headers.get("Content-Length", "0"))
+                if length > MAX_UPLOAD_TOTAL_BYTES:
+                    self._json({"ok": False, "error": "upload payload too large"}, HTTPStatus.BAD_REQUEST)
+                    return
+                body = self.rfile.read(length)
+                fields, files = _parse_multipart_form(content_type, body)
+                if not files:
+                    self._json({"ok": False, "error": "no files uploaded"}, HTTPStatus.BAD_REQUEST)
+                    return
+                if len(files) > MAX_UPLOAD_FILE_COUNT:
+                    self._json({"ok": False, "error": f"too many files; maximum is {MAX_UPLOAD_FILE_COUNT}"}, HTTPStatus.BAD_REQUEST)
+                    return
+                target_inbox = folder_target_path(folder) / "inbox"
+                target_inbox.mkdir(parents=True, exist_ok=True)
+                added = []
+                rejected = []
+                next_index = int(folder.get("image_count") or 0) + 1
+                for file_item in files:
+                    filename = str(file_item["filename"])
+                    content = bytes(file_item["content"])
+                    suffix = Path(filename).suffix.lower()
+                    if suffix not in SUPPORTED_UPLOAD_EXT:
+                        rejected.append(f"{filename}: unsupported format")
+                        continue
+                    if len(content) > MAX_UPLOAD_FILE_BYTES:
+                        rejected.append(f"{filename}: file too large")
+                        continue
+                    while True:
+                        target = target_inbox / safe_stored_filename(filename, next_index)
+                        if not target.exists() and not stored_path_is_registered(target):
+                            break
+                        next_index += 1
+                    target.write_bytes(content)
+                    added.append(add_image(int(folder["id"]), target, filename))
+                    next_index += 1
+                if not added:
+                    detail = "; ".join(rejected) if rejected else "no supported image files uploaded"
+                    self._json({"ok": False, "error": detail}, HTTPStatus.BAD_REQUEST)
+                    return
+                folder = get_folder(int(folder["id"])) or folder
+                pipeline = self._start_upload_pipeline(folder, trigger_source="upload")
+                self._json({"ok": bool(pipeline.get("ok")), "folder": folder, "images": added, "pipeline": pipeline})
+                return
+
+            match = re.fullmatch(r"/api/uploads/images/(\d+)/manual-tags", path)
+            if match:
+                data = self._read_json_body()
+                tag = add_manual_tag(
+                    int(match.group(1)),
+                    str(data.get("tag") or ""),
+                    note=str(data.get("note") or ""),
+                    created_by=str(data.get("created_by") or "web"),
+                )
+                self._json({"ok": True, "tag": tag})
+                return
+
+            if path == "/api/openclaw/settings":
+                data = self._read_json_body()
+                settings = {}
+                if "line_auto_enabled" in data:
+                    settings["line_auto_enabled"] = bool(data.get("line_auto_enabled"))
+                self._json({"ok": True, "settings": _write_openclaw_settings(settings)})
+                return
+
+            self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
+        except Exception as exc:
+            self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _handle_uploads_delete(self, path: str) -> None:
+        try:
+            match = re.fullmatch(r"/api/uploads/images/(\d+)", path)
+            if match:
+                ok = archive_image(int(match.group(1)), updated_by="web")
+                self._json({"ok": ok, "archived": ok})
+                return
+
+            match = re.fullmatch(r"/api/uploads/manual-tags/(\d+)", path)
+            if match:
+                ok = delete_manual_tag(int(match.group(1)))
+                self._json({"ok": ok})
+                return
+            self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
+        except Exception as exc:
+            self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _handle_uploads_patch(self, path: str) -> None:
+        try:
+            match = re.fullmatch(r"/api/uploads/images/(\d+)", path)
+            if match:
+                data = self._read_json_body()
+                tags_value = data.get("ocr_tags_override")
+                tags = tags_value if isinstance(tags_value, list) else None
+                image = update_image_metadata(
+                    int(match.group(1)),
+                    display_name=str(data.get("display_name")) if "display_name" in data else None,
+                    ocr_tags_override=tags,
+                    reference_text=str(data.get("reference_text")) if "reference_text" in data else None,
+                    manual_note=str(data.get("manual_note")) if "manual_note" in data else None,
+                    updated_by=str(data.get("updated_by") or "web"),
+                )
+                if not image:
+                    self._json({"ok": False, "error": "image not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                self._json({"ok": True, "image": image})
+                return
+
+            match = re.fullmatch(r"/api/uploads/manual-tags/(\d+)", path)
+            if match:
+                data = self._read_json_body()
+                tag = update_manual_tag(
+                    int(match.group(1)),
+                    str(data.get("tag") or ""),
+                    note=str(data.get("note")) if "note" in data else None,
+                )
+                if not tag:
+                    self._json({"ok": False, "error": "tag not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                self._json({"ok": True, "tag": tag})
+                return
+
+            self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
+        except Exception as exc:
+            self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _handle_chat(self) -> None:
         try:
@@ -847,6 +1330,14 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _handle_run(self) -> None:
         try:
+            if not _read_openclaw_settings().get("line_auto_enabled", True):
+                self._json({
+                    "ok": False,
+                    "kind": "manual-run",
+                    "started": False,
+                    "error": "LINE 自動抓圖目前已停用，請改用圖片上傳流程。",
+                }, HTTPStatus.CONFLICT)
+                return
             if not RUN_RPA_SCRIPT.is_file():
                 self._json({"ok": False, "error": "manual run script missing"}, HTTPStatus.INTERNAL_SERVER_ERROR)
                 return

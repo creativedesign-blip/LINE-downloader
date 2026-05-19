@@ -1,14 +1,12 @@
 param(
-    [ValidateSet("scheduled", "manual", "test")]
-    [string]$TriggerSource = "scheduled"
+    [Parameter(Mandatory = $true)][string]$Target,
+    [Parameter(Mandatory = $true)][int]$FolderId,
+    [ValidateSet("upload", "line-auto")]
+    [string]$TriggerSource = "upload"
 )
 
 $ErrorActionPreference = "Stop"
 
-# Resolve project root from this script's location so the .ps1 isn't
-# pinned to a single user account. RPA / pipeline python interpreters
-# can be overridden per-machine via env vars (RPA_PYTHON,
-# PIPELINE_PYTHON); defaults below match the original Anaconda layout.
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $RpaPython = if ($env:RPA_PYTHON) { $env:RPA_PYTHON } else { "C:\Users\user\anaconda3\python.exe" }
 $DefaultPipelinePython = "C:\Users\user\anaconda3\envs\asr\python.exe"
@@ -16,28 +14,12 @@ if (-not (Test-Path $DefaultPipelinePython)) {
     $DefaultPipelinePython = "C:\Users\user\anaconda3\python.exe"
 }
 $PipelinePython = if ($env:PIPELINE_PYTHON) { $env:PIPELINE_PYTHON } else { $DefaultPipelinePython }
-$ConfigPath = Join-Path $ProjectRoot "line-rpa\config.json"
-$UploadCatalogScript = Join-Path $ProjectRoot "tools\openclaw\upload_catalog.py"
-$PipelineScript = Join-Path $ProjectRoot "tools\pipeline\process_downloads.py"
 $LogDir = Join-Path $ProjectRoot "logs\openclaw"
 $LockPath = Join-Path $LogDir "line-rpa-scheduled.lock"
 $JobStatusPath = Join-Path $LogDir "latest_job.json"
-$SettingsPath = Join-Path $LogDir "settings.json"
 $RapidOcrModelDir = Join-Path $ProjectRoot ".cache\rapidocr-models"
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-
-if ($TriggerSource -ne "test" -and (Test-Path $SettingsPath)) {
-    try {
-        $settings = Get-Content -Raw -LiteralPath $SettingsPath | ConvertFrom-Json
-        if ($settings.line_auto_enabled -eq $false) {
-            Write-Host "LINE auto fetch is disabled by settings.json."
-            exit 0
-        }
-    } catch {
-        Write-Host "Unable to read settings.json; continuing LINE auto fetch."
-    }
-}
 
 $Utf8 = New-Object System.Text.UTF8Encoding($false)
 [Console]::InputEncoding = $Utf8
@@ -45,24 +27,34 @@ $Utf8 = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = $Utf8
 try {
     chcp 65001 | Out-Null
-} catch {
-    # chcp is not available in every non-interactive host; the .NET encoding
-    # settings above are the important part for scheduled runs.
-}
+} catch {}
 
 $RunStamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$LogPath = Join-Path $LogDir "line-rpa-scheduled-$RunStamp.log"
-$JobId = "$RunStamp-$TriggerSource"
-$LogRelPath = "logs/openclaw/line-rpa-scheduled-$RunStamp.log"
+$LogPath = Join-Path $LogDir "uploaded-images-$RunStamp.log"
+$JobId = "$RunStamp-$TriggerSource-$Target"
+$LogRelPath = "logs/openclaw/uploaded-images-$RunStamp.log"
 $LockRelPath = "logs/openclaw/line-rpa-scheduled.lock"
 $Script:JobState = $null
 $Script:JobFinished = $false
-$LineRunStartEpoch = [DateTimeOffset]::Now.ToUnixTimeSeconds()
-$LineFolderId = $null
-$LineTarget = $null
 
 function Get-IsoUtcNow {
     return (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+}
+
+function Update-FolderCatalog {
+    param(
+        [string]$Status,
+        [string]$CurrentStep,
+        [string[]]$Steps = @()
+    )
+    $args = @("-X", "utf8", ".\tools\openclaw\upload_catalog.py", "update-folder", "--id", "$FolderId")
+    if ($Status) { $args += @("--status", $Status) }
+    if ($CurrentStep) { $args += @("--current-step", $CurrentStep) }
+    $args += @("--job-id", $JobId)
+    foreach ($step in $Steps) {
+        $args += @("--step", $step)
+    }
+    & $RpaPython $args | Out-Null
 }
 
 function New-StepState {
@@ -76,9 +68,7 @@ function New-StepState {
 }
 
 function Save-JobStatus {
-    if ($null -eq $Script:JobState) {
-        return
-    }
+    if ($null -eq $Script:JobState) { return }
     $tmp = "$JobStatusPath.tmp"
     $json = $Script:JobState | ConvertTo-Json -Depth 8
     [System.IO.File]::WriteAllText($tmp, $json, $Utf8)
@@ -94,18 +84,11 @@ function Save-JobStatus {
 }
 
 function Initialize-JobStatus {
-    $folderJson = & $RpaPython "-X" "utf8" $UploadCatalogScript `
-        "prepare-line-run" `
-        "--config" $ConfigPath `
-        "--timestamp" $RunStamp
-    $folder = $folderJson | ConvertFrom-Json
-    $script:LineFolderId = [int]$folder.id
-    $script:LineTarget = [string]$folder.folder_slug
     $Script:JobState = [ordered]@{
         job_id = $JobId
         trigger_source = $TriggerSource
-        folder_id = $script:LineFolderId
-        target_id = $script:LineTarget
+        target_id = $Target
+        folder_id = $FolderId
         status = "running"
         running = $true
         pid = $PID
@@ -116,7 +99,6 @@ function Initialize-JobStatus {
         log_path = $LogRelPath
         lock_path = $LockRelPath
         steps = [ordered]@{
-            rpa = New-StepState
             upload = New-StepState
             ocr = New-StepState
             compose = New-StepState
@@ -124,23 +106,6 @@ function Initialize-JobStatus {
         }
     }
     Save-JobStatus
-}
-
-function Update-LineFolder {
-    param(
-        [string]$Status,
-        [string]$CurrentStep,
-        [string[]]$Steps = @()
-    )
-    if ($null -eq $script:LineFolderId) { return }
-    $args = @("-X", "utf8", $UploadCatalogScript, "update-folder", "--id", "$script:LineFolderId")
-    if ($Status) { $args += @("--status", $Status) }
-    if ($CurrentStep) { $args += @("--current-step", $CurrentStep) }
-    $args += @("--job-id", $JobId)
-    foreach ($step in $Steps) {
-        $args += @("--step", $step)
-    }
-    & $RpaPython $args | Out-Null
 }
 
 function Set-JobStep {
@@ -151,9 +116,7 @@ function Set-JobStep {
         [object]$ErrorMessage = $null
     )
     $step = $Script:JobState["steps"][$Name]
-    if ($null -eq $step) {
-        return
-    }
+    if ($null -eq $step) { return }
     $step["status"] = $Status
     if ($Status -eq "running" -and $null -eq $step["started_at"]) {
         $step["started_at"] = Get-IsoUtcNow
@@ -161,14 +124,10 @@ function Set-JobStep {
     if ($Status -in @("success", "failed", "skipped")) {
         $step["finished_at"] = Get-IsoUtcNow
     }
-    if ($null -ne $ExitCode) {
-        $step["exit_code"] = [int]$ExitCode
-    }
-    if ($null -ne $ErrorMessage) {
-        $step["error"] = [string]$ErrorMessage
-    }
+    if ($null -ne $ExitCode) { $step["exit_code"] = [int]$ExitCode }
+    if ($null -ne $ErrorMessage) { $step["error"] = [string]$ErrorMessage }
     Save-JobStatus
-    Update-LineFolder -Status "running" -CurrentStep $Name -Steps @("$Name=$Status")
+    Update-FolderCatalog -Status "running" -CurrentStep $Name -Steps @("$Name=$Status")
 }
 
 function Complete-JobStatus {
@@ -187,7 +146,7 @@ function Complete-JobStatus {
     $Script:JobFinished = $true
     Save-JobStatus
     $finalStep = if ($Status -eq "success") { "done" } else { "failed" }
-    Update-LineFolder -Status $Status -CurrentStep $finalStep
+    Update-FolderCatalog -Status $Status -CurrentStep $finalStep
 }
 
 function Write-Log {
@@ -233,7 +192,7 @@ function Invoke-LoggedJobStep {
 if (Test-Path $LockPath) {
     $age = (Get-Date) - (Get-Item $LockPath).LastWriteTime
     if ($age.TotalHours -lt 6) {
-        Write-Log "Another scheduled LINE RPA run appears active. Lock: $LockPath"
+        Write-Log "Another image processing run appears active. Lock: $LockPath"
         exit 0
     }
     Write-Log "Removing stale lock older than 6 hours. Lock: $LockPath"
@@ -252,48 +211,12 @@ try {
         Remove-Item "Env:$name" -ErrorAction SilentlyContinue
     }
 
-    # Tier A: RPA only downloads here. The OCR/compose/index steps below
-    # do all pipeline work in three shared subprocesses (one OCR-engine
-    # load each), avoiding the previous double-pipeline pattern where
-    # --run-pipeline spawned filter+ocr_enrich per group, then steps 2-4
-    # repeated the same work for all groups. Trade-off: review/ images
-    # appear after the OCR step instead of after each group's RPA finishes.
-    [int]$rpaExit = Invoke-LoggedJobStep -StepName "rpa" -DisplayName "LINE RPA download" -Command {
-        & $RpaPython "-X" "utf8" ".\line-rpa\line_image_downloader.py" `
-            --config $ConfigPath `
-            --all `
-            --skip-pipeline
-    }
+    Set-JobStep -Name "upload" -Status "success" -ExitCode 0
 
-    if ($rpaExit -ne 0) {
-        Set-JobStep -Name "upload" -Status "skipped" -ErrorMessage "Skipped because LINE RPA download failed."
-        Set-JobStep -Name "ocr" -Status "skipped" -ErrorMessage "Skipped because LINE RPA download failed."
-        Set-JobStep -Name "compose" -Status "skipped" -ErrorMessage "Skipped because LINE RPA download failed."
-        Set-JobStep -Name "index" -Status "skipped" -ErrorMessage "Skipped because LINE RPA download failed."
-        Complete-JobStatus -Status "failed" -ReturnCode $rpaExit -ErrorMessage "LINE RPA download exited with code $rpaExit"
-        exit $rpaExit
-    }
-
-    [int]$uploadExit = Invoke-LoggedJobStep -StepName "upload" -DisplayName "LINE auto folder ingest" -Command {
-        & $RpaPython "-X" "utf8" $UploadCatalogScript `
-            "ingest-line-run" `
-            "--id" $script:LineFolderId `
-            "--config" $ConfigPath `
-            "--started-at-epoch" $LineRunStartEpoch
-    }
-
-    if ($uploadExit -ne 0) {
-        Set-JobStep -Name "ocr" -Status "skipped" -ErrorMessage "Skipped because LINE folder ingest failed."
-        Set-JobStep -Name "compose" -Status "skipped" -ErrorMessage "Skipped because LINE folder ingest failed."
-        Set-JobStep -Name "index" -Status "skipped" -ErrorMessage "Skipped because LINE folder ingest failed."
-        Complete-JobStatus -Status "failed" -ReturnCode $uploadExit -ErrorMessage "LINE folder ingest exited with code $uploadExit"
-        exit $uploadExit
-    }
-
-    [int]$ocrExit = Invoke-LoggedJobStep -StepName "ocr" -DisplayName "Agent OCR sync" -Command {
-        & $RpaPython "-X" "utf8" $PipelineScript `
+    [int]$ocrExit = Invoke-LoggedJobStep -StepName "ocr" -DisplayName "Uploaded image OCR sync" -Command {
+        & $RpaPython "-X" "utf8" ".\tools\pipeline\process_downloads.py" `
             --python $PipelinePython `
-            --target $script:LineTarget `
+            --target $Target `
             --skip-branding `
             --skip-ocr-enrich `
             --skip-index `
@@ -303,10 +226,10 @@ try {
     [int]$composeExit = 0
     [int]$indexExit = 0
     if ($ocrExit -eq 0) {
-        $composeExit = Invoke-LoggedJobStep -StepName "compose" -DisplayName "Agent compose sync" -Command {
-            & $RpaPython "-X" "utf8" $PipelineScript `
+        $composeExit = Invoke-LoggedJobStep -StepName "compose" -DisplayName "Uploaded image compose sync" -Command {
+            & $RpaPython "-X" "utf8" ".\tools\pipeline\process_downloads.py" `
                 --python $PipelinePython `
-                --target $script:LineTarget `
+                --target $Target `
                 --skip-ocr `
                 --skip-ocr-enrich `
                 --skip-index `
@@ -317,28 +240,28 @@ try {
     }
 
     if ($ocrExit -eq 0 -and $composeExit -eq 0) {
-        $indexExit = Invoke-LoggedJobStep -StepName "index" -DisplayName "Agent index sync" -Command {
-            & $RpaPython "-X" "utf8" $PipelineScript `
+        $indexExit = Invoke-LoggedJobStep -StepName "index" -DisplayName "Uploaded image index sync" -Command {
+            & $RpaPython "-X" "utf8" ".\tools\pipeline\process_downloads.py" `
                 --python $PipelinePython `
-                --target $script:LineTarget `
+                --target $Target `
                 --skip-ocr `
                 --skip-branding `
                 --json
         }
     } else {
-        Set-JobStep -Name "index" -Status "skipped" -ErrorMessage "Skipped because an earlier Agent sync step failed."
+        Set-JobStep -Name "index" -Status "skipped" -ErrorMessage "Skipped because an earlier sync step failed."
     }
 
     if ($ocrExit -ne 0) {
-        Complete-JobStatus -Status "failed" -ReturnCode $ocrExit -ErrorMessage "Agent OCR sync exited with code $ocrExit"
+        Complete-JobStatus -Status "failed" -ReturnCode $ocrExit -ErrorMessage "Uploaded image OCR sync exited with code $ocrExit"
         exit $ocrExit
     }
     if ($composeExit -ne 0) {
-        Complete-JobStatus -Status "failed" -ReturnCode $composeExit -ErrorMessage "Agent compose sync exited with code $composeExit"
+        Complete-JobStatus -Status "failed" -ReturnCode $composeExit -ErrorMessage "Uploaded image compose sync exited with code $composeExit"
         exit $composeExit
     }
     if ($indexExit -ne 0) {
-        Complete-JobStatus -Status "failed" -ReturnCode $indexExit -ErrorMessage "Agent index sync exited with code $indexExit"
+        Complete-JobStatus -Status "failed" -ReturnCode $indexExit -ErrorMessage "Uploaded image index sync exited with code $indexExit"
         exit $indexExit
     }
     Complete-JobStatus -Status "success" -ReturnCode 0
@@ -346,7 +269,7 @@ try {
 }
 catch {
     $message = $_.Exception.Message
-    Write-Log "Scheduled LINE RPA run failed: $message"
+    Write-Log "Uploaded image run failed: $message"
     if ($null -ne $Script:JobState -and -not $Script:JobFinished) {
         Complete-JobStatus -Status "failed" -ReturnCode 1 -ErrorMessage $message
     }
@@ -357,5 +280,4 @@ finally {
         Complete-JobStatus -Status "failed" -ReturnCode 1 -ErrorMessage "Process ended before job status was finalized."
     }
     Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue
-    Write-Log "Scheduled LINE RPA run ended."
 }

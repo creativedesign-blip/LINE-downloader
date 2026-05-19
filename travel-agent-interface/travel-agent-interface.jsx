@@ -33,6 +33,13 @@ import {
   LogOut,
   ShieldCheck,
   UserRound,
+  Upload,
+  FolderPlus,
+  FolderOpen,
+  Tag,
+  Power,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 
 const toAbsoluteUrl = (url) => {
@@ -65,7 +72,7 @@ function DmImage({ dm, src, alt, className = "", loading = "lazy" }) {
         className={`${className} flex items-center justify-center bg-stone-200 text-stone-500 text-[11px] text-center px-2`}
         title="Image failed to load"
       >
-        圖片載入失敗
+        ??頛憭望?
       </div>
     );
   }
@@ -153,7 +160,7 @@ async function downloadDmImagesPackage(items) {
 
   const mediaIds = mediaIdsForItems(items);
   if (mediaIds.length === 0) {
-    throw new Error("沒有可下載的圖片。");
+    throw new Error("No image URLs to download.");
   }
 
   const params = new URLSearchParams();
@@ -177,7 +184,7 @@ async function downloadDmImagesPackage(items) {
   });
 
   if (!response.ok) {
-    let message = "下載圖片包失敗。";
+    let message = "銝????仃??";
     try {
       const payload = await response.json();
       message = payload?.error || message;
@@ -204,12 +211,12 @@ const formatDmForClipboard = (dm, index = 0) => {
   if (typeof dm === "string") return dm;
 
   const lines = [
-    `${index + 1}. ${dm?.title || "旅遊 DM"}`,
-    dm?.region ? `地區：${dm.region}` : "",
-    dm?.period ? `期間：${dm.period}` : "",
-    dm?.price ? `價格：${dm.price}` : "",
-    dm?.source ? `來源：${dm.source}` : "",
-    dmFullImage(dm) ? `圖片：${toAbsoluteUrl(dmFullImage(dm))}` : "",
+    `${index + 1}. ${dm?.title || "?? DM"}`,
+    dm?.region ? `?啣?嚗?{dm.region}` : "",
+    dm?.period ? `??嚗?{dm.period}` : "",
+    dm?.price ? `?寞嚗?{dm.price}` : "",
+    dm?.source ? `靘?嚗?{dm.source}` : "",
+    dmFullImage(dm) ? `??嚗?{toAbsoluteUrl(dmFullImage(dm))}` : "",
   ].filter(Boolean);
 
   return lines.join("\n");
@@ -273,25 +280,25 @@ function explainClipboardError(error) {
   const name = String(error?.name || "");
   const details = error?.clipboardDetails || clipboardDiagnostics();
 
-  let reason = "瀏覽器拒絕寫入圖片剪貼簿。";
+  let reason = "?汗?冽?蝯神?亙??鞎潛倏??";
   if (!details.secure || details.protocol !== "https:") {
-    reason = "目前不是 HTTPS，瀏覽器禁止網頁複製圖片。";
+    reason = "?桀?銝 HTTPS嚗汗?函?甇Ｙ雯??鋆賢???";
   } else if (!details.clipboardWrite || !details.clipboardItem) {
-    reason = "這個瀏覽器不支援圖片剪貼簿。請用最新版 Chrome 或 Edge。";
+    reason = "?汗?其??舀???芾票蝪踴??冽??啁? Chrome ??Edge??";
   } else if (!details.focused || details.visibility !== "visible" || /not focused/i.test(message)) {
-    reason = "頁面沒有焦點。請先點一下頁面空白處，再直接按複製，不要切換視窗。";
+    reason = "?瘝??阡?????銝銝??Ｙ征?質?嚗??湔??鋆踝?銝???閬???";
   } else if (/notallowed|permission|denied/i.test(`${name} ${message}`)) {
-    reason = "剪貼簿權限被瀏覽器拒絕。請確認網址列左側允許剪貼簿，並由按鈕直接觸發複製。";
+    reason = "?芾票蝪踵??◤?汗?冽?蝯?蝣箄?蝬脣??椰?游?閮勗鞎潛倏嚗蒂?望???亥孛?潸?鋆賬?";
   } else if (/load image|fetch|network|failed/i.test(message)) {
-    reason = "圖片載入失敗，可能是外網連線或圖片網址回應太慢。";
+    reason = "??頛憭望?嚗?賣憭雯??????雯???憭芣??";
   } else if (/too large|size|memory|canvas/i.test(message)) {
-    reason = "圖片太大或合成圖太大，瀏覽器無法放入剪貼簿。";
+    reason = "??憭芸之????憭芸之嚗汗?函瘜?亙鞎潛倏??";
   }
 
   return [
     reason,
-    `技術訊息：${name || "Error"} ${message}`.trim(),
-    `環境：${details.browser} / secure=${details.secure} / focus=${details.focused} / visibility=${details.visibility} / write=${details.clipboardWrite} / ClipboardItem=${details.clipboardItem} / html=${details.htmlClipboard} / png=${details.pngClipboard}`,
+    `?銵??荔?${name || "Error"} ${message}`.trim(),
+    `?啣?嚗?{details.browser} / secure=${details.secure} / focus=${details.focused} / visibility=${details.visibility} / write=${details.clipboardWrite} / ClipboardItem=${details.clipboardItem} / html=${details.htmlClipboard} / png=${details.pngClipboard}`,
   ].join("\n");
 }
 
@@ -321,7 +328,7 @@ async function fetchImageBlobForClipboard(url) {
     if (!response.ok) throw new Error(`Cannot load image for clipboard (${response.status}).`);
     return response.blob();
   } catch (error) {
-    throw buildClipboardError("圖片載入失敗，無法複製。", error);
+    throw buildClipboardError("??頛憭望?嚗瘜?鋆賬?", error);
   }
 }
 
@@ -331,7 +338,7 @@ async function fetchImageBitmap(url) {
     if (!response.ok) throw new Error(`Cannot load image for clipboard (${response.status}).`);
     return createImageBitmap(await response.blob());
   } catch (error) {
-    throw buildClipboardError("圖片載入失敗，無法複製。", error);
+    throw buildClipboardError("??頛憭望?嚗瘜?鋆賬?", error);
   }
 }
 
@@ -408,13 +415,13 @@ async function htmlFromImageBlobs(blobPromises, text = "") {
 
 async function writeHtmlImagesToClipboard(blobPromises, text = "") {
   if (!window.isSecureContext || !navigator.clipboard?.write || !window.ClipboardItem) {
-    throw buildClipboardError("瀏覽器不允許 HTML 圖片剪貼簿。");
+    throw buildClipboardError("?汗?其??迂 HTML ???芾票蝪踴?");
   }
   if (document.visibilityState !== "visible" || !document.hasFocus?.()) {
     window.focus?.();
   }
   if (document.visibilityState !== "visible" || !document.hasFocus?.()) {
-    throw buildClipboardError("頁面沒有焦點，無法複製 HTML 圖片。");
+    throw buildClipboardError("?瘝??阡?嚗瘜?鋆?HTML ????");
   }
 
   const htmlPromise = htmlFromImageBlobs(blobPromises, text).then(
@@ -427,19 +434,19 @@ async function writeHtmlImagesToClipboard(blobPromises, text = "") {
       }),
     ]);
   } catch (error) {
-    throw buildClipboardError("HTML base64 圖片寫入剪貼簿失敗。", error);
+    throw buildClipboardError("HTML base64 ??撖怠?芾票蝪踹仃??", error);
   }
 }
 
 async function writeImageBlobToClipboard(blobOrPromise) {
   if (!window.isSecureContext || !navigator.clipboard?.write || !window.ClipboardItem) {
-    throw buildClipboardError("瀏覽器不允許圖片剪貼簿。");
+    throw buildClipboardError("?汗?其??迂???芾票蝪踴?");
   }
   if (document.visibilityState !== "visible" || !document.hasFocus?.()) {
     window.focus?.();
   }
   if (document.visibilityState !== "visible" || !document.hasFocus?.()) {
-    throw buildClipboardError("頁面沒有焦點，無法複製圖片。");
+    throw buildClipboardError("?瘝??阡?嚗瘜?鋆賢???");
   }
 
   // Clipboard writes require a transient user activation. Start the write
@@ -451,7 +458,7 @@ async function writeImageBlobToClipboard(blobOrPromise) {
       new ClipboardItem({ "image/png": pngPromise }),
     ]);
   } catch (error) {
-    throw buildClipboardError("圖片寫入剪貼簿失敗。", error);
+    throw buildClipboardError("??撖怠?芾票蝪踹仃??", error);
   }
 }
 
@@ -580,12 +587,12 @@ async function copyDmToClipboard(dm) {
 
   if (hasImage) {
     if (!window.isSecureContext) {
-      throw buildClipboardError("目前不是 HTTPS，瀏覽器禁止複製圖片到剪貼簿。");
+      throw buildClipboardError("?桀?銝 HTTPS嚗汗?函?甇Ｚ?鋆賢???芾票蝪踴?");
     }
     if (!navigator.clipboard?.write || !window.ClipboardItem) {
-      throw buildClipboardError("這個瀏覽器不支援圖片剪貼簿，請改用 Chrome 或 Edge。");
+      throw buildClipboardError("?汗?其??舀???芾票蝪選?隢??Chrome ??Edge??");
     }
-    throw imageError || buildClipboardError("圖片沒有成功寫入剪貼簿。");
+    throw imageError || buildClipboardError("??瘝???撖怠?芾票蝪踴?");
   }
 
   await copyTextToClipboard(text);
@@ -614,7 +621,7 @@ function getLineImagePipelineStatus(status) {
       isComplete: Boolean(status.pipeline.is_complete),
       completedStages: Number(status.pipeline.completed_stages || 0),
       totalStages: Number(status.pipeline.total_stages || 3),
-      label: status.pipeline.label || "LINE圖片處理中",
+      label: status.pipeline.label || "LINE????銝?",
       color: status.pipeline.is_complete ? "#16A34A" : "#D97706",
     };
   }
@@ -656,13 +663,13 @@ function getLineImagePipelineStatus(status) {
     isComplete,
     completedStages,
     totalStages: 3,
-    label: isComplete ? "LINE圖片處理完成" : "LINE圖片處理中",
+    label: isComplete ? "LINE????摰?" : "LINE????銝?",
     color: isComplete ? "#16A34A" : "#D97706",
   };
 }
 
 function formatDateTime(value) {
-  if (!value) return "尚無";
+  if (!value) return "撠";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleString("zh-TW", {
@@ -674,21 +681,21 @@ function formatDateTime(value) {
 }
 
 function manualJobLabel(job) {
-  if (job?.running) return "執行中";
-  if (job?.status === "success") return "成功";
-  if (job?.status === "failed") return "失敗";
-  if (job?.last_success === true) return "成功";
-  if (job?.last_success === false) return "失敗";
-  if (job?.status === "stale") return "中斷";
-  return "未執行";
+  if (job?.running) return "?瑁?銝?";
+  if (job?.status === "success") return "??";
+  if (job?.status === "failed") return "憭望?";
+  if (job?.last_success === true) return "??";
+  if (job?.last_success === false) return "憭望?";
+  if (job?.status === "stale") return "銝剜";
+  return "?芸銵?";
 }
 
 function jobStepLabel(status) {
-  if (status === "success") return "完成";
-  if (status === "running") return "處理中";
-  if (status === "failed") return "失敗";
-  if (status === "skipped") return "略過";
-  return "等待";
+  if (status === "success") return "摰?";
+  if (status === "running") return "??銝?";
+  if (status === "failed") return "憭望?";
+  if (status === "skipped") return "?仿?";
+  return "蝑?";
 }
 
 function jobStepAccent(status) {
@@ -696,22 +703,24 @@ function jobStepAccent(status) {
 }
 
 function jobSourceLabel(source) {
-  if (source === "manual") return "手動";
-  if (source === "scheduled") return "定時";
-  if (source === "test") return "測試";
-  return "未知";
+  if (source === "manual") return "??";
+  if (source === "scheduled") return "摰?";
+  if (source === "upload") return "??銝";
+  if (source === "line-auto") return "LINE ?芸??砍?";
+  if (source === "test") return "皜祈岫";
+  return "?芰";
 }
 
 function manualJobMessage(job) {
-  if (!job) return "手動流程狀態：未取得。";
+  if (!job) return "??瘚?????芸?敺?";
   const parts = [
-    `手動流程狀態：${manualJobLabel(job)}`,
-    `開始：${formatDateTime(job.last_started_at)}`,
-    `結束：${formatDateTime(job.last_finished_at)}`,
+    `??瘚????${manualJobLabel(job)}`,
+    `??嚗?{formatDateTime(job.last_started_at)}`,
+    `蝯?嚗?{formatDateTime(job.last_finished_at)}`,
   ];
-  if (job.pid) parts.push(`PID：${job.pid}`);
-  if (job.last_error) parts.push(`錯誤：${job.last_error}`);
-  return parts.join("。");
+  if (job.pid) parts.push(`PID嚗?{job.pid}`);
+  if (job.last_error) parts.push(`?航炊嚗?{job.last_error}`);
+  return parts.join("??");
 }
 
 function isJobRunning(job) {
@@ -731,7 +740,7 @@ function selectManualRunJob(status) {
 /* ===== MAIN APP ===== */
 /* ===== DADOVA LOGO COMPONENT ===== */
 function DadovaLogo({ size = 32, inverted = false }) {
-  // Globe icon in rounded black square — matches "新組圖完成" notification icon style
+  // Globe icon in rounded black square ??matches "?啁????? notification icon style
   const bg = inverted ? "#F5F1E8" : "#1C1917";
   const fg = inverted ? "#1C1917" : "#F5F1E8";
 
@@ -747,7 +756,7 @@ function DadovaLogo({ size = 32, inverted = false }) {
         justifyContent: "center",
         flexShrink: 0,
       }}
-      aria-label="大都會旅遊"
+      aria-label="DADOVA"
     >
       <Globe
         style={{
@@ -767,42 +776,26 @@ function DadovaLogo({ size = 32, inverted = false }) {
  * Returns: { action: 'replace' | 'add' | 'remove' | 'view', times: ["HH:MM", ...] } | null
  */
 function parseScheduleCommand(query) {
-  // Match HH:MM pattern (24h) — accepts 1–2 digit hours, requires minutes
-  const timeRegex = /\b([01]?\d|2[0-3])[:：]([0-5]\d)\b/g;
-  const matches = [...query.matchAll(timeRegex)];
-  const times = matches.map((m) => `${String(parseInt(m[1], 10)).padStart(2, "0")}:${m[2]}`);
+  const timeRegex = /\b([01]?\d|2[0-3]):([0-5]\d)\b/g;
+  const matches = [...String(query || "").matchAll(timeRegex)];
+  const times = matches.map((match) => `${String(parseInt(match[1], 10)).padStart(2, "0")}:${match[2]}`);
+  const text = String(query || "").toLowerCase();
+  const isScheduleContext = text.includes("schedule") || query.includes("排程") || query.includes("定時") || query.includes("時間");
 
-  const isScheduleContext = /排程|時段|跑爬|爬取時間|爬蟲時間|執行時間|schedule/i.test(query);
-
-  // Pure view query
   if (isScheduleContext && times.length === 0) {
-    if (/查看|顯示|看看|現在|目前|當前|是什麼|什麼時候|哪些/.test(query) || /排程$/.test(query.trim())) {
-      return { action: "view", times: [] };
-    }
+    return { action: "view", times: [] };
   }
-
-  // Removal: "刪除 14:30" / "拿掉 17:30" / "移除 09:30"
-  if (times.length > 0 && /刪除|拿掉|移除|刪掉|取消/.test(query)) {
+  if (times.length > 0 && (query.includes("刪") || query.includes("移除") || query.includes("取消") || text.includes("remove"))) {
     return { action: "remove", times };
   }
-
-  // Addition: "新增 20:00" / "加上 21:30" / "再加一個 22:00"
-  if (times.length > 0 && /新增|加上|加入|再加|增加|多加/.test(query)) {
+  if (times.length > 0 && (query.includes("新增") || query.includes("加入") || query.includes("加") || text.includes("add"))) {
     return { action: "add", times };
   }
-
-  // Replacement: "改成 ..." / "調整為 ..." / "排程改成 ..." / explicit list
-  if (times.length > 0 && (isScheduleContext || /改成|調整|改為|改|更新|設定為|設成|變成/.test(query))) {
+  if (times.length > 0 && (isScheduleContext || query.includes("改") || query.includes("設定") || text.includes("replace"))) {
     return { action: "replace", times };
   }
-
   return null;
 }
-
-function isManualAgentRunCommand(query) {
-  return /手動觸發抓取\+ocr\+組圖/i.test(query.trim());
-}
-
 function LoginScreen({ onLogin }) {
   const [username, setUsername] = useState("admin_dadova");
   const [error, setError] = useState("");
@@ -818,7 +811,7 @@ function LoginScreen({ onLogin }) {
     try {
       await onLogin({ username, password });
     } catch (loginError) {
-      setError(loginError.message || "登入失敗，請稍後再試。");
+      setError(loginError.message || "\u767b\u5165\u5931\u6557\uff0c\u8acb\u7a0d\u5f8c\u518d\u8a66\u3002");
     } finally {
       if (passwordInput) {
         passwordInput.value = "";
@@ -847,9 +840,9 @@ function LoginScreen({ onLogin }) {
         <div className="flex items-center gap-3 mb-8">
           <DadovaLogo size={38} />
           <div>
-            <div className="font-serif-tc text-xl font-medium leading-tight">大都會旅遊</div>
+            <div className="font-serif-tc text-xl font-medium leading-tight">DADOVA</div>
             <div className="text-[10px] tracking-[0.18em] uppercase text-stone-500 mt-1">
-              Dadova · agent
+              {"Dadova \u00b7 agent"}
             </div>
           </div>
         </div>
@@ -861,14 +854,14 @@ function LoginScreen({ onLogin }) {
         >
           <div className="flex items-center gap-2 text-xs font-medium text-stone-500 mb-3">
             <ShieldCheck className="w-4 h-4" />
-            外部介面登入
+            {"\u5916\u90e8\u4ecb\u9762\u767b\u5165"}
           </div>
           <h1 className="font-serif-tc text-2xl font-medium leading-tight mb-6">
-            請先登入 Agent 介面
+            {"\u8acb\u5148\u767b\u5165 Agent \u4ecb\u9762"}
           </h1>
 
           <label className="block text-xs font-medium text-stone-600 mb-2" htmlFor="login-username">
-            帳號
+            {"\u5e33\u865f"}
           </label>
           <div className="relative mb-4">
             <UserRound className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
@@ -884,7 +877,7 @@ function LoginScreen({ onLogin }) {
           </div>
 
           <label className="block text-xs font-medium text-stone-600 mb-2" htmlFor="login-password">
-            密碼
+            {"\u5bc6\u78bc"}
           </label>
           <div className="relative mb-5">
             <KeyRound className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
@@ -912,7 +905,7 @@ function LoginScreen({ onLogin }) {
             style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}
           >
             {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />}
-            {submitting ? "登入中" : "登入"}
+            {submitting ? "\u767b\u5165\u4e2d" : "\u767b\u5165"}
           </button>
         </form>
       </div>
@@ -952,7 +945,7 @@ function LoginGate() {
     });
     const payload = await response.json();
     if (!response.ok || !payload?.ok) {
-      throw new Error(payload?.error || "登入失敗");
+      throw new Error(payload?.error || "\u767b\u5165\u5931\u6557");
     }
     setSessionUser(payload.username || username);
   };
@@ -988,7 +981,7 @@ function LoginGate() {
 
 export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } = {}) {
   const [messages, setMessages] = useState([
-    { id: 1, role: "agent", type: "welcome", time: "今日 09:42" },
+    { id: 1, role: "agent", type: "welcome", time: "隞 09:42" },
   ]);
   const [input, setInput] = useState("");
   const [isThinking, setIsThinking] = useState(false);
@@ -1005,6 +998,14 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
     loading: true,
     error: null,
   });
+  const [uploadFolders, setUploadFolders] = useState([]);
+  const [uploadDetail, setUploadDetail] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const [lineAutoEnabled, setLineAutoEnabled] = useState(true);
+  const [activeWorkspace, setActiveWorkspace] = useState("chat");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
+  const [toast, setToast] = useState(null);
   const notifRef = useRef(null);
   const enterArmedRef = useRef(false);
   const enterTimerRef = useRef(null);
@@ -1013,10 +1014,10 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
   const inputRef = useRef(null);
 
   const suggestions = [
-    { icon: Inbox, label: "查看今日新組合", prompt: "今天有哪些新組合好的圖片 DM？" },
-    { icon: Zap, label: "手動觸發抓取+ocr+組圖", prompt: "手動觸發抓取+ocr+組圖" },
-    { icon: Search, label: "查詢日本所有方案", prompt: "幫我找日本的所有方案" },
-    { icon: Layers, label: "處理重複圖片", prompt: "顯示待審核的重複圖片清單" },
+    { icon: Inbox, label: "????", prompt: "??????" },
+    { icon: Zap, label: "????+OCR+??", prompt: "??????+ocr+??" },
+    { icon: Search, label: "????", prompt: "??????" },
+    { icon: Layers, label: "????", prompt: "??????" },
   ];
 
   useEffect(() => {
@@ -1040,14 +1041,20 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
     };
   }, [notifOpen]);
 
+  useEffect(() => {
+    if (!toast) return undefined;
+    const timer = window.setTimeout(() => setToast(null), 4200);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
   const getTime = () => {
     const d = new Date();
-    return `今日 ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    return `隞 ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   };
 
   const formatPrice = (value) => {
     const n = Number(value);
-    return Number.isFinite(n) && n >= 5000 ? `NT$ ${n.toLocaleString()}` : "價格待確認";
+    return Number.isFinite(n) && n >= 5000 ? `NT$ ${n.toLocaleString()}` : "?寞敺Ⅱ隤?";
   };
 
   const formatPriceSummary = (item) => {
@@ -1062,22 +1069,22 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
 
   const formatPeriod = (item) => {
     const months = Array.isArray(item.months) && item.months.length
-      ? `${item.months.join(", ")} 月`
-      : "月份待確認";
+      ? `${item.months.join(", ")} ?`
+      : "????";
     const indexed = item.indexed_at
-      ? `索引 ${new Date(item.indexed_at).toLocaleDateString("zh-TW")}`
+      ? `?? ${new Date(item.indexed_at).toLocaleDateString("zh-TW")}`
       : "";
-    return [months, indexed].filter(Boolean).join(" · ");
+    return [months, indexed].filter(Boolean).join(" ? ");
   };
 
   const normalizeAgentItem = (item, index = 0) => {
     const countries = Array.isArray(item.countries) ? item.countries : [];
     const regions = Array.isArray(item.regions) ? item.regions : [];
     const features = Array.isArray(item.features) ? item.features : [];
-    const place = [...countries, ...regions].filter(Boolean).join(" / ") || "旅遊";
+    const place = [...countries, ...regions].filter(Boolean).join(" / ") || "??";
     const days = Number(item.duration_days) || 0;
     const priceSummary = formatPriceSummary(item);
-    const titleParts = [place, days ? `${days} 天` : "", priceSummary];
+    const titleParts = [place, days ? `${days} ?` : "", priceSummary];
 
     return {
       id: item.sidecar_path || item.branded_path || item.image_path || `openclaw-${index}`,
@@ -1086,7 +1093,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       previewImage: item.preview_url || item.image_url || item.branded_path || item.image_path || "",
       thumbnail: item.thumbnail_url || item.image_url || item.branded_path || item.image_path || "",
       mediaId: item.media_id || "",
-      title: titleParts.filter(Boolean).join(" · "),
+      title: titleParts.filter(Boolean).join(" ? "),
       region: place,
       period: formatPeriod(item),
       days,
@@ -1094,11 +1101,10 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       tag: features[0] || "Agent",
       keywords: [...countries, ...regions, ...features],
       highlights: [
-        countries.length ? `國家：${countries.join("、")}` : "國家待確認",
-        regions.length ? `地區：${regions.join("、")}` : "地區待確認",
-        item.group_name || item.target_id ? `來源：${item.group_name || item.target_id}` : "來源待確認",
+        countries.length ? `國家：${countries.join("、")}` : "國家未定",
+        regions.length ? `地區：${regions.join("、")}` : "地區未定",
+        item.group_name || item.target_id ? `群組：${item.group_name || item.target_id}` : "群組未定",
       ],
-      source: item.group_name || item.target_id || "Agent",
       raw: item,
     };
   };
@@ -1130,13 +1136,13 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       const keyParts = [
         ...(match.countries || []),
         ...(match.regions || []),
-        Array.isArray(match.months) && match.months.length ? `${match.months.join(", ")} 月` : "",
-        match.duration_days ? `${match.duration_days} 天` : "",
-        match.price_bucket ? `約 NT$ ${Number(match.price_bucket).toLocaleString()}` : "",
+        Array.isArray(match.months) && match.months.length ? `${match.months.join(", ")} ?` : "",
+        match.duration_days ? `${match.duration_days} ?` : "",
+        match.price_bucket ? `? NT$ ${Number(match.price_bucket).toLocaleString()}` : "",
       ].filter(Boolean);
 
       return {
-        key: keyParts.join(" · ") || `重複群組 ${groupIndex + 1}`,
+        key: keyParts.join(" ? ") || `???? ${groupIndex + 1}`,
         groupId: group.group_id || "",
         count: group.count || dms.length,
         images: dms.map((dm) => ({
@@ -1144,7 +1150,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
           source: dm.source,
           time: dm.raw?.indexed_at
             ? new Date(dm.raw.indexed_at).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" })
-            : "待確認",
+            : "敺Ⅱ隤?",
         })),
       };
     }).filter((group) => group.images.length > 0);
@@ -1179,15 +1185,171 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
     }
   };
 
+  const refreshUploadFolders = async () => {
+    const response = await fetch("/api/uploads/folders?limit=30");
+    const payload = await response.json();
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || "folders failed");
+    setUploadFolders(Array.isArray(payload.folders) ? payload.folders : []);
+  };
+
+  const refreshOpenclawSettings = async () => {
+    const response = await fetch("/api/openclaw/settings");
+    const payload = await response.json();
+    if (response.ok && payload?.settings) {
+      setLineAutoEnabled(Boolean(payload.settings.line_auto_enabled));
+    }
+  };
+
+  const refreshUploadDetail = async (folderId) => {
+    if (!folderId) return;
+    const response = await fetch(`/api/uploads/folders/${folderId}`);
+    const payload = await response.json();
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || "folder detail failed");
+    setUploadDetail(payload);
+  };
+
+  const handleUploadImages = async ({ displayName, note, files }) => {
+    if (!displayName.trim()) throw new Error("隢撓?亥??冗?迂");
+    if (!files?.length) throw new Error("隢????");
+    setUploading(true);
+    setUploadError("");
+    try {
+      const folderResponse = await fetch("/api/uploads/folders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ display_name: displayName.trim(), note: note.trim() }),
+      });
+      const folderPayload = await folderResponse.json();
+      if (!folderResponse.ok || !folderPayload?.ok) {
+        throw new Error(folderPayload?.error || "撱箇?鞈?憭曉仃??");
+      }
+
+      const form = new FormData();
+      Array.from(files).forEach((file) => form.append("images", file));
+      const uploadResponse = await fetch(`/api/uploads/folders/${folderPayload.folder.id}/images`, {
+        method: "POST",
+        body: form,
+      });
+      const uploadPayload = await uploadResponse.json();
+      if (!uploadResponse.ok || !uploadPayload?.ok) {
+        throw new Error(uploadPayload?.error || "銝憭望?");
+      }
+      await refreshUploadFolders();
+      await refreshUploadDetail(folderPayload.folder.id);
+      refreshOverview();
+      return uploadPayload;
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleUploadImagesToFolder = async ({ folderId, files }) => {
+    if (!folderId) throw new Error("隢???冗");
+    if (!files?.length) throw new Error("隢????");
+    setUploading(true);
+    setUploadError("");
+    try {
+      const form = new FormData();
+      Array.from(files).forEach((file) => form.append("images", file));
+      const uploadResponse = await fetch(`/api/uploads/folders/${folderId}/images`, {
+        method: "POST",
+        body: form,
+      });
+      const uploadPayload = await uploadResponse.json();
+      if (!uploadResponse.ok || !uploadPayload?.ok) {
+        throw new Error(uploadPayload?.error || "銝憭望?");
+      }
+      await refreshUploadFolders();
+      await refreshUploadDetail(folderId);
+      refreshOverview();
+      return uploadPayload;
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleToggleLineAuto = async () => {
+    const next = !lineAutoEnabled;
+    const response = await fetch("/api/openclaw/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ line_auto_enabled: next }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || "settings failed");
+    setLineAutoEnabled(Boolean(payload.settings.line_auto_enabled));
+  };
+
+  const handleAddManualTag = async (imageId, tag) => {
+    const value = String(tag || "").trim();
+    if (!value) return;
+    const response = await fetch(`/api/uploads/images/${imageId}/manual-tags`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag: value }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || "tag failed");
+    if (uploadDetail?.folder?.id) await refreshUploadDetail(uploadDetail.folder.id);
+  };
+
+  const handleDeleteManualTag = async (tagId) => {
+    const response = await fetch(`/api/uploads/manual-tags/${tagId}`, { method: "DELETE" });
+    const payload = await response.json();
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || "delete tag failed");
+    if (uploadDetail?.folder?.id) await refreshUploadDetail(uploadDetail.folder.id);
+  };
+
+  const handleUpdateManualTag = async (tagId, tag) => {
+    const value = String(tag || "").trim();
+    if (!value) return;
+    const response = await fetch(`/api/uploads/manual-tags/${tagId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag: value }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || "update tag failed");
+    if (uploadDetail?.folder?.id) await refreshUploadDetail(uploadDetail.folder.id);
+  };
+
+  const handleUpdateImageMetadata = async (imageId, data) => {
+    const response = await fetch(`/api/uploads/images/${imageId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || "update image failed");
+    if (uploadDetail?.folder?.id) await refreshUploadDetail(uploadDetail.folder.id);
+  };
+
+  const handleArchiveImage = async (imageId) => {
+    const response = await fetch(`/api/uploads/images/${imageId}`, { method: "DELETE" });
+    const payload = await response.json();
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || "archive image failed");
+    if (uploadDetail?.folder?.id) {
+      await refreshUploadDetail(uploadDetail.folder.id);
+      await refreshUploadFolders();
+    }
+  };
+
   useEffect(() => {
     refreshOverview();
+    refreshUploadFolders().catch((error) => setUploadError(error.message));
+    refreshOpenclawSettings().catch(() => {});
     const id = setInterval(refreshOverview, 60_000);
+    const uploadId = setInterval(() => {
+      refreshUploadFolders().catch(() => {});
+      if (uploadDetail?.folder?.id) refreshUploadDetail(uploadDetail.folder.id).catch(() => {});
+    }, 10_000);
     return () => {
       clearInterval(id);
+      clearInterval(uploadId);
       if (manualPreviewPollRef.current) manualPreviewPollRef.current.cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [uploadDetail?.folder?.id]);
 
   const buildAgentResponse = (payload, query) => {
     if (payload?.error) {
@@ -1195,7 +1357,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
         id: Date.now() + 1,
         role: "agent",
         type: "text",
-        content: `Agent 回傳錯誤：${payload.error}`,
+        content: `Agent ??航炊嚗?{payload.error}`,
         time: getTime(),
       };
     }
@@ -1217,7 +1379,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
           id: Date.now() + 1,
           role: "agent",
           type: "text",
-          content: "沒有找到待處理的重複圖片。",
+          content: "瘝??曉敺?????????",
           time: getTime(),
         };
       }
@@ -1237,7 +1399,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
         id: Date.now() + 1,
         role: "agent",
         type: "text",
-        content: `沒有找到「${query}」的旅遊 DM。`,
+        content: `???????${query}?? DM?`,
         time: getTime(),
       };
     }
@@ -1281,7 +1443,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
     return { ...payload, kind: "latest" };
   };
 
-  const appendTodayCombinationPreview = async (query = "查看今日組合") => {
+  const appendTodayCombinationPreview = async (query = "?亦?隞蝯?") => {
     const payload = await fetchTodayCombinationPayload();
     setMessages((p) => [...p, buildAgentResponse(payload, query)]);
     await refreshOverview();
@@ -1312,7 +1474,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
 
         const ok = job.status === "success" || job.last_success === true;
         if (ok) {
-          await appendTodayCombinationPreview("手動流程完成：今日組合");
+          await appendTodayCombinationPreview("??瘚?摰?嚗??亦???");
         } else {
           setMessages((p) => [
             ...p,
@@ -1320,7 +1482,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
               id: Date.now() + 1,
               role: "agent",
               type: "text",
-              content: `手動流程失敗，無法產生直接預覽。${job.last_error ? `錯誤：${job.last_error}` : ""}`,
+              content: `??????${job.last_error ? `?${job.last_error}` : ""}`,
               time: getTime(),
             },
           ]);
@@ -1340,7 +1502,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
           id: Date.now() + 1,
           role: "agent",
           type: "text",
-          content: "手動流程仍未回報完成，請稍後輸入「查看今日組合」取得預覽。",
+          content: "??瘚?隞?摰?嚗?蝔?頛詨????亦???敺?閬賬?",
           time: getTime(),
         },
       ]);
@@ -1377,8 +1539,8 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
             role: "agent",
             type: "text",
             content: payload?.ok
-              ? `${payload?.started === false ? "手動流程已在執行中。" : "已手動觸發抓取+OCR+組圖。"}處理完成前會顯示 LINE圖片處理中。${payload?.job ? ` ${manualJobMessage(payload.job)}` : ""}`
-              : `手動觸發失敗：${payload?.error || "未知錯誤"}`,
+              ? `${payload?.started === false ? "?????????" : "???????+OCR+??"}${payload?.job ? ` ${manualJobMessage(payload.job)}` : ""}`
+              : `?????????${payload?.error || "????"}`,
             time: getTime(),
           },
         ]);
@@ -1391,7 +1553,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
             id: Date.now() + 1,
             role: "agent",
             type: "text",
-            content: `手動觸發失敗：${error.message}`,
+            content: `??閫貊憭望?嚗?{error.message}`,
             time: getTime(),
           },
         ]);
@@ -1401,7 +1563,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       return;
     }
 
-    // ===== Schedule commands take priority — they're explicit ops =====
+    // ===== Schedule commands take priority ??they're explicit ops =====
     const scheduleCmd = parseScheduleCommand(m);
     if (scheduleCmd) {
       const response = {
@@ -1433,7 +1595,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
           id: Date.now() + 1,
           role: "agent",
           type: "text",
-          content: `無法連線 Agent：${error.message}`,
+          content: `?⊥???? Agent嚗?{error.message}`,
           time: getTime(),
         },
       ]);
@@ -1442,7 +1604,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
     }
   };
 
-  // Helpers — armed state stored in ref for synchronous read between rapid keystrokes
+  // Helpers ??armed state stored in ref for synchronous read between rapid keystrokes
   const armEnter = () => {
     enterArmedRef.current = true;
     if (enterTimerRef.current) clearTimeout(enterTimerRef.current);
@@ -1460,7 +1622,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
     }
   };
 
-  // Double-Enter to send — IME-aware (Chinese input safe), skips empty input
+  // Double-Enter to send ??IME-aware (Chinese input safe), skips empty input
   const handleKeyDown = (e) => {
     const isEnter = e.key === "Enter";
     const isComposing = e.nativeEvent.isComposing || e.keyCode === 229;
@@ -1513,13 +1675,13 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
 
       if (copyMode === "text") {
         window.alert(
-          "圖片沒有成功寫入剪貼簿，已改為複製文字資訊。請確認使用 HTTPS 網址，並用最新版 Chrome 或 Edge 開啟。"
+          "?? HTTPS ???????????????????"
         );
         return false;
       }
 
       if (copyMode === "download") {
-        window.alert(INTERNAL_WEB ? "已開始逐張下載圖片。請查看瀏覽器下載列。" : "已下載圖片包。請解壓縮後全選圖片，拖曳到 LINE 群組或聊天視窗。");
+        window.alert(INTERNAL_WEB ? "??????" : "????????");
       }
 
       if (copyMode === "download") return true;
@@ -1533,7 +1695,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       return true;
     } catch (error) {
       console.error("Clipboard copy failed.", error);
-      window.alert(`圖片複製失敗\n\n${explainClipboardError(error)}`);
+      window.alert(`??銴ˊ憭望?\n\n${explainClipboardError(error)}`);
       return false;
     }
   };
@@ -1547,11 +1709,11 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       .map((item) => item?.dm?.raw?.sidecar_path || item?.dm?.id)
       .filter(Boolean);
     if (!group?.groupId) {
-      window.alert("缺少重複群組 ID，無法儲存審核。");
+      window.alert("蝻箏???蝢斤? ID嚗瘜摮祟?詻?");
       return false;
     }
     if (action === "keep_one" && !keepPath) {
-      window.alert("缺少保留圖片路徑，無法儲存審核。");
+      window.alert("蝻箏?靽???頝臬?嚗瘜摮祟?詻?");
       return false;
     }
     try {
@@ -1588,7 +1750,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       return true;
     } catch (error) {
       console.error("Duplicate review failed.", error);
-      window.alert(`重複圖片審核儲存失敗：${error.message}`);
+      window.alert(`????撖拇?脣?憭望?嚗?{error.message}`);
       return false;
     }
   };
@@ -1598,7 +1760,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
   const totalIndexed = Number(overview.status?.total_indexed || 0);
   const hasUnreadNotifications = !notifRead && !overview.loading && (latestCount > 0 || duplicateCount > 0);
   const linePipeline = getLineImagePipelineStatus(overview.status);
-  const agentStatusLabel = overview.loading ? "LINE圖片處理中" : linePipeline.label;
+  const agentStatusLabel = overview.loading ? "LINE 圖片處理中" : linePipeline.label;
   const agentStatusColor = overview.error ? "#B91C1C" : overview.loading ? "#D97706" : linePipeline.color;
   const currentUser = sessionUser || "admin_dadova";
 
@@ -1652,10 +1814,10 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                     className="font-serif-tc font-medium text-base leading-none tracking-tight"
                     style={{ color: "#1C1917" }}
                   >
-                    大都會旅遊
+                    憭折????
                   </div>
                   <div className="text-[9px] tracking-[0.18em] uppercase text-stone-500 mt-1">
-                    Dadova · agent
+                    Dadova 繚 agent
                   </div>
                 </div>
               </div>
@@ -1678,7 +1840,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                     if (!notifOpen) setNotifRead(true);
                   }}
                   className="relative p-2 rounded-md hover:bg-[#EFE9D8] transition-colors"
-                  aria-label="通知"
+                  aria-label="?"
                 >
                   <Bell className="w-4 h-4" />
                   {hasUnreadNotifications && (
@@ -1695,9 +1857,9 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                     duplicateCount={duplicateCount}
                     totalIndexed={totalIndexed}
                     onRefresh={refreshOverview}
-                    onSelectStatus={() => showOverviewMessage(overview.status, "status", "資料庫狀態")}
-                    onSelectNew={() => showOverviewMessage(overview.latest, "latest", "最新 DM")}
-                    onSelectDup={() => showOverviewMessage(overview.duplicates, "duplicates", "重複 DM")}
+                    onSelectStatus={() => showOverviewMessage(overview.status, "status", "????")}
+                    onSelectNew={() => showOverviewMessage(overview.latest, "latest", "???DM")}
+                    onSelectDup={() => showOverviewMessage(overview.duplicates, "duplicates", "?? DM")}
                   />
                 )}
               </div>
@@ -1705,8 +1867,8 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
               <button
                 onClick={onLogout}
                 className="flex items-center gap-2 hover:bg-[#EFE9D8] rounded-md px-2 py-1 transition-colors"
-                aria-label={onLogout ? "登出" : "使用者"}
-                title={onLogout ? "登出" : currentUser}
+                aria-label={onLogout ? "??" : "???"}
+                title={onLogout ? "?餃" : currentUser}
               >
                 <div
                   className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium flex-shrink-0"
@@ -1716,13 +1878,83 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                 </div>
                 <div className="hidden md:block text-left">
                   <div className="text-xs font-medium leading-tight">{currentUser}</div>
-                  <div className="text-[10px] text-stone-500 leading-tight">已登入</div>
+                  <div className="text-[10px] text-stone-500 leading-tight">???</div>
                 </div>
                 {onLogout && <LogOut className="hidden md:block w-3.5 h-3.5 text-stone-500" />}
               </button>
             </div>
           </header>
 
+          <div className="flex-1 min-h-0 flex flex-col lg:flex-row overflow-hidden">
+            <aside
+              className={`${sidebarCollapsed ? "w-full lg:w-16" : "w-full lg:w-64"} flex-shrink-0 border-b lg:border-b-0 lg:border-r transition-all duration-200`}
+              style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}
+            >
+              <div className={`flex items-center gap-2 border-b px-3 py-2 ${sidebarCollapsed ? "justify-between lg:justify-center" : "justify-between"}`} style={{ borderColor: "#E5DDC8" }}>
+                {!sidebarCollapsed && (
+                  <div className="text-[10px] tracking-[0.16em] uppercase text-stone-500">Workspace</div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setSidebarCollapsed((value) => !value)}
+                  className="rounded-md border bg-white p-1.5 text-stone-700 hover:bg-[#FAF7EE]"
+                  style={{ borderColor: "#E5DDC8" }}
+                  aria-label={sidebarCollapsed ? "撅? workspace" : "?嗅? workspace"}
+                  title={sidebarCollapsed ? "撅? workspace" : "?嗅? workspace"}
+                >
+                  {sidebarCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
+                </button>
+              </div>
+              <SidebarNavigation
+                activeWorkspace={activeWorkspace}
+                lineAutoEnabled={lineAutoEnabled}
+                uploadCount={uploadFolders.length}
+                collapsed={sidebarCollapsed}
+                onSelect={setActiveWorkspace}
+                onToggleLineAuto={() => handleToggleLineAuto().catch((error) => setUploadError(error.message))}
+              />
+            </aside>
+
+            {activeWorkspace === "uploads" ? (
+              <section className="flex-1 min-w-0 min-h-0 overflow-y-auto scrollbar-thin grain-bg">
+                <div className="max-w-6xl mx-auto px-6 md:px-10 py-8">
+                  <UploadWorkspace
+                    folders={uploadFolders}
+                    detail={uploadDetail}
+                    uploading={uploading}
+                    error={uploadError}
+                    onUpload={async (payload) => {
+                      try {
+                        return await handleUploadImages(payload);
+                      } catch (error) {
+                        setUploadError(error.message);
+                        throw error;
+                      }
+                    }}
+                    onUploadExisting={async (payload) => {
+                      try {
+                        return await handleUploadImagesToFolder(payload);
+                      } catch (error) {
+                        setUploadError(error.message);
+                        throw error;
+                      }
+                    }}
+                    onSelectFolder={(folder) => refreshUploadDetail(folder.id).catch((error) => setUploadError(error.message))}
+                    onRefresh={() => {
+                      refreshUploadFolders().catch((error) => setUploadError(error.message));
+                      if (uploadDetail?.folder?.id) refreshUploadDetail(uploadDetail.folder.id).catch((error) => setUploadError(error.message));
+                    }}
+                    onAddTag={(imageId, tag) => handleAddManualTag(imageId, tag).catch((error) => setUploadError(error.message))}
+                    onDeleteTag={(tagId) => handleDeleteManualTag(tagId).catch((error) => setUploadError(error.message))}
+                    onUpdateTag={(tagId, tag) => handleUpdateManualTag(tagId, tag).catch((error) => setUploadError(error.message))}
+                    onUpdateImage={(imageId, data) => handleUpdateImageMetadata(imageId, data).catch((error) => setUploadError(error.message))}
+                    onArchiveImage={(imageId) => handleArchiveImage(imageId).catch((error) => setUploadError(error.message))}
+                    onToast={setToast}
+                  />
+                </div>
+              </section>
+            ) : (
+            <section className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
           <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-thin grain-bg">
             <div className="max-w-3xl mx-auto px-6 md:px-10 py-10">
               {messages.map((msg) => (
@@ -1742,8 +1974,8 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
               {isThinking && (
                 <div className="animate-fade-up flex items-center gap-2 mt-6 text-stone-500 text-sm">
                   <Sparkles className="w-3.5 h-3.5" />
-                  <span>正在思考</span>
-                  <span className="typing-cursor">▋</span>
+                  <span>???</span>
+                  <span className="typing-cursor">?</span>
                 </div>
               )}
             </div>
@@ -1765,7 +1997,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="查詢：幫我找 韓國 5 天 4 夜 的圖片 DM"
+                  placeholder="?亥岷嚗鼠? ?? 5 憭?4 憭?????DM"
                   className="flex-1 resize-none outline-none text-sm bg-transparent placeholder:text-stone-400 max-h-32 leading-relaxed text-left"
                   style={{ color: "#1C1917" }}
                 />
@@ -1783,7 +2015,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
               </div>
               <div className="flex items-center justify-between mt-2.5 px-1">
                 <div className="text-[10px] text-stone-500">
-                  連按兩下 Enter 送出 · Shift+Enter 換行
+                  ????拐? Enter ? 繚 Shift+Enter ??
                 </div>
                 <div className="text-[10px] text-stone-500 flex items-center gap-1.5">
                   <span className="italic font-display">Powered by</span>
@@ -1792,12 +2024,15 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                       STARBIT
                     </span>
                     <span className="font-serif-tc" style={{ color: "#57534E" }}>
-                      思偉達應用科技
+                      ?????函??
                     </span>
                   </span>
                 </div>
               </div>
             </div>
+          </div>
+            </section>
+            )}
           </div>
         </main>
       </div>
@@ -1826,6 +2061,1094 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
           onCopy={handleCopy}
         />
       )}
+      {toast && <UploadToast toast={toast} onClose={() => setToast(null)} />}
+    </div>
+  );
+}
+
+function UploadToast({ toast, onClose }) {
+  const success = toast?.type === "success";
+  return (
+    <div className="fixed bottom-5 right-5 z-[60] max-w-sm rounded-lg border bg-white shadow-xl animate-fade-up" style={{ borderColor: success ? "#16A34A" : "#B91C1C" }}>
+      <div className="flex items-start gap-3 px-4 py-3">
+        {success ? <CheckCircle2 className="mt-0.5 h-4 w-4 text-green-600" /> : <AlertTriangle className="mt-0.5 h-4 w-4 text-red-700" />}
+        <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium">?????</div>
+          <div className="mt-0.5 text-xs text-stone-600">{toast?.message}</div>
+        </div>
+        <button type="button" onClick={onClose} className="rounded p-1 text-stone-500 hover:bg-stone-100" aria-label="???內">
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function stepLabel(status) {
+  if (status === "success") return "摰?";
+  if (status === "running") return "?瑁?銝?";
+  if (status === "failed") return "憭望?";
+  if (status === "skipped") return "?仿?";
+  return "敺???";
+}
+
+function sourceLabel(source) {
+  if (source === "line-auto") return "LINE ?芸??砍?";
+  if (source === "upload") return "??銝";
+  return source || "?芸?憿?";
+}
+
+const UPLOAD_LIMITS = {
+  formats: ["JPG", "JPEG", "PNG", "WEBP"],
+  extensions: [".jpg", ".jpeg", ".png", ".webp"],
+  maxFileBytes: 15 * 1024 * 1024,
+  maxTotalBytes: 200 * 1024 * 1024,
+  maxFiles: 50,
+};
+
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(value >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+  if (value >= 1024) return `${Math.round(value / 1024)} KB`;
+  return `${value} B`;
+}
+
+function uploadLimitText() {
+  return `${UPLOAD_LIMITS.formats.join(" / ")}??? ${formatBytes(UPLOAD_LIMITS.maxFileBytes)}??? ${UPLOAD_LIMITS.maxFiles} ? / ${formatBytes(UPLOAD_LIMITS.maxTotalBytes)}`;
+}
+
+function validateUploadFiles(files) {
+  const list = Array.from(files || []);
+  if (list.length === 0) return "?????";
+  if (list.length > UPLOAD_LIMITS.maxFiles) return `????? ${UPLOAD_LIMITS.maxFiles} ?`;
+  const total = list.reduce((sum, file) => sum + Number(file.size || 0), 0);
+  if (total > UPLOAD_LIMITS.maxTotalBytes) return `??????? ${formatBytes(UPLOAD_LIMITS.maxTotalBytes)}`;
+  const invalid = list.find((file) => {
+    const lower = String(file.name || "").toLowerCase();
+    return !UPLOAD_LIMITS.extensions.some((ext) => lower.endsWith(ext));
+  });
+  if (invalid) return `${invalid.name} ?????`;
+  const oversized = list.find((file) => Number(file.size || 0) > UPLOAD_LIMITS.maxFileBytes);
+  if (oversized) return `${oversized.name} ?? ${formatBytes(UPLOAD_LIMITS.maxFileBytes)}`;
+  return "";
+}
+
+function folderProgress(folder) {
+  const total = Number(folder?.image_count || 0);
+  const done = Math.max(
+    Number(folder?.composed_count || 0),
+    Number(folder?.ocr_count || 0),
+    folder?.status === "success" ? total : 0,
+  );
+  return { done: Math.min(done, total), total };
+}
+
+function folderStatusLabel(folder) {
+  if (folder?.status === "success") return "摰?";
+  if (folder?.status === "failed") return "憭望?";
+  if (folder?.status === "running") return "?瑁?銝?";
+  return stepLabel(folder?.current_step ? folder?.step_statuses?.[folder.current_step] : "");
+}
+
+function SidebarNavigation({ activeWorkspace, lineAutoEnabled, uploadCount, collapsed, onSelect, onToggleLineAuto }) {
+  const itemClass = (name) => (
+    `w-full flex items-center ${collapsed ? "justify-center px-2" : "justify-between px-3"} gap-3 rounded-md border py-2.5 text-left text-sm transition-colors ${
+      activeWorkspace === name ? "bg-[#1C1917] text-[#F5F1E8]" : "bg-white text-stone-800 hover:bg-[#FAF7EE]"
+    }`
+  );
+
+  return (
+    <div className={`${collapsed ? "workspace-collapsed p-2" : "p-3 lg:p-4"} space-y-4`}>
+      <div>
+        {!collapsed && <div className="text-[10px] tracking-[0.16em] uppercase text-stone-500 mb-2">Workspace</div>}
+        <div className="grid grid-cols-2 lg:grid-cols-1 gap-2">
+          <button
+            type="button"
+            onClick={() => onSelect("chat")}
+            className={itemClass("chat")}
+            style={{ borderColor: activeWorkspace === "chat" ? "#1C1917" : "#E5DDC8" }}
+            title="?予??"
+          >
+            <span className="flex items-center gap-2 min-w-0">
+              <Search className="w-4 h-4 flex-shrink-0" />
+              <span className="truncate">?予?亥岷</span>
+            </span>
+            <ChevronRight className="w-3.5 h-3.5 flex-shrink-0" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onSelect("uploads")}
+            className={itemClass("uploads")}
+            style={{ borderColor: activeWorkspace === "uploads" ? "#1C1917" : "#E5DDC8" }}
+          >
+            <span className="flex items-center gap-2 min-w-0">
+              <Upload className="w-4 h-4 flex-shrink-0" />
+            ?? / ???????
+            </span>
+            <span className="text-[10px] tabular-nums">{uploadCount}</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="rounded-lg border bg-white p-3" style={{ borderColor: "#E5DDC8" }}>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-xs font-medium">LINE ?芸???</div>
+            <div className="text-[10px] text-stone-500 mt-1 leading-relaxed">
+              ?敺?瘝輻??鞈?憭暹?蝔?銝虫?蝢斤??????            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onToggleLineAuto}
+            className="flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] flex-shrink-0"
+            style={{
+              borderColor: lineAutoEnabled ? "#16A34A" : "#B91C1C",
+              color: lineAutoEnabled ? "#166534" : "#991B1B",
+            }}
+          >
+            <Power className="w-3 h-3" />
+            {lineAutoEnabled ? "?" : "?"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UploadWorkspace({
+  folders,
+  detail,
+  uploading,
+  error,
+  onUpload,
+  onUploadExisting,
+  onSelectFolder,
+  onRefresh,
+  onAddTag,
+  onDeleteTag,
+  onUpdateTag,
+  onUpdateImage,
+  onArchiveImage,
+  onToast,
+}) {
+  const [uploadStage, setUploadStage] = useState(null);
+  const [uploadTarget, setUploadTarget] = useState(null);
+  const [view, setView] = useState("list");
+  const [recentFolderId, setRecentFolderId] = useState(null);
+  const selectedId = detail?.folder?.id;
+
+  const openFolder = async (folder) => {
+    await onSelectFolder(folder);
+    setView("detail");
+  };
+
+  const handleCreated = async (payload) => {
+    const folderId = payload?.folder?.id;
+    setRecentFolderId(folderId || null);
+    setUploadStage(null);
+    setUploadTarget(null);
+    if (folderId) await onSelectFolder({ id: folderId });
+    setView("detail");
+    onToast?.({ type: "success", message: "????????? OCR / ???" });
+  };
+
+  const submitUploadFiles = async ({ files }) => {
+    try {
+      const payload = uploadTarget?.mode === "existing"
+        ? await onUploadExisting({ folderId: uploadTarget.folderId, files })
+        : await onUpload({ displayName: uploadTarget.displayName, note: uploadTarget.note, files });
+      await handleCreated(payload);
+      return payload;
+    } catch (error) {
+      onToast?.({ type: "error", message: error.message || "???????????" });
+      throw error;
+    }
+  };
+
+  useEffect(() => {
+    if (view !== "detail" || !detail?.folder?.id) return undefined;
+    const progress = folderProgress(detail.folder);
+    const shouldPoll = detail.folder.status === "running"
+      || detail.folder.status === "pending"
+      || progress.done < progress.total;
+    if (!shouldPoll) return undefined;
+    const timer = window.setInterval(() => onRefresh(), 4000);
+    return () => window.clearInterval(timer);
+  }, [view, detail?.folder?.id, detail?.folder?.status, detail?.folder?.updated_at, onRefresh]);
+
+  return (
+    <section className="space-y-4">
+      <div className="rounded-lg border bg-white overflow-hidden" style={{ borderColor: "#E5DDC8" }}>
+        <div className="px-5 py-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4" style={{ backgroundColor: "#FAF7EE" }}>
+          <div>
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <FolderPlus className="w-4 h-4 text-stone-600" />
+              ????
+            </div>
+            <div className="text-xs text-stone-500 mt-1">
+              支援 {uploadLimitText()}。可建立新資料夾或追加到既有資料夾，並自動執行 OCR / 組圖 / 索引。
+          </div>
+          <button
+            type="button"
+            onClick={() => setUploadStage("target")}
+            className="rounded-md px-4 py-2 text-xs font-medium flex items-center justify-center gap-1.5 flex-shrink-0"
+            style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}
+          >
+            <Upload className="w-3.5 h-3.5" />
+            ?? / ???????
+          </button>
+      </div>
+      </div>
+
+      </div>
+      <div className="rounded-lg border bg-white overflow-hidden" style={{ borderColor: "#E5DDC8" }}>
+        {view === "detail" && detail?.folder ? (
+          <UploadFolderDetail
+            detail={detail}
+            onBack={() => setView("list")}
+            onAddTag={onAddTag}
+            onDeleteTag={onDeleteTag}
+            onUpdateTag={onUpdateTag}
+            onUpdateImage={onUpdateImage}
+            onArchiveImage={onArchiveImage}
+          />
+        ) : (
+          <div>
+            <div className="px-5 py-4 border-b flex items-center justify-between gap-3" style={{ borderColor: "#F0E9D6", backgroundColor: "#FAF7EE" }}>
+              <div>
+                <div className="text-sm font-medium">?????</div>
+                <div className="text-xs text-stone-500 mt-0.5">??????????????????????????</div>
+              </div>
+              <button type="button" onClick={onRefresh} className="text-xs text-stone-500 hover:text-stone-900">??渡?</button>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead style={{ backgroundColor: "#FDFBF5", color: "#78716C" }}>
+                  <tr>
+                    <th className="px-4 py-2 font-medium">?????</th>
+                    <th className="px-4 py-2 font-medium text-right">??</th>
+                    <th className="px-4 py-2 font-medium">????</th>
+                    <th className="px-4 py-2 font-medium">????</th>
+                    <th className="px-4 py-2 font-medium text-right">??</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(folders || []).map((folder) => {
+                    const progress = folderProgress(folder);
+                    const active = selectedId === folder.id || recentFolderId === folder.id;
+                    return (
+                      <tr
+                        key={folder.id}
+                        onClick={() => openFolder(folder)}
+                        className="cursor-pointer hover:bg-[#FAF7EE] transition-colors"
+                        style={{
+                          borderTop: "1px solid #F0E9D6",
+                          backgroundColor: active ? "#FFFBEB" : "#FFF",
+                        }}
+                      >
+                        <td className="px-4 py-3 min-w-64">
+                          <div className="flex items-center gap-2 font-medium text-stone-900">
+                            <FolderOpen className="w-3.5 h-3.5 text-stone-500 flex-shrink-0" />
+                            <span className="truncate">{folder.display_name}</span>
+                          </div>
+                          <div className="text-[10px] text-stone-500 mt-0.5 truncate">{sourceLabel(folder.source)} 繚 {folder.folder_slug}</div>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span className="rounded px-2 py-1 text-[10px]" style={{ backgroundColor: "#F0E9D6", color: "#1C1917" }}>
+                            {folderStatusLabel(folder)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap tabular-nums">
+                          {progress.done}/{progress.total}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-stone-500">
+                          {new Date(folder.updated_at || folder.created_at).toLocaleString("zh-TW")}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button type="button" className="text-xs text-stone-700 hover:text-stone-950">
+                            ?亦?
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {(!folders || folders.length === 0) && (
+                    <tr>
+                      <td colSpan={5} className="px-5 py-8 text-center text-stone-500">
+                        撠銝鞈?憭?                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {uploadStage === "target" && (
+        <UploadTargetModal
+          folders={folders}
+          onClose={() => setUploadStage(null)}
+          onNext={(target) => {
+            setUploadTarget(target);
+            setUploadStage("files");
+          }}
+        />
+      )}
+      {uploadStage === "files" && uploadTarget && (
+        <UploadFilesModal
+          target={uploadTarget}
+          uploading={uploading}
+          error={error}
+          onBack={() => setUploadStage("target")}
+          onClose={() => setUploadStage(null)}
+          onSubmit={submitUploadFiles}
+        />
+      )}
+    </section>
+  );
+}
+
+function UploadTargetModal({ folders, onClose, onNext }) {
+  const [targetMode, setTargetMode] = useState("new");
+  const [selectedFolderId, setSelectedFolderId] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [note, setNote] = useState("");
+  const [localError, setLocalError] = useState("");
+  const selectedFolder = (folders || []).find((folder) => String(folder.id) === String(selectedFolderId));
+
+  const next = () => {
+    if (targetMode === "new" && !displayName.trim()) {
+      setLocalError("????????");
+      return;
+    }
+    if (targetMode === "existing" && !selectedFolderId) {
+      setLocalError("????????");
+      return;
+    }
+    setLocalError("");
+    onNext(targetMode === "existing"
+      ? { mode: "existing", folderId: selectedFolderId, folder: selectedFolder, label: selectedFolder?.display_name || "?????" }
+      : { mode: "new", displayName: displayName.trim(), note: note.trim(), label: displayName.trim() });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4 py-6 animate-backdrop-in" style={{ backgroundColor: "rgba(28,25,23,0.45)" }}>
+      <div className="w-full max-w-xl rounded-lg border bg-white shadow-xl animate-modal-in overflow-hidden" style={{ borderColor: "#E5DDC8" }}>
+        <div className="px-5 py-4 border-b flex items-center justify-between gap-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
+          <div>
+            <div className="text-sm font-medium">???????</div>
+            <div className="text-xs text-stone-500 mt-0.5">????????????????????</div>
+          </div>
+          <button type="button" onClick={onClose} className="p-1.5 rounded-md hover:bg-[#EFE9D8]" aria-label="??">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="px-5 py-5 space-y-4">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => {
+                setTargetMode("new");
+                setLocalError("");
+              }}
+              className="rounded-md border px-3 py-3 text-sm font-medium text-left"
+              style={{
+                borderColor: targetMode === "new" ? "#1C1917" : "#E5DDC8",
+                backgroundColor: targetMode === "new" ? "#1C1917" : "#FFF",
+                color: targetMode === "new" ? "#F5F1E8" : "#1C1917",
+              }}
+            >
+              ??????
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTargetMode("existing");
+                setLocalError("");
+              }}
+              className="rounded-md border px-3 py-3 text-sm font-medium text-left"
+              style={{
+                borderColor: targetMode === "existing" ? "#1C1917" : "#E5DDC8",
+                backgroundColor: targetMode === "existing" ? "#1C1917" : "#FFF",
+                color: targetMode === "existing" ? "#F5F1E8" : "#1C1917",
+              }}
+            >
+              ???????
+            </button>
+          </div>
+
+          {targetMode === "new" ? (
+            <>
+              <label className="block">
+                <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">?????</span>
+                <input
+                  value={displayName}
+                  onChange={(event) => {
+                    setDisplayName(event.target.value);
+                    setLocalError("");
+                  }}
+                  className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none"
+                  style={{ borderColor: "#E5DDC8" }}
+                  placeholder="?????????"
+                  autoFocus
+                />
+              </label>
+              <label className="block">
+                <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">??</span>
+                <textarea
+                  value={note}
+                  onChange={(event) => setNote(event.target.value)}
+                  className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none resize-none"
+                  style={{ borderColor: "#E5DDC8" }}
+                  rows={3}
+                  placeholder="???5 ???????????????"
+                />
+              </label>
+            </>
+          ) : (
+            <label className="block">
+              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">?????</span>
+              <select
+                value={selectedFolderId}
+                onChange={(event) => {
+                  setSelectedFolderId(event.target.value);
+                  setLocalError("");
+                }}
+                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none bg-white"
+                style={{ borderColor: "#E5DDC8" }}
+              >
+                <option value="">??????</option>
+                {(folders || []).map((folder) => (
+                  <option key={folder.id} value={folder.id}>
+                    {folder.display_name} ? {new Date(folder.updated_at || folder.created_at).toLocaleString("zh-TW")}
+                  </option>
+                ))}
+              </select>
+              {(!folders || folders.length === 0) && (
+                <div className="mt-2 text-xs text-stone-500">??????????????????????</div>
+              )}
+            </label>
+          )}
+
+          {localError && <div className="text-xs text-red-700">{localError}</div>}
+        </div>
+
+        <div className="px-5 py-4 border-t flex items-center justify-between gap-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
+          <button type="button" onClick={onClose} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: "#E5DDC8" }}>
+            ??
+          </button>
+          <button type="button" onClick={next} className="rounded-md px-3 py-2 text-xs font-medium" style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}>
+            ????????
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UploadFilesModal({ target, uploading, error, onBack, onClose, onSubmit }) {
+  const [files, setFiles] = useState(null);
+  const [localError, setLocalError] = useState("");
+  const fileList = Array.from(files || []);
+  const totalBytes = fileList.reduce((sum, file) => sum + Number(file.size || 0), 0);
+  const fileMessage = files ? validateUploadFiles(files) : "";
+  const canSubmit = fileList.length > 0 && !fileMessage && !uploading;
+
+  const submit = async () => {
+    const message = validateUploadFiles(files);
+    if (message) {
+      setLocalError(message);
+      return;
+    }
+    setLocalError("");
+    try {
+      await onSubmit({ files });
+    } catch (submitError) {
+      setLocalError(submitError.message || "????");
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4 py-6 animate-backdrop-in" style={{ backgroundColor: "rgba(28,25,23,0.45)" }}>
+      <div className="w-full max-w-xl rounded-lg border bg-white shadow-xl animate-modal-in overflow-hidden" style={{ borderColor: "#E5DDC8" }}>
+        <div className="px-5 py-4 border-b flex items-center justify-between gap-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
+          <div>
+            <div className="text-sm font-medium">????</div>
+            <div className="text-xs text-stone-500 mt-0.5">????{target?.label || "??????"}</div>
+          </div>
+          <button type="button" onClick={onClose} className="p-1.5 rounded-md hover:bg-[#EFE9D8]" aria-label="??">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="px-5 py-5 space-y-4">
+          <div className="rounded-md border p-3 text-xs text-stone-600" style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}>
+            ???????? OCR / ?? / ?????????????????
+          </div>
+          <label className="block">
+            <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">????</span>
+            <input
+              type="file"
+              accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+              multiple
+              onChange={(event) => {
+                setFiles(event.target.files);
+                setLocalError(validateUploadFiles(event.target.files));
+              }}
+              className="mt-1 block w-full text-xs"
+            />
+          </label>
+          <div className="rounded-md border p-3 text-xs text-stone-600" style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}>
+            ??? {fileList.length} ????? {formatBytes(totalBytes)}
+          </div>
+          {fileList.length > 0 && (
+            <div className="max-h-44 overflow-y-auto scrollbar-thin rounded-md border" style={{ borderColor: "#F0E9D6" }}>
+              {fileList.map((file) => (
+                <div key={`${file.name}-${file.size}`} className="flex items-center justify-between gap-3 px-3 py-2 text-xs" style={{ borderTop: "1px solid #F0E9D6" }}>
+                  <span className="truncate">{file.name}</span>
+                  <span className="text-stone-500 flex-shrink-0">{formatBytes(file.size)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {(localError || fileMessage || error) && (
+            <div className="text-xs text-red-700">{localError || fileMessage || error}</div>
+          )}
+        </div>
+
+        <div className="px-5 py-4 border-t flex items-center justify-between gap-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
+          <button type="button" onClick={onBack} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: "#E5DDC8" }}>
+            ???
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={!canSubmit}
+            className="rounded-md px-3 py-2 text-xs font-medium flex items-center gap-1.5 disabled:opacity-50"
+            style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}
+          >
+            {uploading && <Loader2 className="w-3 h-3 animate-spin" />}
+            ???????
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function imageFlowStatus(image) {
+  if (image?.compose_status === "success" || image.branded_thumbnail_url || image.branded_url) {
+    return { label: "??", detail: "OCR / ????" };
+  }
+  if (image?.compose_status === "running") return { label: "???", detail: "OCR ???????" };
+  if (image?.compose_status === "failed") return { label: "????", detail: "???????" };
+  if (image?.ocr_status === "success" || (image.system_tags || []).length > 0 || (image.ocr_tags_override || []).length > 0) {
+    return { label: "????", detail: "OCR ??" };
+  }
+  if (image?.ocr_status === "running") return { label: "OCR ?", detail: "????????" };
+  if (image?.ocr_status === "failed") return { label: "OCR ??", detail: "???????" };
+  return { label: "?? OCR", detail: "????" };
+}
+
+function summarizeTags(tags, limit = 3) {
+  const values = Array.isArray(tags) ? tags.map((tag) => tag?.tag || tag).filter(Boolean) : [];
+  if (!values.length) return "撠";
+  const visible = values.slice(0, limit).join("??");
+  return values.length > limit ? `${visible} +${values.length - limit}` : visible;
+}
+
+function UploadFolderDetail({ detail, onBack, onAddTag, onDeleteTag, onUpdateTag, onUpdateImage, onArchiveImage }) {
+  const [selectedImage, setSelectedImage] = useState(null);
+  const folder = detail.folder;
+  const images = Array.isArray(detail.images) ? detail.images : [];
+  const steps = folder.step_statuses || {};
+  const currentSelectedImage = images.find((image) => image.id === selectedImage?.id) || selectedImage;
+
+  return (
+    <div className="p-4">
+      <button
+        type="button"
+        onClick={onBack}
+        className="mb-3 flex items-center gap-1.5 text-xs text-stone-500 hover:text-stone-900"
+      >
+        <ChevronLeft className="w-3.5 h-3.5" />
+        餈?鞈?憭曉?銵?      </button>
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+                <div className="text-sm font-medium">?????</div>
+          <div className="text-[10px] text-stone-500 mt-0.5">{folder.folder_slug}</div>
+          {folder.note && <div className="text-xs text-stone-600 mt-1">{folder.note}</div>}
+          {Array.isArray(folder.line_groups) && folder.line_groups.length > 0 && (
+            <div className="text-[10px] text-stone-500 mt-1">???{folder.line_groups.join("?")}</div>
+          )}
+        </div>
+        <div className="grid grid-cols-4 gap-1.5 text-xs">
+          <StatusMetric label="??" value={stepLabel(steps.upload)} accent={steps.upload === "failed"} />
+          <StatusMetric label="OCR" value={stepLabel(steps.ocr)} accent={steps.ocr === "failed"} />
+          <StatusMetric label="蝯?" value={stepLabel(steps.compose)} accent={steps.compose === "failed"} />
+          <StatusMetric label="蝝Ｗ?" value={stepLabel(steps.index)} accent={steps.index === "failed"} />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2 mb-4">
+        <StatusMetric label="??" value={folder.image_count || images.length || 0} />
+        <StatusMetric label="OCR" value={`${folder.ocr_count || 0}/${folder.image_count || images.length || 0}`} />
+        <StatusMetric label="蝯?" value={`${folder.composed_count || 0}/${folder.image_count || images.length || 0}`} />
+      </div>
+
+      <div className="overflow-x-auto rounded-md border" style={{ borderColor: "#E5DDC8" }}>
+        <table className="w-full text-left text-xs">
+          <thead style={{ backgroundColor: "#FDFBF5", color: "#78716C" }}>
+            <tr>
+              <th className="px-3 py-2 font-medium text-right">??</th>
+              <th className="px-3 py-2 font-medium text-right">??</th>
+              <th className="px-3 py-2 font-medium">????</th>
+              <th className="px-3 py-2 font-medium">????</th>
+              <th className="px-3 py-2 font-medium">OCR Tags</th>
+              <th className="px-3 py-2 font-medium">?? Tags</th>
+              <th className="px-3 py-2 font-medium">Note</th>
+              <th className="px-3 py-2 font-medium text-right">??</th>
+            </tr>
+          </thead>
+          <tbody>
+        {images.map((image) => {
+          const flow = imageFlowStatus(image);
+          const ocrTags = image.ocr_tags_override?.length ? image.ocr_tags_override : image.system_tags;
+          return (
+            <tr
+              key={image.id}
+              className="hover:bg-[#FAF7EE] cursor-pointer"
+              onClick={() => setSelectedImage(image)}
+              style={{ borderTop: "1px solid #F0E9D6" }}
+            >
+              <td className="px-3 py-2">
+                <div className="w-14 bg-stone-100 rounded overflow-hidden" style={{ aspectRatio: "827 / 1169" }}>
+                  {image.thumbnail_url ? (
+                    <img src={image.thumbnail_url} alt={image.original_filename} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-[10px] text-stone-500">??</div>
+                  )}
+                </div>
+              </td>
+              <td className="px-3 py-2 min-w-48">
+                <div className="font-medium text-stone-900 truncate">{image.display_name || image.original_filename}</div>
+                {image.display_name && <div className="text-[10px] text-stone-500 truncate">{image.original_filename}</div>}
+              </td>
+              <td className="px-3 py-2 whitespace-nowrap text-stone-500">
+                {new Date(image.uploaded_at).toLocaleString("zh-TW")}
+              </td>
+              <td className="px-3 py-2 min-w-32">
+                <div className="font-medium">{flow.label}</div>
+                <div className="text-[10px] text-stone-500">{flow.detail}</div>
+              </td>
+              <td className="px-3 py-2 min-w-40 text-stone-700">{summarizeTags(ocrTags)}</td>
+              <td className="px-3 py-2 min-w-40 text-stone-700">{summarizeTags(image.manual_tags)}</td>
+              <td className="px-3 py-2 min-w-48 text-stone-600 truncate max-w-64">{image.manual_note || "?"}</td>
+              <td className="px-3 py-2 text-right whitespace-nowrap">
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setSelectedImage(image);
+                  }}
+                  className="text-xs text-stone-700 hover:text-stone-950"
+                >
+                  ?亦? / 蝺刻摩
+                </button>
+              </td>
+            </tr>
+          );
+        })}
+          {images.length === 0 && (
+            <tr>
+              <td colSpan={8} className="px-5 py-8 text-center text-stone-500">????????</td>
+            </tr>
+          )}
+          </tbody>
+        </table>
+      </div>
+      {currentSelectedImage && (
+        <CleanImageDetailDrawer
+          image={currentSelectedImage}
+          onClose={() => setSelectedImage(null)}
+          onAddTag={onAddTag}
+          onDeleteTag={onDeleteTag}
+          onUpdateTag={onUpdateTag}
+          onUpdateImage={onUpdateImage}
+          onArchiveImage={onArchiveImage}
+        />
+      )}
+    </div>
+  );
+}
+
+/*
+function ImageDetailDrawer({ image, onClose, onAddTag, onDeleteTag, onUpdateTag, onUpdateImage, onArchiveImage }) {
+  const [displayName, setDisplayName] = useState(image.display_name || "");
+  const [ocrOverride, setOcrOverride] = useState((image.ocr_tags_override || []).join("??)");
+  const [referenceText, setReferenceText] = useState(image.reference_text || "");
+  const [manualNote, setManualNote] = useState(image.manual_note || "");
+  const [tagDraft, setTagDraft] = useState("");
+  const [tagEdits, setTagEdits] = useState({});
+  const rawTags = image.system_tags || [];
+  const flow = imageFlowStatus(image);
+
+  useEffect(() => {
+    setDisplayName(image.display_name || "");
+    setOcrOverride((image.ocr_tags_override || []).join("??)");
+    setReferenceText(image.reference_text || "");
+    setManualNote(image.manual_note || "");
+    setTagDraft("");
+    setTagEdits({});
+  }, [image.id]);
+
+  const parsedOverrideTags = () => ocrOverride
+    .split(/[,\n?+/)
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+
+  const saveMetadata = async () => {
+    await onUpdateImage(image.id, {
+      display_name: displayName,
+      ocr_tags_override: parsedOverrideTags(),
+      reference_text: referenceText,
+      manual_note: manualNote,
+    });
+  };
+
+  const archive = async () => {
+    if (!window.confirm("蝣箏?閬?摮撐??嚗?摮????”?梯???)) return";
+    await onArchiveImage(image.id);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end animate-backdrop-in" style={{ backgroundColor: "rgba(28,25,23,0.35)" }}>
+      <div className="w-full max-w-3xl h-full bg-white shadow-xl overflow-y-auto animate-slide-in">
+        <div className="sticky top-0 z-10 px-5 py-4 border-b flex items-center justify-between gap-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
+          <div className="min-w-0">
+            <div className="text-sm font-medium truncate">{image.display_name || image.original_filename}</div>
+                <div className="text-xs text-stone-500 mt-0.5">??????????????????????????</div>
+          </div>
+          <button type="button" onClick={onClose} className="p-1.5 rounded-md hover:bg-[#EFE9D8]" aria-label="??">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 grid lg:grid-cols-[320px_1fr] gap-5">
+          <div>
+            <div>
+              <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-1">蝯?蝯?</div>
+              {image.branded_thumbnail_url ? (
+                <a href={image.branded_url || image.branded_thumbnail_url} target="_blank" rel="noreferrer" className="block rounded-md border overflow-hidden bg-stone-100" style={{ borderColor: "#E5DDC8", aspectRatio: "827 / 1169" }}>
+                  <img src={image.branded_thumbnail_url} alt={`${image.original_filename} composed`} className="w-full h-full object-cover" />
+                </a>
+              ) : (
+                <div className="rounded-md border px-3 py-8 text-center text-xs text-stone-500" style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}>
+                  蝯?撠摰?
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <label className="block">
+              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">憿舐內?迂</span>
+              <input
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
+                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none"
+                style={{ borderColor: "#E5DDC8" }}
+                placeholder={image.original_filename}
+              />
+            </label>
+
+            <div className="rounded-md border p-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}>
+              <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-2">OCR ?? Tags</div>
+              <div className="flex flex-wrap gap-1">
+                {rawTags.map((tag, idx) => (
+                  <span key={`${tag.field}-${tag.tag}-${idx}`} className="rounded px-1.5 py-0.5 text-[10px]" style={{ backgroundColor: "#EEF2FF", color: "#3730A3" }}>
+                    {tag.tag}
+                  </span>
+                ))}
+                {rawTags.length === 0 && <span className="text-xs text-stone-500">撠</span>}
+              </div>
+            </div>
+
+            <label className="block">
+              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">OCR Tag 鈭箏極靽格迤</span>
+              <textarea
+                value={ocrOverride}
+                onChange={(event) => setOcrOverride(event.target.value)}
+                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none resize-none"
+                style={{ borderColor: "#E5DDC8" }}
+                rows={2}
+                placeholder="?????"
+              />
+            </label>
+
+            <div>
+              <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-2">?酉 Tags</div>
+              <div className="space-y-2">
+                {(image.manual_tags || []).map((tag) => (
+                  <div key={tag.id} className="flex gap-2">
+                    <input
+                      value={tagEdits[tag.id] ?? tag.tag}
+                      onChange={(event) => setTagEdits((current) => ({ ...current, [tag.id]: event.target.value }))}
+                      onBlur={() => onUpdateTag(tag.id, tagEdits[tag.id] ?? tag.tag)}
+                      className="min-w-0 flex-1 rounded border px-2 py-1 text-xs outline-none"
+                      style={{ borderColor: "#E5DDC8" }}
+                    />
+                    <button type="button" onClick={() => onDeleteTag(tag.id)} className="rounded border px-2 py-1 text-xs" style={{ borderColor: "#E5DDC8" }}>
+                      ?芷
+                    </button>
+                  </div>
+                ))}
+                <div className="flex gap-2">
+                  <input
+                    value={tagDraft}
+                    onChange={(event) => setTagDraft(event.target.value)}
+                    className="min-w-0 flex-1 rounded border px-2 py-1 text-xs outline-none"
+                    style={{ borderColor: "#E5DDC8" }}
+                    placeholder="?啣??酉 tag嚗?憒?靽"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onAddTag(image.id, tagDraft);
+                      setTagDraft("");
+                    }}
+                    className="rounded px-2 py-1 text-xs"
+                    style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}
+                  >
+                    ?啣?
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <label className="block">
+              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">Reference ??</span>
+              <textarea
+                value={referenceText}
+                onChange={(event) => setReferenceText(event.target.value)}
+                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none resize-none"
+                style={{ borderColor: "#E5DDC8" }}
+                rows={4}
+                placeholder="?????舀??‵?交??芯???RPA ?? LINE ??"
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">鈭箏極?酉 Note</span>
+              <textarea
+                value={manualNote}
+                onChange={(event) => setManualNote(event.target.value)}
+                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none resize-none"
+                style={{ borderColor: "#E5DDC8" }}
+                rows={4}
+                placeholder="靘?嚗眺銝???望銝餅??澆?蝣箄?"
+              />
+            </label>
+
+            <div className="flex items-center justify-between gap-3 pt-2">
+              <button type="button" onClick={archive} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: "#B91C1C", color: "#991B1B" }}>
+                撠???
+              </button>
+              <button type="button" onClick={saveMetadata} className="rounded-md px-4 py-2 text-xs font-medium" style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}>
+                ?脣?
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+*/
+
+function CleanImageDetailDrawer({ image, onClose, onAddTag, onDeleteTag, onUpdateTag, onUpdateImage, onArchiveImage }) {
+  const [displayName, setDisplayName] = useState(image.display_name || "");
+  const [ocrOverride, setOcrOverride] = useState((image.ocr_tags_override || []).join("、"));
+  const [referenceText, setReferenceText] = useState(image.reference_text || "");
+  const [manualNote, setManualNote] = useState(image.manual_note || "");
+  const [tagDraft, setTagDraft] = useState("");
+  const [tagEdits, setTagEdits] = useState({});
+  const rawTags = image.system_tags || [];
+  const flow = imageFlowStatus(image);
+
+  useEffect(() => {
+    setDisplayName(image.display_name || "");
+    setOcrOverride((image.ocr_tags_override || []).join("、"));
+    setReferenceText(image.reference_text || "");
+    setManualNote(image.manual_note || "");
+    setTagDraft("");
+    setTagEdits({});
+  }, [image.id]);
+
+  const parsedOverrideTags = () => ocrOverride
+    .split(/[,，、\n]/)
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+
+  const saveMetadata = async () => {
+    await onUpdateImage(image.id, {
+      display_name: displayName,
+      ocr_tags_override: parsedOverrideTags(),
+      reference_text: referenceText,
+      manual_note: manualNote,
+    });
+  };
+
+  const archive = async () => {
+    if (!window.confirm("確定要刪除這張圖片嗎？此操作無法復原。")) return;
+    await onArchiveImage(image.id);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end animate-backdrop-in" style={{ backgroundColor: "rgba(28,25,23,0.35)" }}>
+      <div className="w-full max-w-3xl h-full bg-white shadow-xl overflow-y-auto animate-slide-in">
+        <div className="sticky top-0 z-10 px-5 py-4 border-b flex items-center justify-between gap-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
+          <div className="min-w-0">
+            <div className="text-sm font-medium truncate">{image.display_name || image.original_filename}</div>
+            <div className="text-xs text-stone-500 mt-0.5">{flow.label} · {flow.detail}</div>
+          </div>
+          <button type="button" onClick={onClose} className="p-1.5 rounded-md hover:bg-[#EFE9D8]" aria-label="關閉">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 grid lg:grid-cols-[320px_1fr] gap-5">
+          <div>
+            <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-1">組圖結果</div>
+            {image.branded_thumbnail_url ? (
+              <a href={image.branded_url || image.branded_thumbnail_url} target="_blank" rel="noreferrer" className="block rounded-md border overflow-hidden bg-stone-100" style={{ borderColor: "#E5DDC8", aspectRatio: "827 / 1169" }}>
+                <img src={image.branded_thumbnail_url} alt={`${image.original_filename} composed`} className="w-full h-full object-cover" />
+              </a>
+            ) : (
+              <div className="rounded-md border px-3 py-8 text-center text-xs text-stone-500" style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}>
+                組圖尚未完成
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-4">
+            <label className="block">
+              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">圖片名稱</span>
+              <input
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
+                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none"
+                style={{ borderColor: "#E5DDC8" }}
+                placeholder={image.original_filename}
+              />
+            </label>
+
+            <div className="rounded-md border p-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}>
+              <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-2">OCR 系統 Tags</div>
+              <div className="flex flex-wrap gap-1">
+                {rawTags.map((tag, idx) => (
+                  <span key={`${tag.field}-${tag.tag}-${idx}`} className="rounded px-1.5 py-0.5 text-[10px]" style={{ backgroundColor: "#EEF2FF", color: "#3730A3" }}>
+                    {tag.tag}
+                  </span>
+                ))}
+                {rawTags.length === 0 && <span className="text-xs text-stone-500">尚無 OCR tag</span>}
+              </div>
+            </div>
+
+            <label className="block">
+              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">OCR Tag 人工修正</span>
+              <textarea
+                value={ocrOverride}
+                onChange={(event) => setOcrOverride(event.target.value)}
+                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none resize-none"
+                style={{ borderColor: "#E5DDC8" }}
+                rows={2}
+                placeholder="可用逗號、頓號或換行分隔"
+              />
+            </label>
+
+            <div>
+              <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-2">人工備註 Tags</div>
+              <div className="space-y-2">
+                {(image.manual_tags || []).map((tag) => (
+                  <div key={tag.id} className="flex gap-2">
+                    <input
+                      value={tagEdits[tag.id] ?? tag.tag}
+                      onChange={(event) => setTagEdits((current) => ({ ...current, [tag.id]: event.target.value }))}
+                      onBlur={() => onUpdateTag(tag.id, tagEdits[tag.id] ?? tag.tag)}
+                      className="min-w-0 flex-1 rounded border px-2 py-1 text-xs outline-none"
+                      style={{ borderColor: "#E5DDC8" }}
+                    />
+                    <button type="button" onClick={() => onDeleteTag(tag.id)} className="rounded border px-2 py-1 text-xs" style={{ borderColor: "#E5DDC8" }}>
+                      刪除
+                    </button>
+                  </div>
+                ))}
+                <div className="flex gap-2">
+                  <input
+                    value={tagDraft}
+                    onChange={(event) => setTagDraft(event.target.value)}
+                    className="min-w-0 flex-1 rounded border px-2 py-1 text-xs outline-none"
+                    style={{ borderColor: "#E5DDC8" }}
+                    placeholder="新增人工 tag，例如促銷、買一送一"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onAddTag(image.id, tagDraft);
+                      setTagDraft("");
+                    }}
+                    className="rounded px-2 py-1 text-xs"
+                    style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}
+                  >
+                    新增
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <label className="block">
+              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">Reference 文案</span>
+              <textarea
+                value={referenceText}
+                onChange={(event) => setReferenceText(event.target.value)}
+                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none resize-none"
+                style={{ borderColor: "#E5DDC8" }}
+                rows={4}
+                placeholder="保留給手動輸入或後續 RPA 補入 LINE 文案"
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">人工備註 Note</span>
+              <textarea
+                value={manualNote}
+                onChange={(event) => setManualNote(event.target.value)}
+                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none resize-none"
+                style={{ borderColor: "#E5DDC8" }}
+                rows={4}
+                placeholder="例如促銷、買一送一、活動檔期等"
+              />
+            </label>
+
+            <div className="flex items-center justify-between gap-3 pt-2">
+              <button type="button" onClick={archive} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: "#B91C1C", color: "#991B1B" }}>
+                刪除圖片
+              </button>
+              <button type="button" onClick={saveMetadata} className="rounded-md px-4 py-2 text-xs font-medium" style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}>
+                儲存
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1847,7 +3170,7 @@ function NotificationPanel({
   const latestTime = latestItems[0]?.source_time || latestItems[0]?.indexed_at;
   const latestLabel = latestTime
     ? new Date(latestTime).toLocaleString("zh-TW", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
-    : "尚無時間";
+    : "尚無更新";
   const sourceEvents = (Array.isArray(overview?.status?.items) ? overview.status.items : [])
     .map((item) => ({
       name: item.target_id || "Agent",
@@ -1864,82 +3187,55 @@ function NotificationPanel({
       className="absolute right-0 top-full mt-2 w-80 rounded-lg border bg-white shadow-xl overflow-hidden z-40 animate-fade-up"
       style={{ borderColor: "#E5DDC8" }}
     >
-      <div
-        className="px-4 py-3 border-b flex items-center justify-between"
-        style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}
-      >
-        <div className="text-sm font-medium" style={{ color: "#1C1917" }}>
-          Agent 通知
-        </div>
-        <button
-          onClick={onRefresh}
-          className="text-[10px] text-stone-500 hover:text-stone-900 transition-colors"
-        >
+      <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
+        <div className="text-sm font-medium" style={{ color: "#1C1917" }}>Agent 通知</div>
+        <button onClick={onRefresh} className="text-[10px] text-stone-500 hover:text-stone-900 transition-colors">
           重新整理
         </button>
       </div>
 
       {!hasAny ? (
         <div className="px-4 py-7 flex flex-col items-center text-center">
-          <div
-            className="w-10 h-10 rounded-md flex items-center justify-center mb-3"
-            style={{ backgroundColor: "#F0E9D6" }}
-          >
+          <div className="w-10 h-10 rounded-md flex items-center justify-center mb-3" style={{ backgroundColor: "#F0E9D6" }}>
             <Clock className="w-4 h-4 text-stone-500" />
           </div>
           <div className="text-xs font-medium mb-1">尚無 Agent 通知</div>
-          <div className="text-[10px] text-stone-500 leading-relaxed">
-            目前沒有新的爬圖結果。
-          </div>
+          <div className="text-[10px] text-stone-500 leading-relaxed">有新圖片、重複圖片或流程異常時會顯示在這裡。</div>
         </div>
       ) : (
         <div className="max-h-80 overflow-y-auto scrollbar-thin">
           {overview?.loading && (
-            <div className="w-full px-4 py-3 flex gap-3" style={{ borderTop: "none" }}>
-              <div
-                className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0"
-                style={{ backgroundColor: "#F0E9D6" }}
-              >
+            <div className="w-full px-4 py-3 flex gap-3">
+              <div className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0" style={{ backgroundColor: "#F0E9D6" }}>
                 <Loader2 className="w-3 h-3 animate-spin text-stone-500" />
               </div>
               <div className="flex-1 min-w-0">
-                <div className="text-xs font-medium mb-0.5">讀取 Agent</div>
-                <p className="text-[11px] text-stone-600 leading-relaxed">正在更新通知結果</p>
+                <div className="text-xs font-medium mb-0.5">正在同步 Agent</div>
+                <p className="text-[11px] text-stone-600 leading-relaxed">正在讀取圖片與流程狀態。</p>
               </div>
             </div>
           )}
 
           {overview?.error && (
-            <button
-              onClick={onSelectStatus}
-              className="w-full px-4 py-3 text-left hover:bg-[#FAF7EE] transition-colors group flex gap-3"
-            >
-              <div
-                className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0"
-                style={{ backgroundColor: "#FEF3C7" }}
-              >
+            <button onClick={onSelectStatus} className="w-full px-4 py-3 text-left hover:bg-[#FAF7EE] transition-colors group flex gap-3">
+              <div className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0" style={{ backgroundColor: "#FEF3C7" }}>
                 <AlertTriangle className="w-3 h-3" style={{ color: "#92400E" }} />
               </div>
               <div className="flex-1 min-w-0">
-                <div className="text-xs font-medium mb-0.5">Agent 發生錯誤</div>
+                <div className="text-xs font-medium mb-0.5">Agent 狀態異常</div>
                 <p className="text-[11px] text-stone-600 leading-relaxed truncate">{overview.error}</p>
               </div>
             </button>
           )}
 
           {sourceEvents.length > 0 && (
-            <div
-              className="px-4 py-3"
-              style={{ borderTop: "1px solid #F0E9D6", backgroundColor: "#FDFBF5" }}
-            >
-              <div className="text-xs font-medium mb-1">系統最後更新</div>
+            <div className="px-4 py-3" style={{ borderTop: "1px solid #F0E9D6", backgroundColor: "#FDFBF5" }}>
+              <div className="text-xs font-medium mb-1">最近來源更新</div>
               <div className="space-y-1.5">
                 {sourceEvents.map((item) => (
-                  <div key={`${item.name}-${item.time}`} className="flex items-center justify-between gap-3 text-[10px]">
-                    <span className="truncate text-stone-700">{item.name}</span>
-                    <span className="text-stone-500 tabular-nums flex-shrink-0">
-                      {new Date(item.time).toLocaleString("zh-TW", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
-                    </span>
+                  <div key={`${item.name}-${item.time}`} className="flex items-center justify-between gap-3 text-[11px] text-stone-600">
+                    <span className="truncate">{item.name}</span>
+                    <span className="shrink-0 tabular-nums">{item.indexed} 張</span>
                   </div>
                 ))}
               </div>
@@ -1947,78 +3243,48 @@ function NotificationPanel({
           )}
 
           {latestCount > 0 && (
-            <button
-              onClick={onSelectNew}
-              className="w-full px-4 py-3 text-left hover:bg-[#FAF7EE] transition-colors group flex gap-3"
-              style={{ borderTop: "1px solid #F0E9D6" }}
-            >
-              <div
-                className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0"
-                style={{ backgroundColor: "#1C1917" }}
-              >
-                <Sparkles className="w-3 h-3" style={{ color: "#F5F1E8" }} />
+            <button onClick={onSelectNew} className="w-full px-4 py-3 text-left hover:bg-[#FAF7EE] transition-colors group flex gap-3">
+              <div className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0" style={{ backgroundColor: "#E0F2FE" }}>
+                <Inbox className="w-3 h-3" style={{ color: "#075985" }} />
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2 mb-0.5">
-                  <span className="text-xs font-medium">系統最後更新</span>
+                  <span className="text-xs font-medium">最新圖片</span>
                   <span className="text-[10px] text-stone-500 tabular-nums">{latestLabel}</span>
                 </div>
                 <p className="text-[11px] text-stone-600 leading-relaxed">
-                  <span className="font-display italic text-base text-stone-900">{latestCount}</span>{" "}
-                  份新組合 DM
+                  目前有 <span className="font-display italic text-base text-stone-900">{latestCount}</span> 張可查看。
                 </p>
-                <div className="flex items-center gap-1 text-[10px] text-stone-500 mt-1 group-hover:text-stone-900 transition-colors">
-                  查看最新結果
-                  <ArrowRight className="w-2.5 h-2.5 group-hover:translate-x-0.5 transition-transform" />
-                </div>
               </div>
             </button>
           )}
 
           {duplicateCount > 0 && (
-            <button
-              onClick={onSelectDup}
-              className="w-full px-4 py-3 text-left hover:bg-[#FAF7EE] transition-colors group flex gap-3"
-              style={{ borderTop: "1px solid #F0E9D6" }}
-            >
-              <div
-                className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0"
-                style={{ backgroundColor: "#FEF3C7" }}
-              >
-                <AlertTriangle className="w-3 h-3" style={{ color: "#92400E" }} />
+            <button onClick={onSelectDup} className="w-full px-4 py-3 text-left hover:bg-[#FAF7EE] transition-colors group flex gap-3">
+              <div className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0" style={{ backgroundColor: "#FEE2E2" }}>
+                <Layers className="w-3 h-3" style={{ color: "#B91C1C" }} />
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2 mb-0.5">
-                  <span className="text-xs font-medium">待審核重複圖片</span>
-                  <span className="text-[10px] text-stone-500 tabular-nums">現在</span>
+                  <span className="text-xs font-medium">重複圖片</span>
+                  <span className="text-[10px] text-stone-500 tabular-nums">待處理</span>
                 </div>
                 <p className="text-[11px] text-stone-600 leading-relaxed">
-                  共有 <span className="font-display italic text-base" style={{ color: "#B91C1C" }}>{duplicateCount}</span> 組待確認
+                  發現 <span className="font-display italic text-base" style={{ color: "#B91C1C" }}>{duplicateCount}</span> 組可能重複的圖片。
                 </p>
-                <div className="flex items-center gap-1 text-[10px] mt-1 transition-colors group-hover:text-stone-900" style={{ color: "#B91C1C" }}>
-                  查看清單
-                  <ArrowRight className="w-2.5 h-2.5 group-hover:translate-x-0.5 transition-transform" />
-                </div>
               </div>
             </button>
           )}
 
           {totalIndexed > 0 && (
-            <button
-              onClick={onSelectStatus}
-              className="w-full px-4 py-3 text-left hover:bg-[#FAF7EE] transition-colors group flex gap-3"
-              style={{ borderTop: "1px solid #F0E9D6" }}
-            >
-              <div
-                className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0"
-                style={{ backgroundColor: "#F0E9D6" }}
-              >
-                <Database className="w-3 h-3 text-stone-600" />
+            <button onClick={onSelectStatus} className="w-full px-4 py-3 text-left hover:bg-[#FAF7EE] transition-colors group flex gap-3">
+              <div className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0" style={{ backgroundColor: "#ECFDF5" }}>
+                <CheckCircle2 className="w-3 h-3" style={{ color: "#047857" }} />
               </div>
               <div className="flex-1 min-w-0">
-                <div className="text-xs font-medium mb-0.5">資料庫狀態</div>
+                <div className="text-xs font-medium mb-0.5">索引完成</div>
                 <p className="text-[11px] text-stone-600 leading-relaxed">
-                  已索引 <span className="font-medium">{totalIndexed}</span> 份 DM
+                  已索引 <span className="font-display italic text-base text-stone-900">{totalIndexed}</span> 張圖片。
                 </p>
               </div>
             </button>
@@ -2026,130 +3292,18 @@ function NotificationPanel({
         </div>
       )}
 
-      <div
-        className="border-t flex items-center justify-center"
-        style={{
-          borderColor: "#E5DDC8",
-          backgroundColor: "#FAF7EE",
-          minHeight: "44px",
-          padding: "8px 16px",
-        }}
-      >
-        <span className="text-[10px] text-stone-500 leading-none">
-          Agent 每 60 秒更新通知
-        </span>
+      <div className="px-4 py-2 border-t flex items-center justify-between text-[10px] text-stone-500" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
+        <span>通知中心</span>
+        <span>{new Date().toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" })}</span>
       </div>
     </div>
   );
 }
 
-/* ===================================================================== */
-/* MESSAGE BLOCK                                                          */
-/* ===================================================================== */
-function MessageBlock({ msg, copiedId, onCopy, onAction, suggestions, onPreview, onCompareDup, onReviewDup, onSelect }) {
-  if (msg.role === "user") {
-    return (
-      <div className="animate-fade-up mb-8 flex justify-end">
-        <div className="max-w-[80%]">
-          <div className="text-[10px] text-stone-500 mb-1.5 text-right">{msg.time}</div>
-          <div
-            className="px-4 py-3 rounded-lg text-sm leading-relaxed"
-            style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}
-          >
-            {msg.content}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="animate-fade-up mb-8">
-      <div className="flex items-center gap-2 mb-2">
-        <DadovaLogo size={20} />
-        <span className="text-xs font-medium">龍哥</span>
-        <span className="text-[10px] text-stone-500">· {msg.time}</span>
-      </div>
-      <div className="pl-7">
-        {msg.type === "welcome" && <WelcomeMessage suggestions={suggestions} onAction={onAction} />}
-        {msg.type === "text" && (
-          <p className="text-sm leading-relaxed text-stone-700">{msg.content}</p>
-        )}
-        {msg.type === "status" && <AgentStatusMessage status={msg.status} />}
-        {msg.type === "results" && (
-          <ResultsMessage
-            query={msg.query}
-            criteria={msg.criteria}
-            fallback={msg.fallback}
-            dms={msg.dms}
-            copiedId={copiedId}
-            onCopy={onCopy}
-            onPreview={onPreview}
-            onSelect={onSelect}
-          />
-        )}
-        {msg.type === "daily-summary" && (
-          <DailySummary
-            dms={msg.dms}
-            onPreview={onPreview}
-            onSelect={onSelect}
-            onCopy={onCopy}
-          />
-        )}
-        {msg.type === "duplicates" && (
-          <DuplicatesMessage groups={msg.groups} onCompareDup={onCompareDup} onReviewDup={onReviewDup} onPreview={onPreview} />
-        )}
-        {msg.type === "schedule-unavailable" && (
-          <ScheduleUnavailableMessage
-            action={msg.action}
-            requestedTimes={msg.requestedTimes}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ===================================================================== */
-/* WELCOME                                                                */
-/* ===================================================================== */
-function WelcomeMessage({ suggestions, onAction }) {
-  return (
-    <div>
-      <h2 className="font-display italic text-3xl md:text-4xl leading-tight mb-1">
-        早安
-      </h2>
-      <p className="text-sm text-stone-600 leading-relaxed mb-6 max-w-md">
-        我已準備好處理今日的 Agent 查詢與圖片檢視任務。
-        <br />
-        以下是常用指令，或直接用自然語言告訴我您想做什麼。
-      </p>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-w-xl">
-        {suggestions.map((s, i) => (
-          <button
-            key={i}
-            onClick={() => onAction(s.prompt)}
-            className="group flex items-center gap-3 px-4 py-3 rounded-lg border bg-white hover:border-stone-900 transition-all text-left"
-            style={{ borderColor: "#E5DDC8" }}
-          >
-            <s.icon className="w-3.5 h-3.5 text-stone-500 group-hover:text-stone-900 transition-colors" />
-            <span className="text-sm flex-1">{s.label}</span>
-            <ArrowUpRight className="w-3 h-3 text-stone-400 group-hover:text-stone-900 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-all" />
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/* ===================================================================== */
-/* AGENT STATUS ? real indexing state                                     */
-/* ===================================================================== */
 function AgentStatusMessage({ status }) {
   const sources = Array.isArray(status?.items) ? status.items : [];
   const pipeline = getLineImagePipelineStatus(status);
   const totalIndexed = Number(status?.total_indexed || 0);
-  const activeSources = sources.filter((item) => Number(item.indexed_count || 0) > 0);
   const errorSources = sources.filter((item) => Number(item.error_count || 0) > 0);
   const totalTravel = sources.reduce((sum, item) => sum + Number(item.travel_count || 0), 0);
   const totalBranded = sources.reduce((sum, item) => sum + Number(item.branded_count || 0), 0);
@@ -2173,14 +3327,8 @@ function AgentStatusMessage({ status }) {
         )}
         <span className="text-sm font-medium">{pipeline.label}</span>
       </div>
-      <div
-        className="rounded-lg border bg-white overflow-hidden"
-        style={{ borderColor: "#E5DDC8" }}
-      >
-        <div
-          className="px-5 py-3 flex items-center justify-between border-b"
-          style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}
-        >
+      <div className="rounded-lg border bg-white overflow-hidden" style={{ borderColor: "#E5DDC8" }}>
+        <div className="px-5 py-3 flex items-center justify-between border-b" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
           <div className="flex items-center gap-2">
             <Database className="w-3.5 h-3.5 text-stone-500" />
             <span className="text-xs font-medium">LINE 圖片流程</span>
@@ -2192,42 +3340,31 @@ function AgentStatusMessage({ status }) {
         <div className="px-5 py-4">
           <div className="flex items-baseline justify-between mb-2">
             <div className="flex items-baseline gap-2">
-              <span className="font-display italic text-3xl tabular-nums">
-                {String(totalIndexed).padStart(2, "0")}
-              </span>
-              <span className="text-stone-400 text-sm">已 OCR / 索引 DM</span>
+              <span className="font-display italic text-3xl tabular-nums">{String(totalIndexed).padStart(2, "0")}</span>
+              <span className="text-stone-400 text-sm">已 OCR / 組圖 DM</span>
             </div>
             <span className="text-xs text-stone-500 tabular-nums">{pct}%</span>
           </div>
           <div className="h-1 rounded-full overflow-hidden" style={{ backgroundColor: "#F0E9D6" }}>
-            <div
-              className="h-full transition-all duration-700 ease-out"
-              style={{ width: `${Math.min(100, pct)}%`, backgroundColor: "#1C1917" }}
-            />
+            <div className="h-full transition-all duration-700 ease-out" style={{ width: `${Math.min(100, pct)}%`, backgroundColor: "#1C1917" }} />
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
-            <StatusMetric label="抓取" value={pipeline.lineFetchedDone ? "完成" : "處理中"} accent={!pipeline.lineFetchedDone} />
-            <StatusMetric label="OCR" value={pipeline.ocrDone ? "完成" : "處理中"} accent={!pipeline.ocrDone} />
-            <StatusMetric label="組圖" value={pipeline.composedDone ? "完成" : "處理中"} accent={!pipeline.composedDone} />
+            <StatusMetric label="抓取" value={pipeline.lineFetchedDone ? "完成" : "等待中"} accent={!pipeline.lineFetchedDone} />
+            <StatusMetric label="OCR" value={pipeline.ocrDone ? "完成" : "等待中"} accent={!pipeline.ocrDone} />
+            <StatusMetric label="組圖" value={pipeline.composedDone ? "完成" : "等待中"} accent={!pipeline.composedDone} />
           </div>
           <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
-            <StatusMetric label="LINE圖片" value={totalTravel} />
-            <StatusMetric label="組合圖" value={totalBranded} />
-            <StatusMetric label="錯誤" value={errorSources.length} accent={errorSources.length > 0} />
+            <StatusMetric label="LINE 圖片" value={totalTravel} />
+            <StatusMetric label="組圖結果" value={totalBranded} />
+            <StatusMetric label="異常" value={errorSources.length} accent={errorSources.length > 0} />
           </div>
           {manualJob && (
-            <div
-              className="mt-3 rounded-md border px-3 py-2.5"
-              style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}
-            >
+            <div className="mt-3 rounded-md border px-3 py-2.5" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
               <div className="flex items-center justify-between gap-3 mb-2">
                 <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">
-                  最近任務 · {jobSourceLabel(manualJob.trigger_source)}
+                  手動流程 · {jobSourceLabel(manualJob.trigger_source)}
                 </span>
-                <span
-                  className="text-xs font-medium"
-                  style={{ color: manualJob.running ? "#D97706" : manualJob.last_success === false || manualJob.status === "stale" ? "#B91C1C" : "#16A34A" }}
-                >
+                <span className="text-xs font-medium" style={{ color: manualJob.running ? "#D97706" : manualJob.last_success === false || manualJob.status === "stale" ? "#B91C1C" : "#16A34A" }}>
                   {manualJobStatus}
                 </span>
               </div>
@@ -2235,7 +3372,7 @@ function AgentStatusMessage({ status }) {
                 <div>開始：{formatDateTime(manualJob.started_at || manualJob.last_started_at)}</div>
                 <div>結束：{formatDateTime(manualJob.finished_at || manualJob.last_finished_at)}</div>
                 <div>PID：{manualJob.pid || "無"}</div>
-                <div>結果：{manualJob.returncode ?? "待完成"}</div>
+                <div>代碼：{manualJob.returncode ?? "尚無"}</div>
               </div>
               <div className="grid grid-cols-4 gap-1.5 text-xs">
                 <StatusMetric label="RPA" value={jobStepLabel(jobSteps.rpa?.status)} accent={jobStepAccent(jobSteps.rpa?.status)} />
@@ -2243,26 +3380,17 @@ function AgentStatusMessage({ status }) {
                 <StatusMetric label="組圖" value={jobStepLabel(jobSteps.compose?.status)} accent={jobStepAccent(jobSteps.compose?.status)} />
                 <StatusMetric label="索引" value={jobStepLabel(jobSteps.index?.status)} accent={jobStepAccent(jobSteps.index?.status)} />
               </div>
-              {manualJob.last_error && (
-                <div className="mt-2 text-[10px]" style={{ color: "#B91C1C" }}>
-                  {manualJob.last_error}
-                </div>
-              )}
+              {manualJob.last_error && <div className="mt-2 text-[10px]" style={{ color: "#B91C1C" }}>{manualJob.last_error}</div>}
             </div>
           )}
           {latestAt && (
             <div className="mt-3 flex items-center gap-2">
-              <span className="text-[10px] tracking-[0.2em] uppercase text-stone-500">??</span>
-              <span className="text-xs font-medium">
-                {new Date(latestAt).toLocaleString("zh-TW")}
-              </span>
+              <span className="text-[10px] tracking-[0.2em] uppercase text-stone-500">最近更新</span>
+              <span className="text-xs font-medium">{new Date(latestAt).toLocaleString("zh-TW")}</span>
             </div>
           )}
         </div>
-        <div
-          className="px-5 py-3 grid grid-cols-4 gap-1.5 border-t"
-          style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}
-        >
+        <div className="px-5 py-3 grid grid-cols-4 gap-1.5 border-t" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
           {(sources.length ? sources : [{ target_id: "Agent", indexed_count: 0 }]).slice(0, 20).map((source, i) => {
             const hasData = Number(source.indexed_count || 0) > 0;
             const hasError = Number(source.error_count || 0) > 0;
@@ -2271,9 +3399,7 @@ function AgentStatusMessage({ status }) {
                 key={`${source.target_id || source.group_name || "source"}-${i}`}
                 title={`${source.target_id || source.group_name || "Agent"}: ${source.indexed_count || 0}`}
                 className="h-1 rounded-full"
-                style={{
-                  backgroundColor: hasError ? "#B91C1C" : hasData ? "#1C1917" : "#E5DDC8",
-                }}
+                style={{ backgroundColor: hasError ? "#B91C1C" : hasData ? "#1C1917" : "#E5DDC8" }}
               />
             );
           })}
@@ -2282,7 +3408,6 @@ function AgentStatusMessage({ status }) {
     </div>
   );
 }
-
 function StatusMetric({ label, value, accent }) {
   return (
     <div className="rounded-md px-2 py-1.5" style={{ backgroundColor: "#FAF7EE" }}>
@@ -2295,37 +3420,36 @@ function StatusMetric({ label, value, accent }) {
 }
 
 /* ===================================================================== */
-/* RESULTS — compact horizontal cards in a single column                  */
+/* RESULTS ??compact horizontal cards in a single column                  */
 /* ===================================================================== */
 function ResultsMessage({ query, criteria, fallback, dms, copiedId, onCopy, onPreview, onSelect }) {
   const [copiedAll, setCopiedAll] = useState(false);
-  const [selected, setSelected] = useState(new Set());
   const [copiedSelected, setCopiedSelected] = useState(false);
-
-  // Threshold — when results exceed this, switch to compact summary view.
-  const COMPACT_THRESHOLD = 6;
-  const isCompact = dms.length > COMPACT_THRESHOLD;
+  const [selected, setSelected] = useState(new Set());
+  const isCompact = dms.length > 6;
 
   const handleCopyAll = async () => {
     const ok = await onCopy(dms);
     if (!ok) return;
     setCopiedAll(true);
-    setTimeout(() => setCopiedAll(false), 2500);
+    setTimeout(() => setCopiedAll(false), 2200);
   };
 
   const toggleSelect = (id) => {
-    setSelected((s) => {
-      const next = new Set(s);
+    setSelected((current) => {
+      const next = new Set(current);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
   };
 
+  const selectedDms = () => dms.filter((dm) => selected.has(dm.id));
+
   const handleCopySelected = async () => {
-    if (selected.size === 0) return;
-    const selectedDms = dms.filter((dm) => selected.has(dm.id));
-    const ok = await onCopy(selectedDms);
+    const items = selectedDms();
+    if (items.length === 0) return;
+    const ok = await onCopy(items);
     if (!ok) return;
     setCopiedSelected(true);
     setTimeout(() => {
@@ -2336,330 +3460,133 @@ function ResultsMessage({ query, criteria, fallback, dms, copiedId, onCopy, onPr
 
   const clearSelection = () => setSelected(new Set());
 
-  // Build criteria chips from extracted parameters
   const chips = [];
-  if (criteria?.region) {
-    chips.push({ label: "地區", value: criteria.region, key: "region" });
-  }
-  if (criteria?.month) {
-    chips.push({ label: "月份", value: `${criteria.month} 月`, key: "month" });
-  }
-  if (criteria?.months?.length) {
-    chips.push({ label: "月份", value: `${criteria.months.join(", ")} 月`, key: "months" });
-  }
-  if (criteria?.season) {
-    chips.push({ label: "季節", value: criteria.season, key: "season" });
-  }
-  if (criteria?.days) {
-    const v = criteria.nights
-      ? `${criteria.days} 天 ${criteria.nights} 夜`
-      : `${criteria.days} 日`;
-    chips.push({ label: "天數", value: v, key: "days" });
-  }
+  if (criteria?.region) chips.push({ label: "地區", value: criteria.region, key: "region" });
+  if (criteria?.month) chips.push({ label: "月份", value: `${criteria.month} 月`, key: "month" });
+  if (criteria?.months?.length) chips.push({ label: "月份", value: `${criteria.months.join(", ")} 月`, key: "months" });
+  if (criteria?.season) chips.push({ label: "季節", value: criteria.season, key: "season" });
+  if (criteria?.days) chips.push({ label: "天數", value: criteria.nights ? `${criteria.days} 天 ${criteria.nights} 夜` : `${criteria.days} 天`, key: "days" });
   if (criteria?.minPrice || criteria?.maxPrice) {
     const minPrice = criteria.minPrice ? `NT$ ${criteria.minPrice.toLocaleString()}` : null;
     const maxPrice = criteria.maxPrice ? `NT$ ${criteria.maxPrice.toLocaleString()}` : null;
-    chips.push({
-      label: criteria.minPrice && criteria.maxPrice ? "預算區間" : criteria.maxPrice ? "預算上限" : "預算下限",
-      value: minPrice && maxPrice ? `${minPrice} - ${maxPrice}` : maxPrice || minPrice,
-      key: "price",
-    });
+    chips.push({ label: "預算", value: minPrice && maxPrice ? `${minPrice} - ${maxPrice}` : maxPrice || minPrice, key: "price" });
   }
-  if (criteria?.feature) {
-    chips.push({ label: "特色", value: criteria.feature, key: "feature" });
-  }
-  if (criteria?.tag) {
-    chips.push({ label: "客群", value: criteria.tag, key: "tag" });
-  }
-  if (criteria?.type) {
-    chips.push({ label: "類型", value: criteria.type, key: "type" });
-  }
+  if (criteria?.feature) chips.push({ label: "特色", value: criteria.feature, key: "feature" });
+  if (criteria?.tag) chips.push({ label: "標籤", value: criteria.tag, key: "tag" });
+  if (criteria?.type) chips.push({ label: "類型", value: criteria.type, key: "type" });
+
+  const Summary = ({ compact = false }) => (
+    <>
+      <p className="text-sm leading-relaxed text-stone-700 mb-1">
+        {fallback ? "找不到完全符合的 DM，先列出接近條件的結果。" : "已找到符合條件的 DM。"}
+        <span className="font-medium"> {dms.length} 張</span>
+      </p>
+      <div className={`flex items-center gap-1.5 text-[10px] text-stone-500 ${compact ? "mb-3" : ""}`}>
+        <Search className="w-3 h-3" />
+        <span className="truncate">查詢：{query}</span>
+      </div>
+    </>
+  );
+
+  const CriteriaChips = ({ className = "" }) => chips.length > 0 && (
+    <div className={`rounded-md border px-3 py-2.5 ${className}`} style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
+      <div className="flex items-center gap-2 mb-1.5">
+        <Sparkles className="w-3 h-3 text-stone-500" />
+        <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500 font-medium">搜尋條件</span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {chips.map((chip) => (
+          <div key={chip.key} className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-white border" style={{ borderColor: "#E5DDC8" }}>
+            <span className="text-[9px] tracking-[0.1em] uppercase text-stone-400">{chip.label}</span>
+            <span className="text-[11px] font-medium" style={{ color: "#1C1917" }}>{chip.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 
   const hasSelection = selected.size > 0;
 
-  // ===== COMPACT VIEW — for many results =====
   if (isCompact) {
     const previewSet = dms.slice(0, 4);
-
     return (
       <div>
-        <p className="text-sm leading-relaxed text-stone-700 mb-1">
-          {fallback ? (
-            <>
-              未找到完全符合條件的 DM，以下為相關推薦
-              <span className="font-medium"> {dms.length} 份</span>
-            </>
-          ) : (
-            <>
-              為您找到符合條件的
-              <span className="font-medium"> {dms.length} 份 DM</span>
-            </>
-          )}
-          。
-        </p>
-        <div className="flex items-center gap-1.5 text-[10px] text-stone-500 mb-3">
-          <Search className="w-3 h-3" />
-          <span className="truncate">「{query}」</span>
-        </div>
-
-        {/* Criteria chips */}
-        {chips.length > 0 && (
-          <div
-            className="rounded-md border px-3 py-2.5 mb-3"
-            style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}
-          >
-            <div className="flex items-center gap-2 mb-1.5">
-              <Sparkles className="w-3 h-3 text-stone-500" />
-              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500 font-medium">
-                已解析條件
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {chips.map((c) => (
-                <div
-                  key={c.key}
-                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-white border"
-                  style={{ borderColor: "#E5DDC8" }}
-                >
-                  <span className="text-[9px] tracking-[0.1em] uppercase text-stone-400">
-                    {c.label}
-                  </span>
-                  <span className="text-[11px] font-medium" style={{ color: "#1C1917" }}>
-                    {c.value}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Compact card with thumbnails + actions */}
-        <div
-          className="rounded-lg border bg-white overflow-hidden"
-          style={{ borderColor: "#E5DDC8" }}
-        >
+        <Summary compact />
+        <CriteriaChips className="mb-3" />
+        <div className="rounded-lg border bg-white overflow-hidden" style={{ borderColor: "#E5DDC8" }}>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 p-3">
             {previewSet.map((dm, i) => (
-              <button
-                key={dm.id}
-                onClick={() => onPreview(dm, dms)}
-                className="group relative overflow-hidden rounded-md bg-stone-100"
-                style={{ aspectRatio: "827 / 1169", animationDelay: `${i * 60}ms` }}
-              >
-                <DmImage
-                  dm={dm}
-                  alt={dm.title}
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                />
+              <button key={dm.id} onClick={() => onPreview(dm, dms)} className="group relative overflow-hidden rounded-md bg-stone-100" style={{ aspectRatio: "827 / 1169", animationDelay: `${i * 60}ms` }}>
+                <DmImage dm={dm} alt={dm.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
                 <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent p-2">
                   <div className="text-[10px] text-white/80 mb-0.5 truncate">{dm.source}</div>
-                  <div className="text-[11px] text-white font-medium leading-tight line-clamp-1">
-                    {dm.title}
-                  </div>
+                  <div className="text-[11px] text-white font-medium leading-tight line-clamp-1">{dm.title}</div>
                 </div>
               </button>
             ))}
           </div>
-
-          {/* Primary action — selective copy via modal */}
-          <button
-            onClick={() => onSelect && onSelect(dms)}
-            className="w-full px-4 py-3 border-t flex items-center justify-between hover:bg-[#FAF7EE] transition-colors group"
-            style={{ borderColor: "#E5DDC8", color: "#1C1917" }}
-          >
+          <button onClick={() => onSelect && onSelect(dms)} className="w-full px-4 py-3 border-t flex items-center justify-between hover:bg-[#FAF7EE] transition-colors group" style={{ borderColor: "#E5DDC8", color: "#1C1917" }}>
             <div className="flex items-center gap-2">
               <MousePointerClick className="w-3.5 h-3.5" />
-              <span className="text-sm font-medium">勾選下載</span>
-              <span className="text-[10px] text-stone-500">
-                從 {dms.length} 份中挑選任意數量
-              </span>
+              <span className="text-sm font-medium">選取要組合的圖片</span>
+              <span className="text-[10px] text-stone-500">共 {dms.length} 張</span>
             </div>
             <ArrowRight className="w-3 h-3 text-stone-500 group-hover:text-stone-900 group-hover:translate-x-0.5 transition-all" />
           </button>
-
-          {/* Secondary actions */}
           <div className="border-t flex" style={{ borderColor: "#F0E9D6" }}>
-            <button
-              onClick={() => onPreview(dms[0], dms)}
-              className="flex-1 px-4 py-2.5 flex items-center justify-center gap-1.5 hover:bg-[#FAF7EE] transition-colors text-stone-600 hover:text-stone-900 border-r"
-              style={{ borderColor: "#F0E9D6" }}
-            >
+            <button onClick={() => onPreview(dms[0], dms)} className="flex-1 px-4 py-2.5 flex items-center justify-center gap-1.5 hover:bg-[#FAF7EE] transition-colors text-stone-600 hover:text-stone-900 border-r" style={{ borderColor: "#F0E9D6" }}>
               <Maximize2 className="w-3 h-3" />
-              <span className="text-[11px]">逐一瀏覽</span>
+              <span className="text-[11px]">預覽第一張</span>
             </button>
-            <button
-              onClick={handleCopyAll}
-              className="flex-1 px-4 py-2.5 flex items-center justify-center gap-1.5 hover:bg-[#FAF7EE] transition-colors"
-              style={{ color: copiedAll ? "#16A34A" : "#57534E" }}
-            >
-              {copiedAll ? (
-                <>
-                  <Check className="w-3 h-3" />
-                  <span className="text-[11px] font-medium">
-                    已下載 {dms.length} 張
-                  </span>
-                </>
-              ) : (
-                <>
-                  <CopyPlus className="w-3 h-3" />
-                  <span className="text-[11px]">
-                    下載圖片包 ({dms.length})
-                  </span>
-                </>
-              )}
+            <button onClick={handleCopyAll} className="flex-1 px-4 py-2.5 flex items-center justify-center gap-1.5 hover:bg-[#FAF7EE] transition-colors" style={{ color: copiedAll ? "#16A34A" : "#57534E" }}>
+              {copiedAll ? <Check className="w-3 h-3" /> : <CopyPlus className="w-3 h-3" />}
+              <span className="text-[11px] font-medium">{copiedAll ? `已複製 ${dms.length} 張` : `複製全部 (${dms.length})`}</span>
             </button>
           </div>
         </div>
-        <p className="text-[10px] text-stone-500 leading-relaxed mt-2">
-          提示：勾選下載可挑選任意張數·逐一瀏覽支援鍵盤切換與比對模式
-        </p>
+        <p className="text-[10px] text-stone-500 leading-relaxed mt-2">可先進入選取模式，再挑出要複製或組合的圖片。</p>
       </div>
     );
   }
 
-  // ===== STANDARD VIEW — for ≤ 6 results, show full list with per-card details =====
   return (
     <div>
       <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="min-w-0 flex-1">
-          <p className="text-sm leading-relaxed text-stone-700 mb-1">
-            {fallback ? (
-              <>
-                未找到完全符合條件的 DM，以下為相關推薦
-                <span className="font-medium"> {dms.length} 份</span>
-              </>
-            ) : (
-              <>
-                為您找到符合條件的
-                <span className="font-medium"> {dms.length} 份 DM</span>
-              </>
-            )}
-            。
-          </p>
-          <div className="flex items-center gap-1.5 text-[10px] text-stone-500">
-            <Search className="w-3 h-3" />
-            <span className="truncate">「{query}」</span>
-          </div>
-        </div>
+        <div className="min-w-0 flex-1"><Summary /></div>
         {dms.length > 1 && !hasSelection && (
-          <button
-            onClick={handleCopyAll}
-            className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium border transition-all"
-            style={{
-              borderColor: copiedAll ? "#16A34A" : "#1C1917",
-              backgroundColor: copiedAll ? "#16A34A" : "transparent",
-              color: copiedAll ? "#F5F1E8" : "#1C1917",
-            }}
-          >
-            {copiedAll ? (
-              <>
-                <Check className="w-3 h-3" />
-                已下載 {dms.length} 張
-              </>
-            ) : (
-              <>
-                <CopyPlus className="w-3 h-3" />
-                下載圖片包
-              </>
-            )}
+          <button onClick={handleCopyAll} className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium border transition-all" style={{ borderColor: copiedAll ? "#16A34A" : "#1C1917", backgroundColor: copiedAll ? "#16A34A" : "transparent", color: copiedAll ? "#F5F1E8" : "#1C1917" }}>
+            {copiedAll ? <Check className="w-3 h-3" /> : <CopyPlus className="w-3 h-3" />}
+            {copiedAll ? `已複製 ${dms.length} 張` : "複製全部"}
           </button>
         )}
       </div>
 
-      {/* Selection action bar — appears when ≥1 selected, replacing download area */}
       {hasSelection && (
-        <div
-          className="rounded-md px-3 py-2 mb-3 flex items-center justify-between gap-2 animate-fade-up"
-          style={{ backgroundColor: "#1C1917" }}
-        >
+        <div className="rounded-md px-3 py-2 mb-3 flex items-center justify-between gap-2 animate-fade-up" style={{ backgroundColor: "#1C1917" }}>
           <span className="text-[11px] text-white/80 tabular-nums">
-            <span className="font-display italic text-base text-white">
-              {selected.size}
-            </span>
+            <span className="font-display italic text-base text-white">{selected.size}</span>
             <span className="text-white/50 ml-1">/ {dms.length}</span>
-            <span className="ml-2">已勾選</span>
+            <span className="ml-2">已選取</span>
           </span>
           <div className="flex items-center gap-1.5">
-            <button
-              onClick={clearSelection}
-              className="px-3 py-1 rounded text-[11px] hover:bg-white/10 transition-colors"
-              style={{ color: "#F5F1E8" }}
-            >
-              清除
-            </button>
-            <button
-              onClick={handleCopySelected}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium transition-all"
-              style={{
-                backgroundColor: copiedSelected ? "#16A34A" : "#F5F1E8",
-                color: copiedSelected ? "#F5F1E8" : "#1C1917",
-              }}
-            >
-              {copiedSelected ? (
-                <>
-                  <Check className="w-3 h-3" />
-                  已下載 {selected.size} 張
-                </>
-              ) : (
-                <>
-                  <CopyPlus className="w-3 h-3" />
-                  下載選取的 {selected.size} 張
-                </>
-              )}
+            <button onClick={clearSelection} className="px-3 py-1 rounded text-[11px] hover:bg-white/10 transition-colors" style={{ color: "#F5F1E8" }}>清除選取</button>
+            <button onClick={handleCopySelected} className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium transition-all" style={{ backgroundColor: copiedSelected ? "#16A34A" : "#F5F1E8", color: copiedSelected ? "#F5F1E8" : "#1C1917" }}>
+              {copiedSelected ? <Check className="w-3 h-3" /> : <CopyPlus className="w-3 h-3" />}
+              {copiedSelected ? `已複製 ${selected.size} 張` : `複製選取 ${selected.size} 張`}
             </button>
           </div>
         </div>
       )}
 
-      {/* Extracted criteria chips */}
-      {chips.length > 0 && !hasSelection && (
-        <div
-          className="rounded-md border px-3 py-2.5 mb-4"
-          style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}
-        >
-          <div className="flex items-center gap-2 mb-1.5">
-            <Sparkles className="w-3 h-3 text-stone-500" />
-            <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500 font-medium">
-              已解析條件
-            </span>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {chips.map((c) => (
-              <div
-                key={c.key}
-                className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-white border"
-                style={{ borderColor: "#E5DDC8" }}
-              >
-                <span className="text-[9px] tracking-[0.1em] uppercase text-stone-400">
-                  {c.label}
-                </span>
-                <span className="text-[11px] font-medium" style={{ color: "#1C1917" }}>
-                  {c.value}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
+      {!hasSelection && <CriteriaChips className="mb-4" />}
       <div className="space-y-2">
         {dms.map((dm, i) => (
-          <DMPosterCard
-            key={dm.id}
-            dm={dm}
-            index={i}
-            copied={copiedId === dm.id}
-            onCopy={() => onCopy(dm)}
-            onPreview={() => onPreview(dm, dms)}
-            isSelected={selected.has(dm.id)}
-            onToggleSelect={() => toggleSelect(dm.id)}
-          />
+          <DMPosterCard key={dm.id} dm={dm} index={i} copied={copiedId === dm.id} onCopy={() => onCopy(dm)} onPreview={() => onPreview(dm, dms)} isSelected={selected.has(dm.id)} onToggleSelect={() => toggleSelect(dm.id)} />
         ))}
       </div>
     </div>
   );
 }
-
 function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onToggleSelect }) {
   return (
     <div
@@ -2683,19 +3610,19 @@ function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onTogg
             backgroundColor: isSelected ? "#1C1917" : "transparent",
             border: isSelected ? "none" : "1.5px solid #D6CFB8",
           }}
-          aria-label={isSelected ? "取消選取" : "選取"}
+          aria-label={isSelected ? "???詨?" : "?詨?"}
         >
           {isSelected && (
             <Check className="w-3 h-3" style={{ color: "#F5F1E8" }} strokeWidth={3} />
           )}
         </button>
 
-        {/* Thumbnail — always opens preview */}
+        {/* Thumbnail ??always opens preview */}
         <button
           onClick={onPreview}
           className="relative flex-shrink-0 overflow-hidden rounded bg-stone-100 group"
           style={{ width: "60px", aspectRatio: "827 / 1169" }}
-          aria-label="放大檢視"
+          aria-label="?曉之瑼Ｚ?"
         >
           <DmImage dm={dm} alt={dm.title} className="w-full h-full object-cover" />
           <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
@@ -2703,11 +3630,11 @@ function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onTogg
           </div>
         </button>
 
-        {/* Content — clicking row body also toggles selection (excluding thumbnail and copy btn) */}
+        {/* Content ??clicking row body also toggles selection (excluding thumbnail and copy btn) */}
         <button
           onClick={onToggleSelect}
           className="flex-1 min-w-0 flex flex-col justify-between text-left cursor-pointer"
-          aria-label="選取此項"
+          aria-label="?詨?甇日?"
         >
           <div className="min-w-0">
             <div className="flex items-center gap-2 mb-1">
@@ -2723,7 +3650,7 @@ function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onTogg
               {dm.title}
             </h3>
             <div className="text-[11px] text-stone-600 truncate mt-0.5">
-              {dm.region} · {dm.period}
+              {dm.region} 繚 {dm.period}
             </div>
           </div>
           <div className="flex items-baseline justify-between gap-2 mt-1.5">
@@ -2731,13 +3658,13 @@ function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onTogg
               className="text-[13px] font-semibold tabular-nums"
               style={{ color: "#B91C1C" }}
             >
-              {dm.days > 0 ? `${dm.days}日 · ` : ""}
+              {dm.days > 0 ? `${dm.days}??繚 ` : ""}
               {dm.price}
             </span>
           </div>
         </button>
 
-        {/* Per-card quick copy — single-DM shortcut */}
+        {/* Per-card quick copy ??single-DM shortcut */}
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -2752,12 +3679,12 @@ function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onTogg
           {copied ? (
             <>
               <Check className="w-3 h-3" />
-              已複製
+              撌脰?鋆?
             </>
           ) : (
             <>
               <Copy className="w-3 h-3" />
-              複製
+              銴ˊ
             </>
           )}
         </button>
@@ -2786,7 +3713,9 @@ function Field({ label, value, accent, compact }) {
 }
 
 /* ===================================================================== */
-/* DAILY SUMMARY — Agent latest data, original summary UI                 */
+/* DAILY SUMMARY ??Agent latest data, original summary UI                 */
+/* ===================================================================== */
+/* DAILY SUMMARY                                                          */
 /* ===================================================================== */
 function DailySummary({ dms = [], onPreview, onSelect, onCopy }) {
   const todays = Array.isArray(dms) ? dms : [];
@@ -2801,164 +3730,84 @@ function DailySummary({ dms = [], onPreview, onSelect, onCopy }) {
   };
 
   if (todays.length === 0) {
-    return (
-      <p className="text-sm leading-relaxed text-stone-700">
-        沒有找到今日新組合圖片 DM。
-      </p>
-    );
+    return <p className="text-sm leading-relaxed text-stone-700">目前沒有今日新增 DM。</p>;
   }
 
   return (
     <div>
       <p className="text-sm leading-relaxed text-stone-700 mb-4">
-        今日有
-        <span className="font-medium"> {todays.length} 份新組合 </span>
-        DM 已從 Agent 載入。以下為摘要：
+        今日新增 <span className="font-medium">{todays.length} 張</span> DM，可直接預覽、選取或複製。
       </p>
-      <div
-        className="rounded-lg border bg-white overflow-hidden mb-4"
-        style={{ borderColor: "#E5DDC8" }}
-      >
-        <div
-          className="px-4 py-3 flex items-center justify-between border-b"
-          style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}
-        >
+      <div className="rounded-lg border bg-white overflow-hidden mb-4" style={{ borderColor: "#E5DDC8" }}>
+        <div className="px-4 py-3 flex items-center justify-between border-b" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
           <div className="flex items-center gap-2">
             <Clock className="w-3.5 h-3.5 text-stone-500" />
-            <span className="text-xs font-medium">Agent 最新組合</span>
+            <span className="text-xs font-medium">Agent 今日摘要</span>
           </div>
-          <span className="text-[10px] text-stone-500">真實索引資料</span>
+          <span className="text-[10px] text-stone-500">最近索引結果</span>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 p-3">
           {previewSet.map((dm, i) => (
-            <button
-              key={dm.id}
-              onClick={() => onPreview(dm, todays)}
-              className="group relative overflow-hidden rounded-md bg-stone-100"
-              style={{ aspectRatio: "827 / 1169", animationDelay: `${i * 60}ms` }}
-            >
-              <DmImage
-                dm={dm}
-                alt={dm.title}
-                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-              />
+            <button key={dm.id} onClick={() => onPreview(dm, todays)} className="group relative overflow-hidden rounded-md bg-stone-100" style={{ aspectRatio: "827 / 1169", animationDelay: `${i * 60}ms` }}>
+              <DmImage dm={dm} alt={dm.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
               <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent p-2">
                 <div className="text-[10px] text-white/80 mb-0.5 truncate">{dm.source}</div>
-                <div className="text-[11px] text-white font-medium leading-tight line-clamp-1">
-                  {dm.title}
-                </div>
+                <div className="text-[11px] text-white font-medium leading-tight line-clamp-1">{dm.title}</div>
               </div>
             </button>
           ))}
         </div>
-        <button
-          onClick={() => onSelect && onSelect(todays)}
-          className="w-full px-4 py-3 border-t flex items-center justify-between hover:bg-[#FAF7EE] transition-colors group"
-          style={{ borderColor: "#E5DDC8", color: "#1C1917" }}
-        >
+        <button onClick={() => onSelect && onSelect(todays)} className="w-full px-4 py-3 border-t flex items-center justify-between hover:bg-[#FAF7EE] transition-colors group" style={{ borderColor: "#E5DDC8", color: "#1C1917" }}>
           <div className="flex items-center gap-2">
             <MousePointerClick className="w-3.5 h-3.5" />
-            <span className="text-sm font-medium">勾選下載</span>
-            <span className="text-[10px] text-stone-500">
-              從 {todays.length} 份中挑選任意數量
-            </span>
+            <span className="text-sm font-medium">選取要組合的圖片</span>
+            <span className="text-[10px] text-stone-500">共 {todays.length} 張</span>
           </div>
           <ArrowRight className="w-3 h-3 text-stone-500 group-hover:text-stone-900 group-hover:translate-x-0.5 transition-all" />
         </button>
         <div className="border-t flex" style={{ borderColor: "#F0E9D6" }}>
-          <button
-            onClick={() => onPreview(todays[0], todays)}
-            className="flex-1 px-4 py-2.5 flex items-center justify-center gap-1.5 hover:bg-[#FAF7EE] transition-colors text-stone-600 hover:text-stone-900 border-r"
-            style={{ borderColor: "#F0E9D6" }}
-          >
+          <button onClick={() => onPreview(todays[0], todays)} className="flex-1 px-4 py-2.5 flex items-center justify-center gap-1.5 hover:bg-[#FAF7EE] transition-colors text-stone-600 hover:text-stone-900 border-r" style={{ borderColor: "#F0E9D6" }}>
             <Maximize2 className="w-3 h-3" />
-            <span className="text-[11px]">逐一瀏覽</span>
+            <span className="text-[11px]">預覽第一張</span>
           </button>
-          <button
-            onClick={handleCopyAll}
-            className="flex-1 px-4 py-2.5 flex items-center justify-center gap-1.5 hover:bg-[#FAF7EE] transition-colors"
-            style={{ color: copiedAll ? "#16A34A" : "#57534E" }}
-          >
-            {copiedAll ? (
-              <>
-                <Check className="w-3 h-3" />
-                <span className="text-[11px] font-medium">
-                  已下載 {todays.length} 張
-                </span>
-              </>
-            ) : (
-              <>
-                <CopyPlus className="w-3 h-3" />
-                <span className="text-[11px]">
-                  下載圖片包 ({todays.length})
-                </span>
-              </>
-            )}
+          <button onClick={handleCopyAll} className="flex-1 px-4 py-2.5 flex items-center justify-center gap-1.5 hover:bg-[#FAF7EE] transition-colors" style={{ color: copiedAll ? "#16A34A" : "#57534E" }}>
+            {copiedAll ? <Check className="w-3 h-3" /> : <CopyPlus className="w-3 h-3" />}
+            <span className="text-[11px] font-medium">{copiedAll ? `已複製 ${todays.length} 張` : `複製全部 (${todays.length})`}</span>
           </button>
         </div>
       </div>
-      <p className="text-[10px] text-stone-500 leading-relaxed">
-        提示：勾選下載可挑選任意張數·逐一瀏覽支援鍵盤切換與比對模式
-      </p>
+      <p className="text-[10px] text-stone-500 leading-relaxed">今日摘要使用 Agent 最新索引資料，方便快速挑圖與複製。</p>
     </div>
   );
 }
 
 /* ===================================================================== */
-/* SCHEDULE UNAVAILABLE MESSAGE — no local schedule mutation               */
+/* SCHEDULE UNAVAILABLE MESSAGE                                           */
 /* ===================================================================== */
 function ScheduleUnavailableMessage({ action, requestedTimes }) {
   const times = Array.isArray(requestedTimes) ? requestedTimes : [];
-  const actionLabel =
-    action === "view"
-      ? "????"
-      : action === "add"
-      ? "????"
-      : action === "remove"
-      ? "????"
-      : "????";
+  const actionLabel = action === "view" ? "查看排程" : action === "add" ? "新增排程" : action === "remove" ? "移除排程" : "排程操作";
 
   return (
     <div>
       <div className="flex items-center gap-2 mb-2">
         <AlertTriangle className="w-4 h-4" style={{ color: "#D97706" }} />
-        <span className="text-sm font-medium">??????????</span>
+        <span className="text-sm font-medium">目前無法直接操作排程</span>
       </div>
-      <div
-        className="rounded-lg border bg-white overflow-hidden"
-        style={{ borderColor: "#E5DDC8" }}
-      >
-        <div
-          className="px-4 py-3 border-b"
-          style={{ borderColor: "#F0E9D6", backgroundColor: "#FAF7EE" }}
-        >
+      <div className="rounded-lg border bg-white overflow-hidden" style={{ borderColor: "#E5DDC8" }}>
+        <div className="px-4 py-3 border-b" style={{ borderColor: "#F0E9D6", backgroundColor: "#FAF7EE" }}>
           <div className="flex items-center gap-2 mb-1.5">
             <Clock className="w-3 h-3 text-stone-500" />
-            <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500 font-medium">
-              {actionLabel}
-            </span>
+            <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500 font-medium">{actionLabel}</span>
           </div>
           <div className="flex items-center gap-1.5 flex-wrap">
-            {times.length > 0 ? (
-              times.map((time) => (
-                <span
-                  key={time}
-                  className="text-xs font-medium tabular-nums px-2.5 py-1 rounded"
-                  style={{ backgroundColor: "#F5F1E8", color: "#1C1917" }}
-                >
-                  {time}
-                </span>
-              ))
-            ) : (
-              <span className="text-xs text-stone-500">??????</span>
-            )}
+            {times.length > 0 ? times.map((time) => (
+              <span key={time} className="text-xs font-medium tabular-nums px-2.5 py-1 rounded" style={{ backgroundColor: "#F5F1E8", color: "#1C1917" }}>{time}</span>
+            )) : <span className="text-xs text-stone-500">未指定時間</span>}
           </div>
         </div>
         <div className="px-4 py-3">
-          <p className="text-xs text-stone-600 leading-relaxed">
-            ???????????????????????????? RPA?
-            ?? Agent Web API ???????????????????????????? RPA scheduler ???
-          </p>
+          <p className="text-xs text-stone-600 leading-relaxed">排程需要由後端 RPA 或 Agent Web API 寫入，目前前台只顯示狀態與提示。</p>
         </div>
       </div>
     </div>
@@ -2972,90 +3821,43 @@ function DuplicatesMessage({ groups, onCompareDup, onReviewDup, onPreview }) {
   const dups = Array.isArray(groups) ? groups : [];
 
   if (dups.length === 0) {
-    return (
-      <p className="text-sm leading-relaxed text-stone-700">
-        沒有找到待處理的重複圖片。
-      </p>
-    );
+    return <p className="text-sm leading-relaxed text-stone-700">目前沒有偵測到重複圖片。</p>;
   }
 
   return (
     <div>
       <p className="text-sm leading-relaxed text-stone-700 mb-4">
-        系統偵測到
-        <span className="font-medium"> {dups.length} 組重複圖片</span>
-        ，依「地區 / 期間 / 價格」判定。請選擇保留版本：
+        發現 <span className="font-medium">{dups.length} 組</span> 可能重複圖片，可檢視、忽略或保留一張。
       </p>
       <div className="space-y-3">
-        {dups.map((d, i) => (
-          <div
-            key={i}
-            className="rounded-lg border bg-white overflow-hidden"
-            style={{ borderColor: "#E5DDC8" }}
-          >
-            <div
-              className="px-4 py-3 border-b"
-              style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}
-            >
+        {dups.map((dup, i) => (
+          <div key={i} className="rounded-lg border bg-white overflow-hidden" style={{ borderColor: "#E5DDC8" }}>
+            <div className="px-4 py-3 border-b" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <Layers className="w-3.5 h-3.5 text-stone-500" />
-                    <span className="text-xs font-medium">{d.key}</span>
+                    <span className="text-xs font-medium">{dup.key}</span>
                   </div>
-                  <div className="text-[10px] text-stone-500">
-                    來源：{d.images.map((im) => im.source).join("，")}
-                  </div>
+                  <div className="text-[10px] text-stone-500">來源：{dup.images.map((image) => image.source).join("、")}</div>
                 </div>
-                <span
-                  className="text-[10px] px-2 py-0.5 rounded-full flex-shrink-0"
-                  style={{ backgroundColor: "#FEF3C7", color: "#92400E" }}
-                >
-                  {d.count} 份重複
-                </span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full flex-shrink-0" style={{ backgroundColor: "#FEF3C7", color: "#92400E" }}>{dup.count} 張相似</span>
               </div>
             </div>
-            {/* Thumbnails preview */}
             <div className="px-4 py-3 flex gap-2 overflow-x-auto">
-              {d.images.map((im, j) => (
-                <button
-                  key={j}
-                  onClick={() => onPreview(im.dm, d.images.map((x) => x.dm))}
-                  className="flex-shrink-0 relative rounded-md overflow-hidden bg-stone-100 hover:ring-2 hover:ring-stone-900 transition-all"
-                  style={{ width: "72px", aspectRatio: "827 / 1169" }}
-                >
-                  <DmImage dm={im.dm} alt={im.source} className="w-full h-full object-cover" />
+              {dup.images.map((image, j) => (
+                <button key={j} onClick={() => onPreview(image.dm, dup.images.map((item) => item.dm))} className="flex-shrink-0 relative rounded-md overflow-hidden bg-stone-100 hover:ring-2 hover:ring-stone-900 transition-all" style={{ width: "72px", aspectRatio: "827 / 1169" }}>
+                  <DmImage dm={image.dm} alt={image.source} className="w-full h-full object-cover" />
                   <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/70 to-transparent px-1.5 py-1">
-                    <div className="text-[8px] text-white/90 truncate">{im.source}</div>
+                    <div className="text-[8px] text-white/90 truncate">{image.source}</div>
                   </div>
                 </button>
               ))}
             </div>
-            <div
-              className="px-4 py-3 flex gap-2 border-t"
-              style={{ borderColor: "#F0E9D6" }}
-            >
-              <button
-                onClick={() => onReviewDup?.(d, 0, "keep_one")}
-                className="flex-1 px-3 py-1.5 rounded-md text-xs font-medium"
-                style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}
-              >
-                保留最新版本
-              </button>
-              <button
-                onClick={() => onReviewDup?.(d, 0, "ignore")}
-                className="flex-1 px-3 py-1.5 rounded-md text-xs border hover:border-stone-900 transition-colors"
-                style={{ borderColor: "#E5DDC8" }}
-              >
-                不是重複
-              </button>
-              <button
-                onClick={() => onCompareDup(d)}
-                className="flex-1 px-3 py-1.5 rounded-md text-xs border hover:border-stone-900 transition-colors"
-                style={{ borderColor: "#E5DDC8" }}
-              >
-                逐一檢視
-              </button>
+            <div className="px-4 py-3 flex gap-2 border-t" style={{ borderColor: "#F0E9D6" }}>
+              <button onClick={() => onReviewDup?.(dup, 0, "keep_one")} className="flex-1 px-3 py-1.5 rounded-md text-xs font-medium" style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}>保留一張</button>
+              <button onClick={() => onReviewDup?.(dup, 0, "ignore")} className="flex-1 px-3 py-1.5 rounded-md text-xs border hover:border-stone-900 transition-colors" style={{ borderColor: "#E5DDC8" }}>忽略</button>
+              <button onClick={() => onCompareDup(dup)} className="flex-1 px-3 py-1.5 rounded-md text-xs border hover:border-stone-900 transition-colors" style={{ borderColor: "#E5DDC8" }}>比較</button>
             </div>
           </div>
         ))}
@@ -3063,567 +3865,135 @@ function DuplicatesMessage({ groups, onCompareDup, onReviewDup, onPreview }) {
     </div>
   );
 }
-
-/* ===================================================================== */
 /* MODALS                                                                 */
 /* ===================================================================== */
 function DMPreviewModal({ initial, list, onClose, onCopy, copiedId }) {
   const dmList = list && list.length > 0 ? list : [initial];
-  const initialIdx = Math.max(
-    0,
-    dmList.findIndex((d) => d.id === initial.id)
-  );
-  const [compareMode, setCompareMode] = useState(false);
-  const [leftIdx, setLeftIdx] = useState(initialIdx);
-  const [rightIdx, setRightIdx] = useState(
-    dmList.length > 1 ? (initialIdx + 1) % dmList.length : 0
-  );
-  const stripRef = useRef(null);
-
-  const leftDM = dmList[leftIdx];
-  const rightDM = dmList[rightIdx];
+  const initialIdx = Math.max(0, dmList.findIndex((dm) => dm.id === initial.id));
+  const [index, setIndex] = useState(initialIdx);
+  const current = dmList[index] || initial;
   const canNavigate = dmList.length > 1;
 
-  const stepLeft = (delta) =>
-    setLeftIdx((i) => (i + delta + dmList.length) % dmList.length);
-  const stepRight = (delta) =>
-    setRightIdx((i) => (i + delta + dmList.length) % dmList.length);
-
-  // Auto-scroll the active thumbnail into view (centered)
   useEffect(() => {
-    if (compareMode) return;
-    const strip = stripRef.current;
-    if (!strip) return;
-    const thumb = strip.querySelector(`[data-idx="${leftIdx}"]`);
-    if (thumb && thumb.scrollIntoView) {
-      thumb.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
-    }
-  }, [leftIdx, compareMode]);
-
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.key === "Escape") onClose();
-      if (compareMode) return;
-      if (e.key === "ArrowLeft" && canNavigate) stepLeft(-1);
-      if (e.key === "ArrowRight" && canNavigate) stepLeft(1);
+    const onKey = (event) => {
+      if (event.key === "Escape") onClose();
+      if (event.key === "ArrowLeft" && canNavigate) setIndex((value) => (value - 1 + dmList.length) % dmList.length);
+      if (event.key === "ArrowRight" && canNavigate) setIndex((value) => (value + 1) % dmList.length);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line
-  }, [onClose, compareMode, canNavigate, dmList.length]);
+  }, [onClose, canNavigate, dmList.length]);
 
   return (
-    <div
-      className="fixed inset-0 z-50 animate-backdrop-in overflow-hidden"
-      style={{ backgroundColor: "rgba(28,25,23,0.92)" }}
-      onClick={onClose}
-    >
-      {/* Top bar */}
+    <div className="fixed inset-0 z-50 animate-backdrop-in overflow-hidden" style={{ backgroundColor: "rgba(28,25,23,0.92)" }} onClick={onClose}>
       <div className="absolute top-4 left-4 right-4 flex items-center justify-between text-xs pointer-events-none z-10">
-        <div
-          className="pointer-events-auto flex items-center gap-2 text-white/70"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {compareMode ? (
-            <span
-              className="px-2 py-1 rounded-sm font-medium tracking-wider text-[10px] uppercase"
-              style={{ backgroundColor: "rgba(255,255,255,0.15)", color: "#F5F1E8" }}
-            >
-              比對模式 · A vs B
-            </span>
-          ) : (
-            canNavigate && (
-              <span className="font-display italic text-base text-white/80 tabular-nums">
-                {String(leftIdx + 1).padStart(2, "0")}
-                <span className="text-white/40"> / </span>
-                {String(dmList.length).padStart(2, "0")}
-              </span>
-            )
-          )}
+        <div className="pointer-events-auto rounded-md bg-white/90 px-3 py-2 shadow-sm">
+          <div className="font-medium text-stone-900 truncate max-w-[60vw]">{current.title}</div>
+          <div className="text-[10px] text-stone-500">{index + 1} / {dmList.length}</div>
         </div>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onClose();
-          }}
-          className="pointer-events-auto p-2 rounded-md hover:bg-white/10 transition-colors text-white/80 hover:text-white"
-          aria-label="關閉"
-        >
+        <button onClick={onClose} className="pointer-events-auto p-2 rounded-md bg-white/90 hover:bg-white transition-colors" aria-label="關閉預覽">
           <X className="w-4 h-4" />
         </button>
       </div>
 
-      {compareMode ? (
-        /* ===== COMPARE MODE ===== */
-        <div className="absolute inset-0 pt-14 pb-16 px-4 md:px-12 flex items-center justify-center pointer-events-none">
-          <div className="animate-modal-in flex flex-col md:flex-row gap-6 w-full h-full max-w-7xl">
-            <ComparePanel
-              dm={leftDM}
-              label="左 · A"
-              idx={leftIdx}
-              total={dmList.length}
-              canNavigate={canNavigate}
-              onPrev={() => stepLeft(-1)}
-              onNext={() => stepLeft(1)}
-              onCopy={() => onCopy(leftDM)}
-              copied={copiedId === leftDM.id}
-            />
-            <ComparePanel
-              dm={rightDM}
-              label="右 · B"
-              idx={rightIdx}
-              total={dmList.length}
-              canNavigate={canNavigate}
-              onPrev={() => stepRight(-1)}
-              onNext={() => stepRight(1)}
-              onCopy={() => onCopy(rightDM)}
-              copied={copiedId === rightDM.id}
-            />
-          </div>
-          <div
-            className="absolute bottom-4 left-1/2 -translate-x-1/2 pointer-events-auto"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              onClick={() => setCompareMode(false)}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs text-white/90 hover:bg-white/10 transition-colors backdrop-blur-md"
-              style={{ backgroundColor: "rgba(28,25,23,0.7)" }}
-            >
-              <X className="w-3 h-3" />
-              退出比對模式
-            </button>
-          </div>
-        </div>
-      ) : (
-        /* ===== SINGLE MODE — fixed-height layout, no internal scroll ===== */
-        <div className="absolute inset-0 pt-14 pb-4 px-4 flex flex-col items-center gap-3 pointer-events-none animate-modal-in">
-          {/* Image — fills remaining space */}
-          <div
-            className="pointer-events-auto flex-1 min-h-0 flex items-center justify-center w-full"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <DmImage
-              dm={leftDM}
-              src={dmPreviewImage(leftDM)}
-              alt={leftDM.title}
-              className="max-h-full max-w-full object-contain rounded-lg shadow-2xl"
-              loading="eager"
-            />
-          </div>
-
-          {/* Source name (only) */}
-          <div
-            className="pointer-events-auto px-4 py-1.5 rounded-full flex-shrink-0"
-            onClick={(e) => e.stopPropagation()}
-            style={{ backgroundColor: "rgba(255,255,255,0.08)" }}
-          >
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-white/40 text-[10px] tracking-[0.2em] uppercase">
-                來源
-              </span>
-              <span className="text-white/95 font-medium">{leftDM.source}</span>
-            </div>
-          </div>
-
-          {/* Action toolbar */}
-          <div
-            className="pointer-events-auto flex items-center gap-2 flex-shrink-0"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {canNavigate && (
-              <div
-                className="flex items-center gap-0.5 px-1 py-1 rounded-full backdrop-blur-md"
-                style={{ backgroundColor: "rgba(255,255,255,0.08)" }}
-              >
-                <button
-                  onClick={() => stepLeft(-1)}
-                  className="p-1.5 rounded-full hover:bg-white/10 text-white/80 hover:text-white transition-colors"
-                  aria-label="上一張"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-                <button
-                  onClick={() => setCompareMode(true)}
-                  className="px-3 py-1 rounded-full text-xs text-white/90 hover:bg-white/10 transition-colors flex items-center gap-1.5"
-                >
-                  <Columns2 className="w-3 h-3" />
-                  比對
-                </button>
-                <button
-                  onClick={() => stepLeft(1)}
-                  className="p-1.5 rounded-full hover:bg-white/10 text-white/80 hover:text-white transition-colors"
-                  aria-label="下一張"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            )}
-            <button
-              onClick={() => onCopy(leftDM)}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-medium transition-all"
-              style={{
-                backgroundColor: copiedId === leftDM.id ? "#16A34A" : "#F5F1E8",
-                color: copiedId === leftDM.id ? "#F5F1E8" : "#1C1917",
-              }}
-            >
-              {copiedId === leftDM.id ? (
-                <>
-                  <Check className="w-3 h-3" />
-                  已複製到剪貼簿
-                </>
-              ) : (
-                <>
-                  <Copy className="w-3 h-3" />
-                  複製到剪貼簿
-                </>
-              )}
-            </button>
-          </div>
-
-          {/* Thumbnail strip — for browsing many items */}
-          {canNavigate && (
-            <div
-              className="pointer-events-auto w-full max-w-3xl flex justify-center flex-shrink-0"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div
-                ref={stripRef}
-                className="flex gap-1.5 overflow-x-auto scrollbar-hide px-4 py-2 rounded-full"
-                style={{
-                  backgroundColor: "rgba(255,255,255,0.04)",
-                  scrollSnapType: "x proximity",
-                  maxWidth: "100%",
-                }}
-              >
-                {dmList.map((dm, i) => {
-                  const active = i === leftIdx;
-                  return (
-                    <button
-                      key={`${dm.id}-${i}`}
-                      data-idx={i}
-                      onClick={() => setLeftIdx(i)}
-                      className="flex-shrink-0 rounded overflow-hidden transition-all duration-200"
-                      style={{
-                        width: active ? "44px" : "30px",
-                        aspectRatio: "827 / 1169",
-                        scrollSnapAlign: "center",
-                        opacity: active ? 1 : 0.45,
-                        outline: active ? "1.5px solid #F5F1E8" : "none",
-                        outlineOffset: "2px",
-                      }}
-                      aria-label={`第 ${i + 1} 張`}
-                    >
-                      <DmImage dm={dm} alt="" className="w-full h-full object-cover" />
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ComparePanel({ dm, label, idx, total, canNavigate, onPrev, onNext, onCopy, copied }) {
-  return (
-    <div
-      className="pointer-events-auto flex-1 flex flex-col gap-3 min-w-0 min-h-0"
-      onClick={(e) => e.stopPropagation()}
-    >
-      {/* Top: panel label + position counter */}
-      <div className="flex items-center justify-between gap-2 px-1 flex-shrink-0">
-        <span className="text-[10px] tracking-[0.2em] uppercase text-white/60 font-medium">
-          {label}
-        </span>
+      <div className="h-full flex items-center justify-center p-5" onClick={(event) => event.stopPropagation()}>
         {canNavigate && (
-          <div
-            className="flex items-center gap-0.5 px-1 py-0.5 rounded-full"
-            style={{ backgroundColor: "rgba(255,255,255,0.08)" }}
-          >
-            <button
-              onClick={onPrev}
-              className="p-1 rounded text-white/60 hover:text-white hover:bg-white/10 transition-colors"
-              aria-label="上一張"
-            >
-              <ChevronLeft className="w-3.5 h-3.5" />
-            </button>
-            <span className="text-[10px] font-display italic text-white/80 tabular-nums px-1.5">
-              {String(idx + 1).padStart(2, "0")} / {String(total).padStart(2, "0")}
-            </span>
-            <button
-              onClick={onNext}
-              className="p-1 rounded text-white/60 hover:text-white hover:bg-white/10 transition-colors"
-              aria-label="下一張"
-            >
-              <ChevronRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
+          <button onClick={() => setIndex((value) => (value - 1 + dmList.length) % dmList.length)} className="absolute left-4 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/90 hover:bg-white" aria-label="上一張">
+            <ChevronLeft className="w-5 h-5" />
+          </button>
+        )}
+        <div className="max-h-[82vh] max-w-[92vw] rounded-lg overflow-hidden bg-stone-100 shadow-2xl" style={{ aspectRatio: "827 / 1169" }}>
+          <DmImage dm={current} alt={current.title} className="h-full w-full object-contain bg-stone-100" loading="eager" />
+        </div>
+        {canNavigate && (
+          <button onClick={() => setIndex((value) => (value + 1) % dmList.length)} className="absolute right-4 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/90 hover:bg-white" aria-label="下一張">
+            <ChevronRight className="w-5 h-5" />
+          </button>
         )}
       </div>
 
-      {/* Image */}
-      <div className="flex-1 min-h-0 flex items-center justify-center">
-        <DmImage
-          dm={dm}
-          src={dmPreviewImage(dm)}
-          alt={dm.title}
-          className="max-h-full max-w-full object-contain rounded shadow-xl"
-          loading="eager"
-        />
-      </div>
-
-      {/* Bottom: source + copy button */}
-      <div className="flex items-center justify-between gap-2 flex-shrink-0">
-        <div className="flex items-center gap-2 text-xs min-w-0">
-          <span className="text-white/40 text-[9px] tracking-[0.2em] uppercase flex-shrink-0">
-            來源
-          </span>
-          <span className="text-white/90 truncate">{dm.source}</span>
+      <div className="absolute left-4 right-4 bottom-4 flex items-center justify-between gap-3 rounded-lg bg-white/95 px-4 py-3 shadow-xl">
+        <div className="min-w-0">
+          <div className="text-sm font-medium truncate">{current.source}</div>
+          <div className="text-xs text-stone-500 truncate">{current.region} · {current.period}</div>
         </div>
-        <button
-          onClick={onCopy}
-          className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium transition-all"
-          style={{
-            backgroundColor: copied ? "#16A34A" : "#F5F1E8",
-            color: copied ? "#F5F1E8" : "#1C1917",
-          }}
-        >
-          {copied ? (
-            <>
-              <Check className="w-3 h-3" />
-              已複製
-            </>
-          ) : (
-            <>
-              <Copy className="w-3 h-3" />
-              複製
-            </>
-          )}
+        <button onClick={() => onCopy(current)} className="shrink-0 inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium" style={{ backgroundColor: copiedId === current.id ? "#16A34A" : "#1C1917", color: "#F5F1E8" }}>
+          {copiedId === current.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+          {copiedId === current.id ? "已複製" : "複製"}
         </button>
       </div>
     </div>
   );
 }
 
-/* ===================================================================== */
-/* SELECTION MODAL — pick N out of many for selective copy                */
-/* ===================================================================== */
 function SelectionModal({ list, onClose, onCopy }) {
-  const [selected, setSelected] = useState(new Set());
+  const [selected, setSelected] = useState(() => new Set((list || []).map((item) => item.id)));
   const [copied, setCopied] = useState(false);
+  const items = Array.isArray(list) ? list : [];
 
   useEffect(() => {
-    const onKey = (e) => e.key === "Escape" && onClose();
+    const onKey = (event) => event.key === "Escape" && onClose();
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
   const toggle = (id) => {
-    setSelected((s) => {
-      const next = new Set(s);
+    setSelected((current) => {
+      const next = new Set(current);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
   };
 
-  const selectAll = () => setSelected(new Set(list.map((d) => d.id)));
-  const clearAll = () => setSelected(new Set());
-  const invert = () =>
-    setSelected(new Set(list.filter((d) => !selected.has(d.id)).map((d) => d.id)));
-
-  const handleCopy = async () => {
-    if (selected.size === 0) return;
-    const selectedDms = list.filter((dm) => selected.has(dm.id));
-    const ok = await onCopy(selectedDms);
+  const copySelected = async () => {
+    const selectedItems = items.filter((item) => selected.has(item.id));
+    const ok = await onCopy(selectedItems);
     if (!ok) return;
     setCopied(true);
-    setTimeout(() => {
-      setCopied(false);
-      onClose();
-    }, 1400);
+    setTimeout(() => setCopied(false), 1800);
   };
 
-  const count = selected.size;
-  const total = list.length;
-  const allSelected = count === total;
-
   return (
-    <div
-      className="fixed inset-0 z-50 animate-backdrop-in flex items-center justify-center p-4 md:p-8"
-      style={{ backgroundColor: "rgba(28,25,23,0.85)" }}
-      onClick={onClose}
-    >
-      <div
-        className="animate-modal-in bg-white rounded-lg w-full max-w-5xl flex flex-col overflow-hidden"
-        style={{ maxHeight: "90vh" }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div
-          className="px-5 md:px-6 py-4 border-b flex items-center justify-between gap-4 flex-shrink-0"
-          style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}
-        >
-          <div className="min-w-0">
-            <div className="text-[10px] tracking-[0.2em] uppercase text-stone-500 mb-0.5">
-              勾選下載
-            </div>
-            <h2 className="font-serif-tc font-medium text-base md:text-lg leading-tight">
-              選擇要下載的 DM
-              <span className="text-stone-500 text-xs ml-2 font-normal font-sans">
-                共 {total} 份
-              </span>
-            </h2>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-backdrop-in" style={{ backgroundColor: "rgba(28,25,23,0.72)" }} onClick={onClose}>
+      <div className="w-full max-w-5xl max-h-[88vh] bg-white rounded-lg shadow-xl overflow-hidden animate-modal-in" onClick={(event) => event.stopPropagation()}>
+        <div className="px-5 py-4 border-b flex items-center justify-between" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
+          <div>
+            <div className="text-[10px] tracking-[0.2em] uppercase text-stone-500">批次選取</div>
+            <div className="text-sm font-medium">已選 {selected.size} / {items.length} 張</div>
           </div>
-          <button
-            onClick={onClose}
-            className="flex-shrink-0 p-2 rounded-md hover:bg-stone-200 transition-colors"
-            aria-label="關閉"
-          >
+          <button onClick={onClose} className="p-2 rounded-md hover:bg-stone-200 transition-colors" aria-label="關閉">
             <X className="w-4 h-4" />
           </button>
         </div>
-
-        {/* Selection toolbar */}
-        <div
-          className="px-5 md:px-6 py-2.5 border-b flex items-center justify-between gap-2 flex-shrink-0"
-          style={{ borderColor: "#F0E9D6", backgroundColor: "#FDFBF5" }}
-        >
-          <div className="flex items-center gap-1.5 text-[11px]">
-            <button
-              onClick={allSelected ? clearAll : selectAll}
-              className="px-2.5 py-1 rounded hover:bg-stone-200 transition-colors flex items-center gap-1.5"
-              style={{ color: "#1C1917" }}
-            >
-              {allSelected ? (
-                <>
-                  <Square className="w-3 h-3" />
-                  全不選
-                </>
-              ) : (
-                <>
-                  <CheckSquare className="w-3 h-3" />
-                  全選
-                </>
-              )}
-            </button>
-            <button
-              onClick={invert}
-              className="px-2.5 py-1 rounded hover:bg-stone-200 transition-colors text-stone-700"
-            >
-              反選
-            </button>
-          </div>
-          <div className="text-[11px] text-stone-600 tabular-nums">
-            <span className="font-display italic text-base text-stone-900">
-              {count}
-            </span>
-            <span className="text-stone-400"> / {total}</span>
-            <span className="ml-2">已勾選</span>
-          </div>
-        </div>
-
-        {/* Grid */}
-        <div className="flex-1 overflow-y-auto scrollbar-thin px-3 md:px-4 py-3 min-h-0">
-          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2">
-            {list.map((dm) => {
-              const isSelected = selected.has(dm.id);
-              return (
-                <button
-                  key={dm.id}
-                  onClick={() => toggle(dm.id)}
-                  className="relative rounded-md overflow-hidden bg-stone-100 transition-all"
-                  style={{
-                    aspectRatio: "827 / 1169",
-                    outline: isSelected ? "2px solid #2D8BC0" : "1px solid #E5DDC8",
-                    outlineOffset: isSelected ? "1px" : "0",
-                  }}
-                >
+        <div className="p-5 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 overflow-y-auto max-h-[64vh] scrollbar-thin">
+          {items.map((dm) => {
+            const isSelected = selected.has(dm.id);
+            return (
+              <button key={dm.id} onClick={() => toggle(dm.id)} className="relative rounded-md border overflow-hidden text-left bg-white" style={{ borderColor: isSelected ? "#1C1917" : "#E5DDC8" }}>
+                <div className="bg-stone-100" style={{ aspectRatio: "827 / 1169" }}>
                   <DmImage dm={dm} alt={dm.title} className="w-full h-full object-cover" />
-                  {/* Dim overlay when not selected (in select mode) */}
-                  <div
-                    className="absolute inset-0 transition-opacity"
-                    style={{
-                      backgroundColor: "rgba(0,0,0,0.35)",
-                      opacity: isSelected ? 0 : count > 0 ? 0.4 : 0,
-                    }}
-                  />
-                  {/* Checkbox indicator */}
-                  <div
-                    className="absolute top-1.5 right-1.5 w-5 h-5 rounded flex items-center justify-center transition-all"
-                    style={{
-                      backgroundColor: isSelected ? "#2D8BC0" : "rgba(255,255,255,0.85)",
-                      border: isSelected ? "none" : "1px solid rgba(0,0,0,0.15)",
-                    }}
-                  >
-                    {isSelected && (
-                      <Check className="w-3 h-3" style={{ color: "#FFF" }} strokeWidth={3} />
-                    )}
-                  </div>
-                  {/* Source caption — only visible on hover or when selected */}
-                  <div
-                    className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-1.5 py-1"
-                    style={{ opacity: isSelected ? 1 : 0.7 }}
-                  >
-                    <div className="text-[8px] text-white/90 truncate">
-                      {dm.source}
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+                </div>
+                <div className="p-2">
+                  <div className="text-[11px] font-medium truncate">{dm.title}</div>
+                  <div className="text-[10px] text-stone-500 truncate">{dm.source}</div>
+                </div>
+                {isSelected && <div className="absolute top-2 right-2 rounded-full p-1" style={{ backgroundColor: "#1C1917" }}><Check className="w-3 h-3" style={{ color: "#F5F1E8" }} /></div>}
+              </button>
+            );
+          })}
         </div>
-
-        {/* Footer */}
-        <div
-          className="px-5 md:px-6 py-3 border-t flex items-center justify-between gap-3 flex-shrink-0"
-          style={{ borderColor: "#E5DDC8" }}
-        >
-          <div className="text-[10px] text-stone-500 hidden sm:block">
-            下載圖片包後，解壓縮並全選圖片拖進 LINE 群組。
-          </div>
-          <div className="flex items-center gap-2 ml-auto">
-            <button
-              onClick={onClose}
-              className="px-4 py-2 rounded-md text-xs border hover:border-stone-900 transition-colors"
-              style={{ borderColor: "#E5DDC8" }}
-            >
-              取消
-            </button>
-            <button
-              onClick={handleCopy}
-              disabled={count === 0}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-md text-xs font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-              style={{
-                backgroundColor: copied ? "#16A34A" : count > 0 ? "#1C1917" : "#A8A29E",
-                color: "#F5F1E8",
-              }}
-            >
-              {copied ? (
-                <>
-                  <Check className="w-3 h-3" />
-                  已下載 {count} 張
-                </>
-              ) : (
-                <>
-                  <CopyPlus className="w-3 h-3" />
-                  下載選取的 {count} 張
-                </>
-              )}
-            </button>
-          </div>
+        <div className="px-5 py-4 border-t flex items-center justify-between gap-3" style={{ borderColor: "#E5DDC8" }}>
+          <button onClick={() => setSelected(new Set())} className="px-3 py-2 rounded-md text-xs border" style={{ borderColor: "#E5DDC8" }}>清除</button>
+          <button onClick={copySelected} disabled={selected.size === 0} className="inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-xs font-medium disabled:opacity-50" style={{ backgroundColor: copied ? "#16A34A" : "#1C1917", color: "#F5F1E8" }}>
+            {copied ? <Check className="w-3 h-3" /> : <CopyPlus className="w-3 h-3" />}
+            {copied ? "已複製" : "複製選取"}
+          </button>
         </div>
       </div>
     </div>
   );
 }
-
-/* ===================================================================== */
-/* DUPLICATE COMPARE MODAL                                                */
-/* ===================================================================== */
 function DuplicateCompareModal({ data, onClose, onReview }) {
   const [keepIdx, setKeepIdx] = useState(0);
   useEffect(() => {
@@ -3648,7 +4018,7 @@ function DuplicateCompareModal({ data, onClose, onReview }) {
         >
           <div>
             <div className="text-[10px] tracking-[0.2em] uppercase text-stone-500 mb-0.5">
-              逐一檢視 · 重複圖片比對
+              ??瑼Ｚ? 繚 ????瘥?
             </div>
             <h2 className="font-serif-tc font-medium text-lg">{data.key}</h2>
           </div>
@@ -3661,8 +4031,8 @@ function DuplicateCompareModal({ data, onClose, onReview }) {
         </div>
         <div className="flex-1 overflow-y-auto scrollbar-thin p-6">
           <p className="text-xs text-stone-600 mb-4">
-            以下為來自 <span className="font-medium">{data.count}</span> 個社群的重複圖片，
-            判定依據：地區、期間、價格皆相同。請選擇保留版本，其餘將被歸檔。
+            隞乩??箔???<span className="font-medium">{data.count}</span> ?冗蝢斤?????嚗?
+            ?文?靘?嚗?????潛??詨????豢?靽??嚗擗?鋡急飛瑼?
           </p>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             {data.images.map((im, i) => {
@@ -3693,12 +4063,12 @@ function DuplicateCompareModal({ data, onClose, onReview }) {
                   </div>
                   <div className="px-3 py-3">
                     <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-1">
-                      來源
+                      靘?
                     </div>
                     <div className="text-sm font-medium mb-2 truncate">{im.source}</div>
                     <div className="flex items-center gap-1.5 text-[10px] text-stone-500">
                       <Clock className="w-3 h-3" />
-                      下載於 今日 {im.time}
+                      銝???隞 {im.time}
                     </div>
                   </div>
                 </div>
@@ -3711,10 +4081,10 @@ function DuplicateCompareModal({ data, onClose, onReview }) {
           style={{ borderColor: "#E5DDC8" }}
         >
           <div className="text-xs text-stone-600">
-            將保留：
+            撠???
             <span className="font-medium ml-1">{data.images[keepIdx].source}</span>
             <span className="text-stone-400 ml-2">
-              其餘 {data.images.length - 1} 份歸檔
+              ?園? {data.images.length - 1} 隞賣飛瑼?
             </span>
           </div>
           <div className="flex gap-2">
@@ -3723,21 +4093,21 @@ function DuplicateCompareModal({ data, onClose, onReview }) {
               className="px-4 py-2 rounded-md text-xs border hover:border-stone-900 transition-colors"
               style={{ borderColor: "#E5DDC8" }}
             >
-              取消
+              ??
             </button>
             <button
               onClick={() => onReview?.(data, keepIdx, "ignore")}
               className="px-4 py-2 rounded-md text-xs border hover:border-stone-900 transition-colors"
               style={{ borderColor: "#E5DDC8" }}
             >
-              不是重複
+              銝??
             </button>
             <button
               onClick={() => onReview?.(data, keepIdx, "keep_one")}
               className="px-4 py-2 rounded-md text-xs font-medium"
               style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}
             >
-              確認保留
+              蝣箄?靽?
             </button>
           </div>
         </div>
