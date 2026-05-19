@@ -2,6 +2,16 @@ import { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import "./travel-agent-interface.css";
 import {
+  copyDmListToClipboard,
+  copyDmToClipboard,
+  dmFullImage,
+  dmPreviewImage,
+  explainClipboardError,
+} from "./clipboard.js";
+import { openclawApi, uploadApi } from "./api/openclawClient.js";
+import SidebarNavigation from "./upload/SidebarNavigation.jsx";
+import UploadWorkspace from "./upload/UploadWorkspace.jsx";
+import {
   Send,
   Sparkles,
   Search,
@@ -34,26 +44,7 @@ import {
   ShieldCheck,
   UserRound,
   Upload,
-  FolderPlus,
-  FolderOpen,
-  Tag,
-  Power,
-  PanelLeftClose,
-  PanelLeftOpen,
 } from "lucide-react";
-
-const toAbsoluteUrl = (url) => {
-  if (!url) return "";
-  try {
-    return new URL(url, window.location.origin).href;
-  } catch {
-    return url;
-  }
-};
-
-const dmFullImage = (dm) => dm?.fullImage || dm?.image || "";
-const dmPreviewImage = (dm) => dm?.previewImage || dmFullImage(dm);
-const INTERNAL_WEB = import.meta.env.VITE_INTERNAL_WEB === "1";
 
 function DmImage({ dm, src, alt, className = "", loading = "lazy" }) {
   const primary = src || dm?.image || "";
@@ -72,7 +63,7 @@ function DmImage({ dm, src, alt, className = "", loading = "lazy" }) {
         className={`${className} flex items-center justify-center bg-stone-200 text-stone-500 text-[11px] text-center px-2`}
         title="Image failed to load"
       >
-        ??頛憭望?
+        圖片載入失敗
       </div>
     );
   }
@@ -95,521 +86,6 @@ function DmImage({ dm, src, alt, className = "", loading = "lazy" }) {
   );
 }
 
-const isLocalClipboardBridgeAvailable = () =>
-  ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
-
-const mediaIdsForItems = (items) =>
-  items
-    .map((dm) => dm?.mediaId || dm?.raw?.media_id)
-    .filter(Boolean);
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const directDownloadName = (dm, index) => {
-  const rawPath = dm?.raw?.branded_path || dm?.raw?.image_path || dmFullImage(dm) || "";
-  const name = String(rawPath).split(/[\\/]/).pop()?.split("?")[0];
-  return name || `travel-dm-${String(index + 1).padStart(2, "0")}.jpg`;
-};
-
-async function downloadDmImagesDirectly(items) {
-  const images = items
-    .map((dm, index) => ({
-      href: dmFullImage(dm) || dmPreviewImage(dm),
-      name: directDownloadName(dm, index),
-    }))
-    .filter((item) => item.href);
-  if (images.length === 0) {
-    throw new Error("No image URLs to download.");
-  }
-
-  for (const image of images) {
-    const link = document.createElement("a");
-    link.href = image.href;
-    link.download = image.name;
-    link.rel = "noopener";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    await sleep(120);
-  }
-  return true;
-}
-
-async function copyDmImagesWithBridge(items) {
-  if (!isLocalClipboardBridgeAvailable()) return false;
-
-  const mediaIds = mediaIdsForItems(items);
-  if (mediaIds.length === 0) return false;
-
-  const response = await fetch("/api/openclaw/clipboard", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ media_ids: mediaIds }),
-  });
-  const payload = await response.json();
-  if (!response.ok || !payload?.ok) {
-    throw new Error(payload?.error || "clipboard bridge failed");
-  }
-  return true;
-}
-
-async function downloadDmImagesPackage(items) {
-  if (INTERNAL_WEB) {
-    return downloadDmImagesDirectly(items);
-  }
-
-  const mediaIds = mediaIdsForItems(items);
-  if (mediaIds.length === 0) {
-    throw new Error("No image URLs to download.");
-  }
-
-  const params = new URLSearchParams();
-  mediaIds.forEach((id) => params.append("media_id", id));
-  const directUrl = `/api/openclaw/download?${params.toString()}`;
-  if (directUrl.length < 7000) {
-    const link = document.createElement("a");
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-    link.href = directUrl;
-    link.download = `agent-dm-images-${stamp}.zip`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    return true;
-  }
-
-  const response = await fetch("/api/openclaw/download", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ media_ids: mediaIds }),
-  });
-
-  if (!response.ok) {
-    let message = "銝????仃??";
-    try {
-      const payload = await response.json();
-      message = payload?.error || message;
-    } catch {
-      message = await response.text();
-    }
-    throw new Error(message);
-  }
-
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-  link.href = url;
-  link.download = `agent-dm-images-${stamp}.zip`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  return true;
-}
-
-const formatDmForClipboard = (dm, index = 0) => {
-  if (typeof dm === "string") return dm;
-
-  const lines = [
-    `${index + 1}. ${dm?.title || "?? DM"}`,
-    dm?.region ? `?啣?嚗?{dm.region}` : "",
-    dm?.period ? `??嚗?{dm.period}` : "",
-    dm?.price ? `?寞嚗?{dm.price}` : "",
-    dm?.source ? `靘?嚗?{dm.source}` : "",
-    dmFullImage(dm) ? `??嚗?{toAbsoluteUrl(dmFullImage(dm))}` : "",
-  ].filter(Boolean);
-
-  return lines.join("\n");
-};
-
-const formatDmListForClipboard = (items) =>
-  items.map((dm, index) => formatDmForClipboard(dm, index)).join("\n\n");
-
-async function copyTextToClipboard(text) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  textarea.focus();
-  textarea.select();
-  document.execCommand("copy");
-  textarea.remove();
-}
-
-function clipboardDiagnostics() {
-  const ua = navigator.userAgent || "";
-  const browser =
-    /Edg\//.test(ua) ? "Edge" :
-    /Chrome\//.test(ua) ? "Chrome" :
-    /Firefox\//.test(ua) ? "Firefox" :
-    /Safari\//.test(ua) ? "Safari" :
-    "Unknown";
-
-  return {
-    protocol: window.location.protocol,
-    host: window.location.host,
-    secure: Boolean(window.isSecureContext),
-    focused: Boolean(document.hasFocus?.()),
-    visibility: document.visibilityState || "unknown",
-    clipboardWrite: Boolean(navigator.clipboard?.write),
-    clipboardWriteText: Boolean(navigator.clipboard?.writeText),
-    clipboardItem: Boolean(window.ClipboardItem),
-    htmlClipboard: Boolean(window.ClipboardItem?.supports?.("text/html") ?? true),
-    pngClipboard: Boolean(window.ClipboardItem?.supports?.("image/png") ?? true),
-    browser,
-  };
-}
-
-function buildClipboardError(message, cause) {
-  const details = clipboardDiagnostics();
-  const error = new Error(message);
-  error.cause = cause;
-  error.clipboardDetails = details;
-  return error;
-}
-
-function explainClipboardError(error) {
-  const message = String(error?.message || "");
-  const name = String(error?.name || "");
-  const details = error?.clipboardDetails || clipboardDiagnostics();
-
-  let reason = "?汗?冽?蝯神?亙??鞎潛倏??";
-  if (!details.secure || details.protocol !== "https:") {
-    reason = "?桀?銝 HTTPS嚗汗?函?甇Ｙ雯??鋆賢???";
-  } else if (!details.clipboardWrite || !details.clipboardItem) {
-    reason = "?汗?其??舀???芾票蝪踴??冽??啁? Chrome ??Edge??";
-  } else if (!details.focused || details.visibility !== "visible" || /not focused/i.test(message)) {
-    reason = "?瘝??阡?????銝銝??Ｙ征?質?嚗??湔??鋆踝?銝???閬???";
-  } else if (/notallowed|permission|denied/i.test(`${name} ${message}`)) {
-    reason = "?芾票蝪踵??◤?汗?冽?蝯?蝣箄?蝬脣??椰?游?閮勗鞎潛倏嚗蒂?望???亥孛?潸?鋆賬?";
-  } else if (/load image|fetch|network|failed/i.test(message)) {
-    reason = "??頛憭望?嚗?賣憭雯??????雯???憭芣??";
-  } else if (/too large|size|memory|canvas/i.test(message)) {
-    reason = "??憭芸之????憭芸之嚗汗?函瘜?亙鞎潛倏??";
-  }
-
-  return [
-    reason,
-    `?銵??荔?${name || "Error"} ${message}`.trim(),
-    `?啣?嚗?{details.browser} / secure=${details.secure} / focus=${details.focused} / visibility=${details.visibility} / write=${details.clipboardWrite} / ClipboardItem=${details.clipboardItem} / html=${details.htmlClipboard} / png=${details.pngClipboard}`,
-  ].join("\n");
-}
-
-async function blobToPng(blob) {
-  const bitmap = await createImageBitmap(blob);
-  try {
-    const canvas = document.createElement("canvas");
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(bitmap, 0, 0);
-
-    return await new Promise((resolve, reject) => {
-      canvas.toBlob((png) => {
-        if (png) resolve(png);
-        else reject(new Error("Cannot encode clipboard image."));
-      }, "image/png");
-    });
-  } finally {
-    bitmap.close?.();
-  }
-}
-
-async function fetchImageBlobForClipboard(url) {
-  try {
-    const response = await fetch(url, { cache: "no-store" });
-    if (!response.ok) throw new Error(`Cannot load image for clipboard (${response.status}).`);
-    return response.blob();
-  } catch (error) {
-    throw buildClipboardError("??頛憭望?嚗瘜?鋆賬?", error);
-  }
-}
-
-async function fetchImageBitmap(url) {
-  try {
-    const response = await fetch(url, { cache: "no-store" });
-    if (!response.ok) throw new Error(`Cannot load image for clipboard (${response.status}).`);
-    return createImageBitmap(await response.blob());
-  } catch (error) {
-    throw buildClipboardError("??頛憭望?嚗瘜?鋆賬?", error);
-  }
-}
-
-async function ensurePngBlob(blob) {
-  return blob.type === "image/png" ? blob : blobToPng(blob);
-}
-
-async function blobToDataUrl(blob) {
-  return await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(reader.error || new Error("Cannot encode image as base64."));
-    reader.readAsDataURL(blob);
-  });
-}
-
-async function imageBlobToBase64DataUrl(blob, maxWidth = 1400) {
-  const bitmap = await createImageBitmap(blob);
-  try {
-    const scale = Math.min(1, maxWidth / bitmap.width);
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#FFFFFF";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-
-    const pngBlob = await new Promise((resolve, reject) => {
-      canvas.toBlob((encoded) => {
-        if (encoded) resolve(encoded);
-        else reject(new Error("Cannot encode image as PNG base64."));
-      }, "image/png");
-    });
-
-    const dataUrl = await blobToDataUrl(pngBlob);
-    if (!dataUrl.startsWith("data:image/png;base64,")) {
-      throw new Error("Image was not encoded as data:image/png;base64.");
-    }
-    return dataUrl;
-  } finally {
-    bitmap.close?.();
-  }
-}
-
-const escapeHtml = (value) =>
-  String(value || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-
-async function htmlFromImageBlobs(blobPromises, text = "") {
-  const blobs = await Promise.all(blobPromises);
-  const dataUrls = await Promise.all(blobs.map((blob) => imageBlobToBase64DataUrl(blob)));
-  const images = dataUrls
-    .map(
-      (src, index) => `
-        <div style="margin:0 0 32px 0;padding:0;">
-          <img src="${src}" alt="travel image ${index + 1}" style="display:block;max-width:100%;height:auto;margin:0 0 8px 0;" />
-        </div>
-      `
-    )
-    .join("");
-
-  return `<!doctype html>
-    <html>
-      <body>
-        ${text ? `<p style="white-space:pre-wrap;font-family:sans-serif;">${escapeHtml(text)}</p>` : ""}
-        ${images}
-      </body>
-    </html>`;
-}
-
-async function writeHtmlImagesToClipboard(blobPromises, text = "") {
-  if (!window.isSecureContext || !navigator.clipboard?.write || !window.ClipboardItem) {
-    throw buildClipboardError("?汗?其??迂 HTML ???芾票蝪踴?");
-  }
-  if (document.visibilityState !== "visible" || !document.hasFocus?.()) {
-    window.focus?.();
-  }
-  if (document.visibilityState !== "visible" || !document.hasFocus?.()) {
-    throw buildClipboardError("?瘝??阡?嚗瘜?鋆?HTML ????");
-  }
-
-  const htmlPromise = htmlFromImageBlobs(blobPromises, text).then(
-    (html) => new Blob([html], { type: "text/html" })
-  );
-  try {
-    await navigator.clipboard.write([
-      new ClipboardItem({
-        "text/html": htmlPromise,
-      }),
-    ]);
-  } catch (error) {
-    throw buildClipboardError("HTML base64 ??撖怠?芾票蝪踹仃??", error);
-  }
-}
-
-async function writeImageBlobToClipboard(blobOrPromise) {
-  if (!window.isSecureContext || !navigator.clipboard?.write || !window.ClipboardItem) {
-    throw buildClipboardError("?汗?其??迂???芾票蝪踴?");
-  }
-  if (document.visibilityState !== "visible" || !document.hasFocus?.()) {
-    window.focus?.();
-  }
-  if (document.visibilityState !== "visible" || !document.hasFocus?.()) {
-    throw buildClipboardError("?瘝??阡?嚗瘜?鋆賢???");
-  }
-
-  // Clipboard writes require a transient user activation. Start the write
-  // immediately from the click handler and let the image work finish inside
-  // the ClipboardItem promise, otherwise slower remote images can be rejected.
-  const pngPromise = Promise.resolve(blobOrPromise).then(ensurePngBlob);
-  try {
-    await navigator.clipboard.write([
-      new ClipboardItem({ "image/png": pngPromise }),
-    ]);
-  } catch (error) {
-    throw buildClipboardError("??撖怠?芾票蝪踹仃??", error);
-  }
-}
-
-async function copyImageUrlToClipboard(url) {
-  await writeImageBlobToClipboard(fetchImageBlobForClipboard(url));
-}
-
-async function copyImageUrlHtmlToClipboard(url, text = "") {
-  await writeHtmlImagesToClipboard([fetchImageBlobForClipboard(url)], text);
-}
-
-async function copyImageListHtmlToClipboard(items, text = "") {
-  const sources = items
-    .map((dm) => dmPreviewImage(dm) || dmFullImage(dm))
-    .filter(Boolean);
-  if (sources.length === 0) throw new Error("No images to copy.");
-  await writeHtmlImagesToClipboard(sources.map((source) => fetchImageBlobForClipboard(source)), text);
-}
-
-async function composeImagesForClipboard(items) {
-  const sources = items
-    .map((dm) => dmPreviewImage(dm) || dmFullImage(dm))
-    .filter(Boolean);
-  if (sources.length === 0) throw new Error("No images to compose.");
-
-  const bitmaps = [];
-  try {
-    for (const source of sources) {
-      bitmaps.push(await fetchImageBitmap(source));
-    }
-
-    const maxWidth = 1200;
-    const padding = 36;
-    const gap = 64;
-    const scaled = bitmaps.map((bitmap) => {
-      const width = Math.min(maxWidth, bitmap.width);
-      const scale = width / bitmap.width;
-      return {
-        bitmap,
-        width,
-        height: Math.max(1, Math.round(bitmap.height * scale)),
-      };
-    });
-    const canvasWidth = Math.max(...scaled.map((image) => image.width)) + padding * 2;
-    const canvasHeight =
-      scaled.reduce((total, image) => total + image.height, 0) +
-      padding * 2 +
-      gap * Math.max(0, scaled.length - 1);
-
-    const canvas = document.createElement("canvas");
-    canvas.width = canvasWidth;
-    canvas.height = canvasHeight;
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#F5F1E8";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    let top = padding;
-    for (let index = 0; index < scaled.length; index += 1) {
-      const image = scaled[index];
-      const left = Math.round((canvasWidth - image.width) / 2);
-      ctx.fillStyle = "#FFFFFF";
-      ctx.fillRect(left - 1, top - 1, image.width + 2, image.height + 2);
-      ctx.drawImage(image.bitmap, left, top, image.width, image.height);
-      ctx.strokeStyle = "#D6CFB8";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(left - 1, top - 1, image.width + 2, image.height + 2);
-      if (index < scaled.length - 1) {
-        const separatorTop = top + image.height + Math.round(gap / 2);
-        ctx.fillStyle = "#D6CFB8";
-        ctx.fillRect(padding, separatorTop, canvasWidth - padding * 2, 2);
-      }
-      top += image.height + gap;
-    }
-
-    return await new Promise((resolve, reject) => {
-      canvas.toBlob((blob) => {
-        if (blob) resolve(blob);
-        else reject(new Error("Cannot encode composed clipboard image."));
-      }, "image/png");
-    });
-  } finally {
-    bitmaps.forEach((bitmap) => bitmap.close?.());
-  }
-}
-
-async function copyDmToClipboard(dm) {
-  const text = formatDmForClipboard(dm);
-  const hasImage = Boolean(dmFullImage(dm));
-  let imageError = null;
-
-  try {
-    if (await copyDmImagesWithBridge([dm])) return "bridge";
-  } catch (error) {
-    console.warn("Clipboard bridge failed.", error);
-  }
-
-  if (
-    hasImage &&
-    window.isSecureContext &&
-    navigator.clipboard?.write &&
-    window.ClipboardItem
-  ) {
-    try {
-      await copyImageUrlToClipboard(dmFullImage(dm));
-      return "image";
-    } catch (error) {
-      imageError = error;
-      console.warn("Browser image clipboard copy failed.", error);
-    }
-  }
-
-  if (
-    hasImage &&
-    window.isSecureContext &&
-    navigator.clipboard?.write &&
-    window.ClipboardItem
-  ) {
-    try {
-      await copyImageUrlHtmlToClipboard(dmFullImage(dm), text);
-      return "html";
-    } catch (error) {
-      imageError = error;
-      console.warn("HTML image clipboard copy failed.", error);
-    }
-  }
-
-  if (hasImage) {
-    if (!window.isSecureContext) {
-      throw buildClipboardError("?桀?銝 HTTPS嚗汗?函?甇Ｚ?鋆賢???芾票蝪踴?");
-    }
-    if (!navigator.clipboard?.write || !window.ClipboardItem) {
-      throw buildClipboardError("?汗?其??舀???芾票蝪選?隢??Chrome ??Edge??");
-    }
-    throw imageError || buildClipboardError("??瘝???撖怠?芾票蝪踴?");
-  }
-
-  await copyTextToClipboard(text);
-  return "text";
-}
-
-async function copyDmListToClipboard(items) {
-  const hasImages = items.some((dm) => dmPreviewImage(dm) || dmFullImage(dm));
-  if (hasImages) {
-    await downloadDmImagesPackage(items);
-    return "download";
-  }
-
-  await copyTextToClipboard(formatDmListForClipboard(items));
-  return "text";
-}
-
 function getLineImagePipelineStatus(status) {
   if (status?.pipeline) {
     return {
@@ -621,7 +97,7 @@ function getLineImagePipelineStatus(status) {
       isComplete: Boolean(status.pipeline.is_complete),
       completedStages: Number(status.pipeline.completed_stages || 0),
       totalStages: Number(status.pipeline.total_stages || 3),
-      label: status.pipeline.label || "LINE????銝?",
+      label: status.pipeline.label || "LINE圖片處理中",
       color: status.pipeline.is_complete ? "#16A34A" : "#D97706",
     };
   }
@@ -663,13 +139,13 @@ function getLineImagePipelineStatus(status) {
     isComplete,
     completedStages,
     totalStages: 3,
-    label: isComplete ? "LINE????摰?" : "LINE????銝?",
+    label: isComplete ? "LINE圖片處理完成" : "LINE圖片處理中",
     color: isComplete ? "#16A34A" : "#D97706",
   };
 }
 
 function formatDateTime(value) {
-  if (!value) return "撠";
+  if (!value) return "尚無";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleString("zh-TW", {
@@ -681,21 +157,21 @@ function formatDateTime(value) {
 }
 
 function manualJobLabel(job) {
-  if (job?.running) return "?瑁?銝?";
-  if (job?.status === "success") return "??";
-  if (job?.status === "failed") return "憭望?";
-  if (job?.last_success === true) return "??";
-  if (job?.last_success === false) return "憭望?";
-  if (job?.status === "stale") return "銝剜";
-  return "?芸銵?";
+  if (job?.running) return "執行中";
+  if (job?.status === "success") return "成功";
+  if (job?.status === "failed") return "失敗";
+  if (job?.last_success === true) return "成功";
+  if (job?.last_success === false) return "失敗";
+  if (job?.status === "stale") return "中斷";
+  return "未執行";
 }
 
 function jobStepLabel(status) {
-  if (status === "success") return "摰?";
-  if (status === "running") return "??銝?";
-  if (status === "failed") return "憭望?";
-  if (status === "skipped") return "?仿?";
-  return "蝑?";
+  if (status === "success") return "完成";
+  if (status === "running") return "處理中";
+  if (status === "failed") return "失敗";
+  if (status === "skipped") return "略過";
+  return "等待";
 }
 
 function jobStepAccent(status) {
@@ -703,24 +179,22 @@ function jobStepAccent(status) {
 }
 
 function jobSourceLabel(source) {
-  if (source === "manual") return "??";
-  if (source === "scheduled") return "摰?";
-  if (source === "upload") return "??銝";
-  if (source === "line-auto") return "LINE ?芸??砍?";
-  if (source === "test") return "皜祈岫";
-  return "?芰";
+  if (source === "manual") return "手動";
+  if (source === "scheduled") return "定時";
+  if (source === "test") return "測試";
+  return "未知";
 }
 
 function manualJobMessage(job) {
-  if (!job) return "??瘚?????芸?敺?";
+  if (!job) return "手動流程狀態：未取得。";
   const parts = [
-    `??瘚????${manualJobLabel(job)}`,
-    `??嚗?{formatDateTime(job.last_started_at)}`,
-    `蝯?嚗?{formatDateTime(job.last_finished_at)}`,
+    `手動流程狀態：${manualJobLabel(job)}`,
+    `開始：${formatDateTime(job.last_started_at)}`,
+    `結束：${formatDateTime(job.last_finished_at)}`,
   ];
-  if (job.pid) parts.push(`PID嚗?{job.pid}`);
-  if (job.last_error) parts.push(`?航炊嚗?{job.last_error}`);
-  return parts.join("??");
+  if (job.pid) parts.push(`PID：${job.pid}`);
+  if (job.last_error) parts.push(`錯誤：${job.last_error}`);
+  return parts.join("。");
 }
 
 function isJobRunning(job) {
@@ -740,7 +214,7 @@ function selectManualRunJob(status) {
 /* ===== MAIN APP ===== */
 /* ===== DADOVA LOGO COMPONENT ===== */
 function DadovaLogo({ size = 32, inverted = false }) {
-  // Globe icon in rounded black square ??matches "?啁????? notification icon style
+  // Globe icon in rounded black square, aligned with the notification icon style.
   const bg = inverted ? "#F5F1E8" : "#1C1917";
   const fg = inverted ? "#1C1917" : "#F5F1E8";
 
@@ -981,7 +455,7 @@ function LoginGate() {
 
 export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } = {}) {
   const [messages, setMessages] = useState([
-    { id: 1, role: "agent", type: "welcome", time: "隞 09:42" },
+    { id: 1, role: "agent", type: "welcome", time: "今日 09:42" },
   ]);
   const [input, setInput] = useState("");
   const [isThinking, setIsThinking] = useState(false);
@@ -1014,10 +488,10 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
   const inputRef = useRef(null);
 
   const suggestions = [
-    { icon: Inbox, label: "????", prompt: "??????" },
-    { icon: Zap, label: "????+OCR+??", prompt: "??????+ocr+??" },
-    { icon: Search, label: "????", prompt: "??????" },
-    { icon: Layers, label: "????", prompt: "??????" },
+    { icon: Inbox, label: "查看今日新組合", prompt: "今天有哪些新組合好的圖片 DM？" },
+    { icon: Zap, label: "手動觸發抓取+OCR+組圖", prompt: "手動觸發抓取+OCR+組圖" },
+    { icon: Search, label: "查詢日本所有方案", prompt: "幫我找日本的所有方案" },
+    { icon: Layers, label: "處理重複圖片", prompt: "顯示待審核的重複圖片清單" },
   ];
 
   useEffect(() => {
@@ -1049,12 +523,12 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
 
   const getTime = () => {
     const d = new Date();
-    return `隞 ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    return `今日 ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   };
 
   const formatPrice = (value) => {
     const n = Number(value);
-    return Number.isFinite(n) && n >= 5000 ? `NT$ ${n.toLocaleString()}` : "?寞敺Ⅱ隤?";
+    return Number.isFinite(n) && n >= 5000 ? `NT$ ${n.toLocaleString()}` : "價格待確認";
   };
 
   const formatPriceSummary = (item) => {
@@ -1069,22 +543,22 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
 
   const formatPeriod = (item) => {
     const months = Array.isArray(item.months) && item.months.length
-      ? `${item.months.join(", ")} ?`
-      : "????";
+      ? `${item.months.join(", ")} 月`
+      : "月份待確認";
     const indexed = item.indexed_at
-      ? `?? ${new Date(item.indexed_at).toLocaleDateString("zh-TW")}`
+      ? `索引 ${new Date(item.indexed_at).toLocaleDateString("zh-TW")}`
       : "";
-    return [months, indexed].filter(Boolean).join(" ? ");
+    return [months, indexed].filter(Boolean).join(" · ");
   };
 
   const normalizeAgentItem = (item, index = 0) => {
     const countries = Array.isArray(item.countries) ? item.countries : [];
     const regions = Array.isArray(item.regions) ? item.regions : [];
     const features = Array.isArray(item.features) ? item.features : [];
-    const place = [...countries, ...regions].filter(Boolean).join(" / ") || "??";
+    const place = [...countries, ...regions].filter(Boolean).join(" / ") || "旅遊";
     const days = Number(item.duration_days) || 0;
     const priceSummary = formatPriceSummary(item);
-    const titleParts = [place, days ? `${days} ?` : "", priceSummary];
+    const titleParts = [place, days ? `${days} 天` : "", priceSummary];
 
     return {
       id: item.sidecar_path || item.branded_path || item.image_path || `openclaw-${index}`,
@@ -1093,7 +567,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       previewImage: item.preview_url || item.image_url || item.branded_path || item.image_path || "",
       thumbnail: item.thumbnail_url || item.image_url || item.branded_path || item.image_path || "",
       mediaId: item.media_id || "",
-      title: titleParts.filter(Boolean).join(" ? "),
+      title: titleParts.filter(Boolean).join(" · "),
       region: place,
       period: formatPeriod(item),
       days,
@@ -1101,10 +575,11 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       tag: features[0] || "Agent",
       keywords: [...countries, ...regions, ...features],
       highlights: [
-        countries.length ? `國家：${countries.join("、")}` : "國家未定",
-        regions.length ? `地區：${regions.join("、")}` : "地區未定",
-        item.group_name || item.target_id ? `群組：${item.group_name || item.target_id}` : "群組未定",
+        countries.length ? `國家：${countries.join("、")}` : "國家待確認",
+        regions.length ? `地區：${regions.join("、")}` : "地區待確認",
+        item.group_name || item.target_id ? `來源：${item.group_name || item.target_id}` : "來源待確認",
       ],
+      source: item.group_name || item.target_id || "Agent",
       raw: item,
     };
   };
@@ -1136,13 +611,13 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       const keyParts = [
         ...(match.countries || []),
         ...(match.regions || []),
-        Array.isArray(match.months) && match.months.length ? `${match.months.join(", ")} ?` : "",
-        match.duration_days ? `${match.duration_days} ?` : "",
-        match.price_bucket ? `? NT$ ${Number(match.price_bucket).toLocaleString()}` : "",
+        Array.isArray(match.months) && match.months.length ? `${match.months.join(", ")} 月` : "",
+        match.duration_days ? `${match.duration_days} 天` : "",
+        match.price_bucket ? `約 NT$ ${Number(match.price_bucket).toLocaleString()}` : "",
       ].filter(Boolean);
 
       return {
-        key: keyParts.join(" ? ") || `???? ${groupIndex + 1}`,
+        key: keyParts.join(" · ") || `重複群組 ${groupIndex + 1}`,
         groupId: group.group_id || "",
         count: group.count || dms.length,
         images: dms.map((dm) => ({
@@ -1150,7 +625,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
           source: dm.source,
           time: dm.raw?.indexed_at
             ? new Date(dm.raw.indexed_at).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" })
-            : "敺Ⅱ隤?",
+            : "待確認",
         })),
       };
     }).filter((group) => group.images.length > 0);
@@ -1186,56 +661,30 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
   };
 
   const refreshUploadFolders = async () => {
-    const response = await fetch("/api/uploads/folders?limit=30");
-    const payload = await response.json();
-    if (!response.ok || !payload?.ok) throw new Error(payload?.error || "folders failed");
-    setUploadFolders(Array.isArray(payload.folders) ? payload.folders : []);
+    setUploadFolders(await uploadApi.listFolders(30));
   };
 
   const refreshOpenclawSettings = async () => {
-    const response = await fetch("/api/openclaw/settings");
-    const payload = await response.json();
-    if (response.ok && payload?.settings) {
+    const payload = await openclawApi.getSettings();
+    if (payload?.settings) {
       setLineAutoEnabled(Boolean(payload.settings.line_auto_enabled));
     }
   };
 
   const refreshUploadDetail = async (folderId) => {
     if (!folderId) return;
-    const response = await fetch(`/api/uploads/folders/${folderId}`);
-    const payload = await response.json();
-    if (!response.ok || !payload?.ok) throw new Error(payload?.error || "folder detail failed");
-    setUploadDetail(payload);
+    setUploadDetail(await uploadApi.getFolder(folderId));
   };
 
   const handleUploadImages = async ({ displayName, note, files }) => {
-    if (!displayName.trim()) throw new Error("隢撓?亥??冗?迂");
-    if (!files?.length) throw new Error("隢????");
+    if (!displayName.trim()) throw new Error("請輸入資料夾名稱");
+    if (!files?.length) throw new Error("請選擇圖片");
     setUploading(true);
     setUploadError("");
     try {
-      const folderResponse = await fetch("/api/uploads/folders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ display_name: displayName.trim(), note: note.trim() }),
-      });
-      const folderPayload = await folderResponse.json();
-      if (!folderResponse.ok || !folderPayload?.ok) {
-        throw new Error(folderPayload?.error || "撱箇?鞈?憭曉仃??");
-      }
-
-      const form = new FormData();
-      Array.from(files).forEach((file) => form.append("images", file));
-      const uploadResponse = await fetch(`/api/uploads/folders/${folderPayload.folder.id}/images`, {
-        method: "POST",
-        body: form,
-      });
-      const uploadPayload = await uploadResponse.json();
-      if (!uploadResponse.ok || !uploadPayload?.ok) {
-        throw new Error(uploadPayload?.error || "銝憭望?");
-      }
+      const uploadPayload = await uploadApi.uploadToNewFolder({ displayName, note, files });
       await refreshUploadFolders();
-      await refreshUploadDetail(folderPayload.folder.id);
+      await refreshUploadDetail(uploadPayload.folder.id);
       refreshOverview();
       return uploadPayload;
     } finally {
@@ -1244,21 +693,12 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
   };
 
   const handleUploadImagesToFolder = async ({ folderId, files }) => {
-    if (!folderId) throw new Error("隢???冗");
-    if (!files?.length) throw new Error("隢????");
+    if (!folderId) throw new Error("請選擇資料夾");
+    if (!files?.length) throw new Error("請選擇圖片");
     setUploading(true);
     setUploadError("");
     try {
-      const form = new FormData();
-      Array.from(files).forEach((file) => form.append("images", file));
-      const uploadResponse = await fetch(`/api/uploads/folders/${folderId}/images`, {
-        method: "POST",
-        body: form,
-      });
-      const uploadPayload = await uploadResponse.json();
-      if (!uploadResponse.ok || !uploadPayload?.ok) {
-        throw new Error(uploadPayload?.error || "銝憭望?");
-      }
+      const uploadPayload = await uploadApi.uploadToExistingFolder({ folderId, files });
       await refreshUploadFolders();
       await refreshUploadDetail(folderId);
       refreshOverview();
@@ -1270,64 +710,36 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
 
   const handleToggleLineAuto = async () => {
     const next = !lineAutoEnabled;
-    const response = await fetch("/api/openclaw/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ line_auto_enabled: next }),
-    });
-    const payload = await response.json();
-    if (!response.ok || !payload?.ok) throw new Error(payload?.error || "settings failed");
+    const payload = await openclawApi.updateSettings({ line_auto_enabled: next });
     setLineAutoEnabled(Boolean(payload.settings.line_auto_enabled));
   };
 
   const handleAddManualTag = async (imageId, tag) => {
     const value = String(tag || "").trim();
     if (!value) return;
-    const response = await fetch(`/api/uploads/images/${imageId}/manual-tags`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tag: value }),
-    });
-    const payload = await response.json();
-    if (!response.ok || !payload?.ok) throw new Error(payload?.error || "tag failed");
+    await uploadApi.addManualTag(imageId, value);
     if (uploadDetail?.folder?.id) await refreshUploadDetail(uploadDetail.folder.id);
   };
 
   const handleDeleteManualTag = async (tagId) => {
-    const response = await fetch(`/api/uploads/manual-tags/${tagId}`, { method: "DELETE" });
-    const payload = await response.json();
-    if (!response.ok || !payload?.ok) throw new Error(payload?.error || "delete tag failed");
+    await uploadApi.deleteManualTag(tagId);
     if (uploadDetail?.folder?.id) await refreshUploadDetail(uploadDetail.folder.id);
   };
 
   const handleUpdateManualTag = async (tagId, tag) => {
     const value = String(tag || "").trim();
     if (!value) return;
-    const response = await fetch(`/api/uploads/manual-tags/${tagId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tag: value }),
-    });
-    const payload = await response.json();
-    if (!response.ok || !payload?.ok) throw new Error(payload?.error || "update tag failed");
+    await uploadApi.updateManualTag(tagId, value);
     if (uploadDetail?.folder?.id) await refreshUploadDetail(uploadDetail.folder.id);
   };
 
   const handleUpdateImageMetadata = async (imageId, data) => {
-    const response = await fetch(`/api/uploads/images/${imageId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    });
-    const payload = await response.json();
-    if (!response.ok || !payload?.ok) throw new Error(payload?.error || "update image failed");
+    await uploadApi.updateImage(imageId, data);
     if (uploadDetail?.folder?.id) await refreshUploadDetail(uploadDetail.folder.id);
   };
 
   const handleArchiveImage = async (imageId) => {
-    const response = await fetch(`/api/uploads/images/${imageId}`, { method: "DELETE" });
-    const payload = await response.json();
-    if (!response.ok || !payload?.ok) throw new Error(payload?.error || "archive image failed");
+    await uploadApi.archiveImage(imageId);
     if (uploadDetail?.folder?.id) {
       await refreshUploadDetail(uploadDetail.folder.id);
       await refreshUploadFolders();
@@ -1357,7 +769,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
         id: Date.now() + 1,
         role: "agent",
         type: "text",
-        content: `Agent ??航炊嚗?{payload.error}`,
+        content: `Agent 回傳錯誤：${payload.error}`,
         time: getTime(),
       };
     }
@@ -1379,7 +791,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
           id: Date.now() + 1,
           role: "agent",
           type: "text",
-          content: "瘝??曉敺?????????",
+          content: "沒有找到待處理的重複圖片。",
           time: getTime(),
         };
       }
@@ -1399,7 +811,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
         id: Date.now() + 1,
         role: "agent",
         type: "text",
-        content: `???????${query}?? DM?`,
+        content: `沒有找到「${query}」的旅遊 DM。`,
         time: getTime(),
       };
     }
@@ -1443,7 +855,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
     return { ...payload, kind: "latest" };
   };
 
-  const appendTodayCombinationPreview = async (query = "?亦?隞蝯?") => {
+  const appendTodayCombinationPreview = async (query = "查看今日組合") => {
     const payload = await fetchTodayCombinationPayload();
     setMessages((p) => [...p, buildAgentResponse(payload, query)]);
     await refreshOverview();
@@ -1474,7 +886,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
 
         const ok = job.status === "success" || job.last_success === true;
         if (ok) {
-          await appendTodayCombinationPreview("??瘚?摰?嚗??亦???");
+          await appendTodayCombinationPreview("手動流程完成：今日組合");
         } else {
           setMessages((p) => [
             ...p,
@@ -1482,7 +894,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
               id: Date.now() + 1,
               role: "agent",
               type: "text",
-              content: `??????${job.last_error ? `?${job.last_error}` : ""}`,
+              content: `手動流程失敗，無法產生直接預覽。${job.last_error ? `錯誤：${job.last_error}` : ""}`,
               time: getTime(),
             },
           ]);
@@ -1502,7 +914,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
           id: Date.now() + 1,
           role: "agent",
           type: "text",
-          content: "??瘚?隞?摰?嚗?蝔?頛詨????亦???敺?閬賬?",
+          content: "手動流程仍未回報完成，請稍後輸入「查看今日組合」取得預覽。",
           time: getTime(),
         },
       ]);
@@ -1539,8 +951,8 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
             role: "agent",
             type: "text",
             content: payload?.ok
-              ? `${payload?.started === false ? "?????????" : "???????+OCR+??"}${payload?.job ? ` ${manualJobMessage(payload.job)}` : ""}`
-              : `?????????${payload?.error || "????"}`,
+              ? `${payload?.started === false ? "手動流程已在執行中。" : "已手動觸發抓取+OCR+組圖。"}處理完成前會顯示 LINE圖片處理中。${payload?.job ? ` ${manualJobMessage(payload.job)}` : ""}`
+              : `手動觸發失敗：${payload?.error || "未知錯誤"}`,
             time: getTime(),
           },
         ]);
@@ -1553,7 +965,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
             id: Date.now() + 1,
             role: "agent",
             type: "text",
-            content: `??閫貊憭望?嚗?{error.message}`,
+            content: `手動觸發失敗：${error.message}`,
             time: getTime(),
           },
         ]);
@@ -1563,7 +975,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       return;
     }
 
-    // ===== Schedule commands take priority ??they're explicit ops =====
+    // ===== Schedule commands take priority — they're explicit ops =====
     const scheduleCmd = parseScheduleCommand(m);
     if (scheduleCmd) {
       const response = {
@@ -1595,7 +1007,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
           id: Date.now() + 1,
           role: "agent",
           type: "text",
-          content: `?⊥???? Agent嚗?{error.message}`,
+          content: `無法連線 Agent：${error.message}`,
           time: getTime(),
         },
       ]);
@@ -1604,7 +1016,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
     }
   };
 
-  // Helpers ??armed state stored in ref for synchronous read between rapid keystrokes
+  // Helpers — armed state stored in ref for synchronous read between rapid keystrokes
   const armEnter = () => {
     enterArmedRef.current = true;
     if (enterTimerRef.current) clearTimeout(enterTimerRef.current);
@@ -1622,7 +1034,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
     }
   };
 
-  // Double-Enter to send ??IME-aware (Chinese input safe), skips empty input
+  // Double-Enter to send, IME-aware for Chinese input.
   const handleKeyDown = (e) => {
     const isEnter = e.key === "Enter";
     const isComposing = e.nativeEvent.isComposing || e.keyCode === 229;
@@ -1675,13 +1087,13 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
 
       if (copyMode === "text") {
         window.alert(
-          "?? HTTPS ???????????????????"
+          "瀏覽器未允許圖片複製，已改為複製文字內容。請確認使用 HTTPS 網址，並用最新版 Chrome 或 Edge 開啟。"
         );
         return false;
       }
 
       if (copyMode === "download") {
-        window.alert(INTERNAL_WEB ? "??????" : "????????");
+        window.alert(INTERNAL_WEB ? "已開始逐張下載圖片。請查看瀏覽器下載列。" : "已下載圖片包。請解壓縮後全選圖片，拖曳到 LINE 群組或聊天視窗。");
       }
 
       if (copyMode === "download") return true;
@@ -1695,7 +1107,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       return true;
     } catch (error) {
       console.error("Clipboard copy failed.", error);
-      window.alert(`??銴ˊ憭望?\n\n${explainClipboardError(error)}`);
+      window.alert(`圖片複製失敗\n\n${explainClipboardError(error)}`);
       return false;
     }
   };
@@ -1709,11 +1121,11 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       .map((item) => item?.dm?.raw?.sidecar_path || item?.dm?.id)
       .filter(Boolean);
     if (!group?.groupId) {
-      window.alert("蝻箏???蝢斤? ID嚗瘜摮祟?詻?");
+      window.alert("缺少重複群組 ID，無法儲存審核。");
       return false;
     }
     if (action === "keep_one" && !keepPath) {
-      window.alert("蝻箏?靽???頝臬?嚗瘜摮祟?詻?");
+      window.alert("缺少保留圖片路徑，無法儲存審核。");
       return false;
     }
     try {
@@ -1750,7 +1162,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       return true;
     } catch (error) {
       console.error("Duplicate review failed.", error);
-      window.alert(`????撖拇?脣?憭望?嚗?{error.message}`);
+      window.alert(`重複圖片審核儲存失敗：${error.message}`);
       return false;
     }
   };
@@ -1814,10 +1226,10 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                     className="font-serif-tc font-medium text-base leading-none tracking-tight"
                     style={{ color: "#1C1917" }}
                   >
-                    憭折????
+                    大都會旅遊
                   </div>
                   <div className="text-[9px] tracking-[0.18em] uppercase text-stone-500 mt-1">
-                    Dadova 繚 agent
+                    Dadova · agent
                   </div>
                 </div>
               </div>
@@ -1840,7 +1252,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                     if (!notifOpen) setNotifRead(true);
                   }}
                   className="relative p-2 rounded-md hover:bg-[#EFE9D8] transition-colors"
-                  aria-label="?"
+                  aria-label="通知"
                 >
                   <Bell className="w-4 h-4" />
                   {hasUnreadNotifications && (
@@ -1857,9 +1269,9 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                     duplicateCount={duplicateCount}
                     totalIndexed={totalIndexed}
                     onRefresh={refreshOverview}
-                    onSelectStatus={() => showOverviewMessage(overview.status, "status", "????")}
-                    onSelectNew={() => showOverviewMessage(overview.latest, "latest", "???DM")}
-                    onSelectDup={() => showOverviewMessage(overview.duplicates, "duplicates", "?? DM")}
+                    onSelectStatus={() => showOverviewMessage(overview.status, "status", "流程狀態")}
+                    onSelectNew={() => showOverviewMessage(overview.latest, "latest", "今日圖片")}
+                    onSelectDup={() => showOverviewMessage(overview.duplicates, "duplicates", "重複 DM")}
                   />
                 )}
               </div>
@@ -1867,8 +1279,8 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
               <button
                 onClick={onLogout}
                 className="flex items-center gap-2 hover:bg-[#EFE9D8] rounded-md px-2 py-1 transition-colors"
-                aria-label={onLogout ? "??" : "???"}
-                title={onLogout ? "?餃" : currentUser}
+                aria-label={onLogout ? "登出" : "使用者"}
+                title={onLogout ? "登出帳號" : currentUser}
               >
                 <div
                   className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium flex-shrink-0"
@@ -1878,7 +1290,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                 </div>
                 <div className="hidden md:block text-left">
                   <div className="text-xs font-medium leading-tight">{currentUser}</div>
-                  <div className="text-[10px] text-stone-500 leading-tight">???</div>
+                  <div className="text-[10px] text-stone-500 leading-tight">已登入</div>
                 </div>
                 {onLogout && <LogOut className="hidden md:block w-3.5 h-3.5 text-stone-500" />}
               </button>
@@ -1899,8 +1311,8 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                   onClick={() => setSidebarCollapsed((value) => !value)}
                   className="rounded-md border bg-white p-1.5 text-stone-700 hover:bg-[#FAF7EE]"
                   style={{ borderColor: "#E5DDC8" }}
-                  aria-label={sidebarCollapsed ? "撅? workspace" : "?嗅? workspace"}
-                  title={sidebarCollapsed ? "撅? workspace" : "?嗅? workspace"}
+                  aria-label={sidebarCollapsed ? "展開 workspace" : "收合 workspace"}
+                  title={sidebarCollapsed ? "展開 workspace" : "收合 workspace"}
                 >
                   {sidebarCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
                 </button>
@@ -1974,8 +1386,8 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
               {isThinking && (
                 <div className="animate-fade-up flex items-center gap-2 mt-6 text-stone-500 text-sm">
                   <Sparkles className="w-3.5 h-3.5" />
-                  <span>???</span>
-                  <span className="typing-cursor">?</span>
+                  <span>思考中</span>
+                  <span className="typing-cursor">▋</span>
                 </div>
               )}
             </div>
@@ -1997,7 +1409,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="?亥岷嚗鼠? ?? 5 憭?4 憭?????DM"
+                  placeholder="例如：幫我找日本 5 天 4 夜的圖片 DM"
                   className="flex-1 resize-none outline-none text-sm bg-transparent placeholder:text-stone-400 max-h-32 leading-relaxed text-left"
                   style={{ color: "#1C1917" }}
                 />
@@ -2015,7 +1427,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
               </div>
               <div className="flex items-center justify-between mt-2.5 px-1">
                 <div className="text-[10px] text-stone-500">
-                  ????拐? Enter ? 繚 Shift+Enter ??
+                  連按兩次 Enter 送出，Shift+Enter 換行
                 </div>
                 <div className="text-[10px] text-stone-500 flex items-center gap-1.5">
                   <span className="italic font-display">Powered by</span>
@@ -2024,7 +1436,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                       STARBIT
                     </span>
                     <span className="font-serif-tc" style={{ color: "#57534E" }}>
-                      ?????函??
+                      思偉達應用科技
                     </span>
                   </span>
                 </div>
@@ -2073,1081 +1485,12 @@ function UploadToast({ toast, onClose }) {
       <div className="flex items-start gap-3 px-4 py-3">
         {success ? <CheckCircle2 className="mt-0.5 h-4 w-4 text-green-600" /> : <AlertTriangle className="mt-0.5 h-4 w-4 text-red-700" />}
         <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium">?????</div>
+          <div className="text-sm font-medium">{success ? "上傳成功" : "上傳失敗"}</div>
           <div className="mt-0.5 text-xs text-stone-600">{toast?.message}</div>
         </div>
-        <button type="button" onClick={onClose} className="rounded p-1 text-stone-500 hover:bg-stone-100" aria-label="???內">
+        <button type="button" onClick={onClose} className="rounded p-1 text-stone-500 hover:bg-stone-100" aria-label="關閉通知">
           <X className="h-3.5 w-3.5" />
         </button>
-      </div>
-    </div>
-  );
-}
-
-function stepLabel(status) {
-  if (status === "success") return "摰?";
-  if (status === "running") return "?瑁?銝?";
-  if (status === "failed") return "憭望?";
-  if (status === "skipped") return "?仿?";
-  return "敺???";
-}
-
-function sourceLabel(source) {
-  if (source === "line-auto") return "LINE ?芸??砍?";
-  if (source === "upload") return "??銝";
-  return source || "?芸?憿?";
-}
-
-const UPLOAD_LIMITS = {
-  formats: ["JPG", "JPEG", "PNG", "WEBP"],
-  extensions: [".jpg", ".jpeg", ".png", ".webp"],
-  maxFileBytes: 15 * 1024 * 1024,
-  maxTotalBytes: 200 * 1024 * 1024,
-  maxFiles: 50,
-};
-
-function formatBytes(bytes) {
-  const value = Number(bytes || 0);
-  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(value >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
-  if (value >= 1024) return `${Math.round(value / 1024)} KB`;
-  return `${value} B`;
-}
-
-function uploadLimitText() {
-  return `${UPLOAD_LIMITS.formats.join(" / ")}??? ${formatBytes(UPLOAD_LIMITS.maxFileBytes)}??? ${UPLOAD_LIMITS.maxFiles} ? / ${formatBytes(UPLOAD_LIMITS.maxTotalBytes)}`;
-}
-
-function validateUploadFiles(files) {
-  const list = Array.from(files || []);
-  if (list.length === 0) return "?????";
-  if (list.length > UPLOAD_LIMITS.maxFiles) return `????? ${UPLOAD_LIMITS.maxFiles} ?`;
-  const total = list.reduce((sum, file) => sum + Number(file.size || 0), 0);
-  if (total > UPLOAD_LIMITS.maxTotalBytes) return `??????? ${formatBytes(UPLOAD_LIMITS.maxTotalBytes)}`;
-  const invalid = list.find((file) => {
-    const lower = String(file.name || "").toLowerCase();
-    return !UPLOAD_LIMITS.extensions.some((ext) => lower.endsWith(ext));
-  });
-  if (invalid) return `${invalid.name} ?????`;
-  const oversized = list.find((file) => Number(file.size || 0) > UPLOAD_LIMITS.maxFileBytes);
-  if (oversized) return `${oversized.name} ?? ${formatBytes(UPLOAD_LIMITS.maxFileBytes)}`;
-  return "";
-}
-
-function folderProgress(folder) {
-  const total = Number(folder?.image_count || 0);
-  const done = Math.max(
-    Number(folder?.composed_count || 0),
-    Number(folder?.ocr_count || 0),
-    folder?.status === "success" ? total : 0,
-  );
-  return { done: Math.min(done, total), total };
-}
-
-function folderStatusLabel(folder) {
-  if (folder?.status === "success") return "摰?";
-  if (folder?.status === "failed") return "憭望?";
-  if (folder?.status === "running") return "?瑁?銝?";
-  return stepLabel(folder?.current_step ? folder?.step_statuses?.[folder.current_step] : "");
-}
-
-function SidebarNavigation({ activeWorkspace, lineAutoEnabled, uploadCount, collapsed, onSelect, onToggleLineAuto }) {
-  const itemClass = (name) => (
-    `w-full flex items-center ${collapsed ? "justify-center px-2" : "justify-between px-3"} gap-3 rounded-md border py-2.5 text-left text-sm transition-colors ${
-      activeWorkspace === name ? "bg-[#1C1917] text-[#F5F1E8]" : "bg-white text-stone-800 hover:bg-[#FAF7EE]"
-    }`
-  );
-
-  return (
-    <div className={`${collapsed ? "workspace-collapsed p-2" : "p-3 lg:p-4"} space-y-4`}>
-      <div>
-        {!collapsed && <div className="text-[10px] tracking-[0.16em] uppercase text-stone-500 mb-2">Workspace</div>}
-        <div className="grid grid-cols-2 lg:grid-cols-1 gap-2">
-          <button
-            type="button"
-            onClick={() => onSelect("chat")}
-            className={itemClass("chat")}
-            style={{ borderColor: activeWorkspace === "chat" ? "#1C1917" : "#E5DDC8" }}
-            title="?予??"
-          >
-            <span className="flex items-center gap-2 min-w-0">
-              <Search className="w-4 h-4 flex-shrink-0" />
-              <span className="truncate">?予?亥岷</span>
-            </span>
-            <ChevronRight className="w-3.5 h-3.5 flex-shrink-0" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onSelect("uploads")}
-            className={itemClass("uploads")}
-            style={{ borderColor: activeWorkspace === "uploads" ? "#1C1917" : "#E5DDC8" }}
-          >
-            <span className="flex items-center gap-2 min-w-0">
-              <Upload className="w-4 h-4 flex-shrink-0" />
-            ?? / ???????
-            </span>
-            <span className="text-[10px] tabular-nums">{uploadCount}</span>
-          </button>
-        </div>
-      </div>
-
-      <div className="rounded-lg border bg-white p-3" style={{ borderColor: "#E5DDC8" }}>
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="text-xs font-medium">LINE ?芸???</div>
-            <div className="text-[10px] text-stone-500 mt-1 leading-relaxed">
-              ?敺?瘝輻??鞈?憭暹?蝔?銝虫?蝢斤??????            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onToggleLineAuto}
-            className="flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] flex-shrink-0"
-            style={{
-              borderColor: lineAutoEnabled ? "#16A34A" : "#B91C1C",
-              color: lineAutoEnabled ? "#166534" : "#991B1B",
-            }}
-          >
-            <Power className="w-3 h-3" />
-            {lineAutoEnabled ? "?" : "?"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function UploadWorkspace({
-  folders,
-  detail,
-  uploading,
-  error,
-  onUpload,
-  onUploadExisting,
-  onSelectFolder,
-  onRefresh,
-  onAddTag,
-  onDeleteTag,
-  onUpdateTag,
-  onUpdateImage,
-  onArchiveImage,
-  onToast,
-}) {
-  const [uploadStage, setUploadStage] = useState(null);
-  const [uploadTarget, setUploadTarget] = useState(null);
-  const [view, setView] = useState("list");
-  const [recentFolderId, setRecentFolderId] = useState(null);
-  const selectedId = detail?.folder?.id;
-
-  const openFolder = async (folder) => {
-    await onSelectFolder(folder);
-    setView("detail");
-  };
-
-  const handleCreated = async (payload) => {
-    const folderId = payload?.folder?.id;
-    setRecentFolderId(folderId || null);
-    setUploadStage(null);
-    setUploadTarget(null);
-    if (folderId) await onSelectFolder({ id: folderId });
-    setView("detail");
-    onToast?.({ type: "success", message: "????????? OCR / ???" });
-  };
-
-  const submitUploadFiles = async ({ files }) => {
-    try {
-      const payload = uploadTarget?.mode === "existing"
-        ? await onUploadExisting({ folderId: uploadTarget.folderId, files })
-        : await onUpload({ displayName: uploadTarget.displayName, note: uploadTarget.note, files });
-      await handleCreated(payload);
-      return payload;
-    } catch (error) {
-      onToast?.({ type: "error", message: error.message || "???????????" });
-      throw error;
-    }
-  };
-
-  useEffect(() => {
-    if (view !== "detail" || !detail?.folder?.id) return undefined;
-    const progress = folderProgress(detail.folder);
-    const shouldPoll = detail.folder.status === "running"
-      || detail.folder.status === "pending"
-      || progress.done < progress.total;
-    if (!shouldPoll) return undefined;
-    const timer = window.setInterval(() => onRefresh(), 4000);
-    return () => window.clearInterval(timer);
-  }, [view, detail?.folder?.id, detail?.folder?.status, detail?.folder?.updated_at, onRefresh]);
-
-  return (
-    <section className="space-y-4">
-      <div className="rounded-lg border bg-white overflow-hidden" style={{ borderColor: "#E5DDC8" }}>
-        <div className="px-5 py-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4" style={{ backgroundColor: "#FAF7EE" }}>
-          <div>
-            <div className="flex items-center gap-2 text-sm font-medium">
-              <FolderPlus className="w-4 h-4 text-stone-600" />
-              ????
-            </div>
-            <div className="text-xs text-stone-500 mt-1">
-              支援 {uploadLimitText()}。可建立新資料夾或追加到既有資料夾，並自動執行 OCR / 組圖 / 索引。
-          </div>
-          <button
-            type="button"
-            onClick={() => setUploadStage("target")}
-            className="rounded-md px-4 py-2 text-xs font-medium flex items-center justify-center gap-1.5 flex-shrink-0"
-            style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}
-          >
-            <Upload className="w-3.5 h-3.5" />
-            ?? / ???????
-          </button>
-      </div>
-      </div>
-
-      </div>
-      <div className="rounded-lg border bg-white overflow-hidden" style={{ borderColor: "#E5DDC8" }}>
-        {view === "detail" && detail?.folder ? (
-          <UploadFolderDetail
-            detail={detail}
-            onBack={() => setView("list")}
-            onAddTag={onAddTag}
-            onDeleteTag={onDeleteTag}
-            onUpdateTag={onUpdateTag}
-            onUpdateImage={onUpdateImage}
-            onArchiveImage={onArchiveImage}
-          />
-        ) : (
-          <div>
-            <div className="px-5 py-4 border-b flex items-center justify-between gap-3" style={{ borderColor: "#F0E9D6", backgroundColor: "#FAF7EE" }}>
-              <div>
-                <div className="text-sm font-medium">?????</div>
-                <div className="text-xs text-stone-500 mt-0.5">??????????????????????????</div>
-              </div>
-              <button type="button" onClick={onRefresh} className="text-xs text-stone-500 hover:text-stone-900">??渡?</button>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead style={{ backgroundColor: "#FDFBF5", color: "#78716C" }}>
-                  <tr>
-                    <th className="px-4 py-2 font-medium">?????</th>
-                    <th className="px-4 py-2 font-medium text-right">??</th>
-                    <th className="px-4 py-2 font-medium">????</th>
-                    <th className="px-4 py-2 font-medium">????</th>
-                    <th className="px-4 py-2 font-medium text-right">??</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(folders || []).map((folder) => {
-                    const progress = folderProgress(folder);
-                    const active = selectedId === folder.id || recentFolderId === folder.id;
-                    return (
-                      <tr
-                        key={folder.id}
-                        onClick={() => openFolder(folder)}
-                        className="cursor-pointer hover:bg-[#FAF7EE] transition-colors"
-                        style={{
-                          borderTop: "1px solid #F0E9D6",
-                          backgroundColor: active ? "#FFFBEB" : "#FFF",
-                        }}
-                      >
-                        <td className="px-4 py-3 min-w-64">
-                          <div className="flex items-center gap-2 font-medium text-stone-900">
-                            <FolderOpen className="w-3.5 h-3.5 text-stone-500 flex-shrink-0" />
-                            <span className="truncate">{folder.display_name}</span>
-                          </div>
-                          <div className="text-[10px] text-stone-500 mt-0.5 truncate">{sourceLabel(folder.source)} 繚 {folder.folder_slug}</div>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <span className="rounded px-2 py-1 text-[10px]" style={{ backgroundColor: "#F0E9D6", color: "#1C1917" }}>
-                            {folderStatusLabel(folder)}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap tabular-nums">
-                          {progress.done}/{progress.total}
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-stone-500">
-                          {new Date(folder.updated_at || folder.created_at).toLocaleString("zh-TW")}
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <button type="button" className="text-xs text-stone-700 hover:text-stone-950">
-                            ?亦?
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {(!folders || folders.length === 0) && (
-                    <tr>
-                      <td colSpan={5} className="px-5 py-8 text-center text-stone-500">
-                        撠銝鞈?憭?                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {uploadStage === "target" && (
-        <UploadTargetModal
-          folders={folders}
-          onClose={() => setUploadStage(null)}
-          onNext={(target) => {
-            setUploadTarget(target);
-            setUploadStage("files");
-          }}
-        />
-      )}
-      {uploadStage === "files" && uploadTarget && (
-        <UploadFilesModal
-          target={uploadTarget}
-          uploading={uploading}
-          error={error}
-          onBack={() => setUploadStage("target")}
-          onClose={() => setUploadStage(null)}
-          onSubmit={submitUploadFiles}
-        />
-      )}
-    </section>
-  );
-}
-
-function UploadTargetModal({ folders, onClose, onNext }) {
-  const [targetMode, setTargetMode] = useState("new");
-  const [selectedFolderId, setSelectedFolderId] = useState("");
-  const [displayName, setDisplayName] = useState("");
-  const [note, setNote] = useState("");
-  const [localError, setLocalError] = useState("");
-  const selectedFolder = (folders || []).find((folder) => String(folder.id) === String(selectedFolderId));
-
-  const next = () => {
-    if (targetMode === "new" && !displayName.trim()) {
-      setLocalError("????????");
-      return;
-    }
-    if (targetMode === "existing" && !selectedFolderId) {
-      setLocalError("????????");
-      return;
-    }
-    setLocalError("");
-    onNext(targetMode === "existing"
-      ? { mode: "existing", folderId: selectedFolderId, folder: selectedFolder, label: selectedFolder?.display_name || "?????" }
-      : { mode: "new", displayName: displayName.trim(), note: note.trim(), label: displayName.trim() });
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center px-4 py-6 animate-backdrop-in" style={{ backgroundColor: "rgba(28,25,23,0.45)" }}>
-      <div className="w-full max-w-xl rounded-lg border bg-white shadow-xl animate-modal-in overflow-hidden" style={{ borderColor: "#E5DDC8" }}>
-        <div className="px-5 py-4 border-b flex items-center justify-between gap-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
-          <div>
-            <div className="text-sm font-medium">???????</div>
-            <div className="text-xs text-stone-500 mt-0.5">????????????????????</div>
-          </div>
-          <button type="button" onClick={onClose} className="p-1.5 rounded-md hover:bg-[#EFE9D8]" aria-label="??">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="px-5 py-5 space-y-4">
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <button
-              type="button"
-              onClick={() => {
-                setTargetMode("new");
-                setLocalError("");
-              }}
-              className="rounded-md border px-3 py-3 text-sm font-medium text-left"
-              style={{
-                borderColor: targetMode === "new" ? "#1C1917" : "#E5DDC8",
-                backgroundColor: targetMode === "new" ? "#1C1917" : "#FFF",
-                color: targetMode === "new" ? "#F5F1E8" : "#1C1917",
-              }}
-            >
-              ??????
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setTargetMode("existing");
-                setLocalError("");
-              }}
-              className="rounded-md border px-3 py-3 text-sm font-medium text-left"
-              style={{
-                borderColor: targetMode === "existing" ? "#1C1917" : "#E5DDC8",
-                backgroundColor: targetMode === "existing" ? "#1C1917" : "#FFF",
-                color: targetMode === "existing" ? "#F5F1E8" : "#1C1917",
-              }}
-            >
-              ???????
-            </button>
-          </div>
-
-          {targetMode === "new" ? (
-            <>
-              <label className="block">
-                <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">?????</span>
-                <input
-                  value={displayName}
-                  onChange={(event) => {
-                    setDisplayName(event.target.value);
-                    setLocalError("");
-                  }}
-                  className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none"
-                  style={{ borderColor: "#E5DDC8" }}
-                  placeholder="?????????"
-                  autoFocus
-                />
-              </label>
-              <label className="block">
-                <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">??</span>
-                <textarea
-                  value={note}
-                  onChange={(event) => setNote(event.target.value)}
-                  className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none resize-none"
-                  style={{ borderColor: "#E5DDC8" }}
-                  rows={3}
-                  placeholder="???5 ???????????????"
-                />
-              </label>
-            </>
-          ) : (
-            <label className="block">
-              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">?????</span>
-              <select
-                value={selectedFolderId}
-                onChange={(event) => {
-                  setSelectedFolderId(event.target.value);
-                  setLocalError("");
-                }}
-                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none bg-white"
-                style={{ borderColor: "#E5DDC8" }}
-              >
-                <option value="">??????</option>
-                {(folders || []).map((folder) => (
-                  <option key={folder.id} value={folder.id}>
-                    {folder.display_name} ? {new Date(folder.updated_at || folder.created_at).toLocaleString("zh-TW")}
-                  </option>
-                ))}
-              </select>
-              {(!folders || folders.length === 0) && (
-                <div className="mt-2 text-xs text-stone-500">??????????????????????</div>
-              )}
-            </label>
-          )}
-
-          {localError && <div className="text-xs text-red-700">{localError}</div>}
-        </div>
-
-        <div className="px-5 py-4 border-t flex items-center justify-between gap-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
-          <button type="button" onClick={onClose} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: "#E5DDC8" }}>
-            ??
-          </button>
-          <button type="button" onClick={next} className="rounded-md px-3 py-2 text-xs font-medium" style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}>
-            ????????
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function UploadFilesModal({ target, uploading, error, onBack, onClose, onSubmit }) {
-  const [files, setFiles] = useState(null);
-  const [localError, setLocalError] = useState("");
-  const fileList = Array.from(files || []);
-  const totalBytes = fileList.reduce((sum, file) => sum + Number(file.size || 0), 0);
-  const fileMessage = files ? validateUploadFiles(files) : "";
-  const canSubmit = fileList.length > 0 && !fileMessage && !uploading;
-
-  const submit = async () => {
-    const message = validateUploadFiles(files);
-    if (message) {
-      setLocalError(message);
-      return;
-    }
-    setLocalError("");
-    try {
-      await onSubmit({ files });
-    } catch (submitError) {
-      setLocalError(submitError.message || "????");
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center px-4 py-6 animate-backdrop-in" style={{ backgroundColor: "rgba(28,25,23,0.45)" }}>
-      <div className="w-full max-w-xl rounded-lg border bg-white shadow-xl animate-modal-in overflow-hidden" style={{ borderColor: "#E5DDC8" }}>
-        <div className="px-5 py-4 border-b flex items-center justify-between gap-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
-          <div>
-            <div className="text-sm font-medium">????</div>
-            <div className="text-xs text-stone-500 mt-0.5">????{target?.label || "??????"}</div>
-          </div>
-          <button type="button" onClick={onClose} className="p-1.5 rounded-md hover:bg-[#EFE9D8]" aria-label="??">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="px-5 py-5 space-y-4">
-          <div className="rounded-md border p-3 text-xs text-stone-600" style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}>
-            ???????? OCR / ?? / ?????????????????
-          </div>
-          <label className="block">
-            <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">????</span>
-            <input
-              type="file"
-              accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
-              multiple
-              onChange={(event) => {
-                setFiles(event.target.files);
-                setLocalError(validateUploadFiles(event.target.files));
-              }}
-              className="mt-1 block w-full text-xs"
-            />
-          </label>
-          <div className="rounded-md border p-3 text-xs text-stone-600" style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}>
-            ??? {fileList.length} ????? {formatBytes(totalBytes)}
-          </div>
-          {fileList.length > 0 && (
-            <div className="max-h-44 overflow-y-auto scrollbar-thin rounded-md border" style={{ borderColor: "#F0E9D6" }}>
-              {fileList.map((file) => (
-                <div key={`${file.name}-${file.size}`} className="flex items-center justify-between gap-3 px-3 py-2 text-xs" style={{ borderTop: "1px solid #F0E9D6" }}>
-                  <span className="truncate">{file.name}</span>
-                  <span className="text-stone-500 flex-shrink-0">{formatBytes(file.size)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {(localError || fileMessage || error) && (
-            <div className="text-xs text-red-700">{localError || fileMessage || error}</div>
-          )}
-        </div>
-
-        <div className="px-5 py-4 border-t flex items-center justify-between gap-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
-          <button type="button" onClick={onBack} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: "#E5DDC8" }}>
-            ???
-          </button>
-          <button
-            type="button"
-            onClick={submit}
-            disabled={!canSubmit}
-            className="rounded-md px-3 py-2 text-xs font-medium flex items-center gap-1.5 disabled:opacity-50"
-            style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}
-          >
-            {uploading && <Loader2 className="w-3 h-3 animate-spin" />}
-            ???????
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function imageFlowStatus(image) {
-  if (image?.compose_status === "success" || image.branded_thumbnail_url || image.branded_url) {
-    return { label: "??", detail: "OCR / ????" };
-  }
-  if (image?.compose_status === "running") return { label: "???", detail: "OCR ???????" };
-  if (image?.compose_status === "failed") return { label: "????", detail: "???????" };
-  if (image?.ocr_status === "success" || (image.system_tags || []).length > 0 || (image.ocr_tags_override || []).length > 0) {
-    return { label: "????", detail: "OCR ??" };
-  }
-  if (image?.ocr_status === "running") return { label: "OCR ?", detail: "????????" };
-  if (image?.ocr_status === "failed") return { label: "OCR ??", detail: "???????" };
-  return { label: "?? OCR", detail: "????" };
-}
-
-function summarizeTags(tags, limit = 3) {
-  const values = Array.isArray(tags) ? tags.map((tag) => tag?.tag || tag).filter(Boolean) : [];
-  if (!values.length) return "撠";
-  const visible = values.slice(0, limit).join("??");
-  return values.length > limit ? `${visible} +${values.length - limit}` : visible;
-}
-
-function UploadFolderDetail({ detail, onBack, onAddTag, onDeleteTag, onUpdateTag, onUpdateImage, onArchiveImage }) {
-  const [selectedImage, setSelectedImage] = useState(null);
-  const folder = detail.folder;
-  const images = Array.isArray(detail.images) ? detail.images : [];
-  const steps = folder.step_statuses || {};
-  const currentSelectedImage = images.find((image) => image.id === selectedImage?.id) || selectedImage;
-
-  return (
-    <div className="p-4">
-      <button
-        type="button"
-        onClick={onBack}
-        className="mb-3 flex items-center gap-1.5 text-xs text-stone-500 hover:text-stone-900"
-      >
-        <ChevronLeft className="w-3.5 h-3.5" />
-        餈?鞈?憭曉?銵?      </button>
-      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-        <div>
-                <div className="text-sm font-medium">?????</div>
-          <div className="text-[10px] text-stone-500 mt-0.5">{folder.folder_slug}</div>
-          {folder.note && <div className="text-xs text-stone-600 mt-1">{folder.note}</div>}
-          {Array.isArray(folder.line_groups) && folder.line_groups.length > 0 && (
-            <div className="text-[10px] text-stone-500 mt-1">???{folder.line_groups.join("?")}</div>
-          )}
-        </div>
-        <div className="grid grid-cols-4 gap-1.5 text-xs">
-          <StatusMetric label="??" value={stepLabel(steps.upload)} accent={steps.upload === "failed"} />
-          <StatusMetric label="OCR" value={stepLabel(steps.ocr)} accent={steps.ocr === "failed"} />
-          <StatusMetric label="蝯?" value={stepLabel(steps.compose)} accent={steps.compose === "failed"} />
-          <StatusMetric label="蝝Ｗ?" value={stepLabel(steps.index)} accent={steps.index === "failed"} />
-        </div>
-      </div>
-
-      <div className="grid grid-cols-3 gap-2 mb-4">
-        <StatusMetric label="??" value={folder.image_count || images.length || 0} />
-        <StatusMetric label="OCR" value={`${folder.ocr_count || 0}/${folder.image_count || images.length || 0}`} />
-        <StatusMetric label="蝯?" value={`${folder.composed_count || 0}/${folder.image_count || images.length || 0}`} />
-      </div>
-
-      <div className="overflow-x-auto rounded-md border" style={{ borderColor: "#E5DDC8" }}>
-        <table className="w-full text-left text-xs">
-          <thead style={{ backgroundColor: "#FDFBF5", color: "#78716C" }}>
-            <tr>
-              <th className="px-3 py-2 font-medium text-right">??</th>
-              <th className="px-3 py-2 font-medium text-right">??</th>
-              <th className="px-3 py-2 font-medium">????</th>
-              <th className="px-3 py-2 font-medium">????</th>
-              <th className="px-3 py-2 font-medium">OCR Tags</th>
-              <th className="px-3 py-2 font-medium">?? Tags</th>
-              <th className="px-3 py-2 font-medium">Note</th>
-              <th className="px-3 py-2 font-medium text-right">??</th>
-            </tr>
-          </thead>
-          <tbody>
-        {images.map((image) => {
-          const flow = imageFlowStatus(image);
-          const ocrTags = image.ocr_tags_override?.length ? image.ocr_tags_override : image.system_tags;
-          return (
-            <tr
-              key={image.id}
-              className="hover:bg-[#FAF7EE] cursor-pointer"
-              onClick={() => setSelectedImage(image)}
-              style={{ borderTop: "1px solid #F0E9D6" }}
-            >
-              <td className="px-3 py-2">
-                <div className="w-14 bg-stone-100 rounded overflow-hidden" style={{ aspectRatio: "827 / 1169" }}>
-                  {image.thumbnail_url ? (
-                    <img src={image.thumbnail_url} alt={image.original_filename} className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-[10px] text-stone-500">??</div>
-                  )}
-                </div>
-              </td>
-              <td className="px-3 py-2 min-w-48">
-                <div className="font-medium text-stone-900 truncate">{image.display_name || image.original_filename}</div>
-                {image.display_name && <div className="text-[10px] text-stone-500 truncate">{image.original_filename}</div>}
-              </td>
-              <td className="px-3 py-2 whitespace-nowrap text-stone-500">
-                {new Date(image.uploaded_at).toLocaleString("zh-TW")}
-              </td>
-              <td className="px-3 py-2 min-w-32">
-                <div className="font-medium">{flow.label}</div>
-                <div className="text-[10px] text-stone-500">{flow.detail}</div>
-              </td>
-              <td className="px-3 py-2 min-w-40 text-stone-700">{summarizeTags(ocrTags)}</td>
-              <td className="px-3 py-2 min-w-40 text-stone-700">{summarizeTags(image.manual_tags)}</td>
-              <td className="px-3 py-2 min-w-48 text-stone-600 truncate max-w-64">{image.manual_note || "?"}</td>
-              <td className="px-3 py-2 text-right whitespace-nowrap">
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setSelectedImage(image);
-                  }}
-                  className="text-xs text-stone-700 hover:text-stone-950"
-                >
-                  ?亦? / 蝺刻摩
-                </button>
-              </td>
-            </tr>
-          );
-        })}
-          {images.length === 0 && (
-            <tr>
-              <td colSpan={8} className="px-5 py-8 text-center text-stone-500">????????</td>
-            </tr>
-          )}
-          </tbody>
-        </table>
-      </div>
-      {currentSelectedImage && (
-        <CleanImageDetailDrawer
-          image={currentSelectedImage}
-          onClose={() => setSelectedImage(null)}
-          onAddTag={onAddTag}
-          onDeleteTag={onDeleteTag}
-          onUpdateTag={onUpdateTag}
-          onUpdateImage={onUpdateImage}
-          onArchiveImage={onArchiveImage}
-        />
-      )}
-    </div>
-  );
-}
-
-/*
-function ImageDetailDrawer({ image, onClose, onAddTag, onDeleteTag, onUpdateTag, onUpdateImage, onArchiveImage }) {
-  const [displayName, setDisplayName] = useState(image.display_name || "");
-  const [ocrOverride, setOcrOverride] = useState((image.ocr_tags_override || []).join("??)");
-  const [referenceText, setReferenceText] = useState(image.reference_text || "");
-  const [manualNote, setManualNote] = useState(image.manual_note || "");
-  const [tagDraft, setTagDraft] = useState("");
-  const [tagEdits, setTagEdits] = useState({});
-  const rawTags = image.system_tags || [];
-  const flow = imageFlowStatus(image);
-
-  useEffect(() => {
-    setDisplayName(image.display_name || "");
-    setOcrOverride((image.ocr_tags_override || []).join("??)");
-    setReferenceText(image.reference_text || "");
-    setManualNote(image.manual_note || "");
-    setTagDraft("");
-    setTagEdits({});
-  }, [image.id]);
-
-  const parsedOverrideTags = () => ocrOverride
-    .split(/[,\n?+/)
-    .map((tag) => tag.trim())
-    .filter(Boolean);
-
-  const saveMetadata = async () => {
-    await onUpdateImage(image.id, {
-      display_name: displayName,
-      ocr_tags_override: parsedOverrideTags(),
-      reference_text: referenceText,
-      manual_note: manualNote,
-    });
-  };
-
-  const archive = async () => {
-    if (!window.confirm("蝣箏?閬?摮撐??嚗?摮????”?梯???)) return";
-    await onArchiveImage(image.id);
-    onClose();
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end animate-backdrop-in" style={{ backgroundColor: "rgba(28,25,23,0.35)" }}>
-      <div className="w-full max-w-3xl h-full bg-white shadow-xl overflow-y-auto animate-slide-in">
-        <div className="sticky top-0 z-10 px-5 py-4 border-b flex items-center justify-between gap-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
-          <div className="min-w-0">
-            <div className="text-sm font-medium truncate">{image.display_name || image.original_filename}</div>
-                <div className="text-xs text-stone-500 mt-0.5">??????????????????????????</div>
-          </div>
-          <button type="button" onClick={onClose} className="p-1.5 rounded-md hover:bg-[#EFE9D8]" aria-label="??">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="p-5 grid lg:grid-cols-[320px_1fr] gap-5">
-          <div>
-            <div>
-              <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-1">蝯?蝯?</div>
-              {image.branded_thumbnail_url ? (
-                <a href={image.branded_url || image.branded_thumbnail_url} target="_blank" rel="noreferrer" className="block rounded-md border overflow-hidden bg-stone-100" style={{ borderColor: "#E5DDC8", aspectRatio: "827 / 1169" }}>
-                  <img src={image.branded_thumbnail_url} alt={`${image.original_filename} composed`} className="w-full h-full object-cover" />
-                </a>
-              ) : (
-                <div className="rounded-md border px-3 py-8 text-center text-xs text-stone-500" style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}>
-                  蝯?撠摰?
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <label className="block">
-              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">憿舐內?迂</span>
-              <input
-                value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
-                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none"
-                style={{ borderColor: "#E5DDC8" }}
-                placeholder={image.original_filename}
-              />
-            </label>
-
-            <div className="rounded-md border p-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}>
-              <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-2">OCR ?? Tags</div>
-              <div className="flex flex-wrap gap-1">
-                {rawTags.map((tag, idx) => (
-                  <span key={`${tag.field}-${tag.tag}-${idx}`} className="rounded px-1.5 py-0.5 text-[10px]" style={{ backgroundColor: "#EEF2FF", color: "#3730A3" }}>
-                    {tag.tag}
-                  </span>
-                ))}
-                {rawTags.length === 0 && <span className="text-xs text-stone-500">撠</span>}
-              </div>
-            </div>
-
-            <label className="block">
-              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">OCR Tag 鈭箏極靽格迤</span>
-              <textarea
-                value={ocrOverride}
-                onChange={(event) => setOcrOverride(event.target.value)}
-                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none resize-none"
-                style={{ borderColor: "#E5DDC8" }}
-                rows={2}
-                placeholder="?????"
-              />
-            </label>
-
-            <div>
-              <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-2">?酉 Tags</div>
-              <div className="space-y-2">
-                {(image.manual_tags || []).map((tag) => (
-                  <div key={tag.id} className="flex gap-2">
-                    <input
-                      value={tagEdits[tag.id] ?? tag.tag}
-                      onChange={(event) => setTagEdits((current) => ({ ...current, [tag.id]: event.target.value }))}
-                      onBlur={() => onUpdateTag(tag.id, tagEdits[tag.id] ?? tag.tag)}
-                      className="min-w-0 flex-1 rounded border px-2 py-1 text-xs outline-none"
-                      style={{ borderColor: "#E5DDC8" }}
-                    />
-                    <button type="button" onClick={() => onDeleteTag(tag.id)} className="rounded border px-2 py-1 text-xs" style={{ borderColor: "#E5DDC8" }}>
-                      ?芷
-                    </button>
-                  </div>
-                ))}
-                <div className="flex gap-2">
-                  <input
-                    value={tagDraft}
-                    onChange={(event) => setTagDraft(event.target.value)}
-                    className="min-w-0 flex-1 rounded border px-2 py-1 text-xs outline-none"
-                    style={{ borderColor: "#E5DDC8" }}
-                    placeholder="?啣??酉 tag嚗?憒?靽"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onAddTag(image.id, tagDraft);
-                      setTagDraft("");
-                    }}
-                    className="rounded px-2 py-1 text-xs"
-                    style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}
-                  >
-                    ?啣?
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <label className="block">
-              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">Reference ??</span>
-              <textarea
-                value={referenceText}
-                onChange={(event) => setReferenceText(event.target.value)}
-                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none resize-none"
-                style={{ borderColor: "#E5DDC8" }}
-                rows={4}
-                placeholder="?????舀??‵?交??芯???RPA ?? LINE ??"
-              />
-            </label>
-
-            <label className="block">
-              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">鈭箏極?酉 Note</span>
-              <textarea
-                value={manualNote}
-                onChange={(event) => setManualNote(event.target.value)}
-                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none resize-none"
-                style={{ borderColor: "#E5DDC8" }}
-                rows={4}
-                placeholder="靘?嚗眺銝???望銝餅??澆?蝣箄?"
-              />
-            </label>
-
-            <div className="flex items-center justify-between gap-3 pt-2">
-              <button type="button" onClick={archive} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: "#B91C1C", color: "#991B1B" }}>
-                撠???
-              </button>
-              <button type="button" onClick={saveMetadata} className="rounded-md px-4 py-2 text-xs font-medium" style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}>
-                ?脣?
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-*/
-
-function CleanImageDetailDrawer({ image, onClose, onAddTag, onDeleteTag, onUpdateTag, onUpdateImage, onArchiveImage }) {
-  const [displayName, setDisplayName] = useState(image.display_name || "");
-  const [ocrOverride, setOcrOverride] = useState((image.ocr_tags_override || []).join("、"));
-  const [referenceText, setReferenceText] = useState(image.reference_text || "");
-  const [manualNote, setManualNote] = useState(image.manual_note || "");
-  const [tagDraft, setTagDraft] = useState("");
-  const [tagEdits, setTagEdits] = useState({});
-  const rawTags = image.system_tags || [];
-  const flow = imageFlowStatus(image);
-
-  useEffect(() => {
-    setDisplayName(image.display_name || "");
-    setOcrOverride((image.ocr_tags_override || []).join("、"));
-    setReferenceText(image.reference_text || "");
-    setManualNote(image.manual_note || "");
-    setTagDraft("");
-    setTagEdits({});
-  }, [image.id]);
-
-  const parsedOverrideTags = () => ocrOverride
-    .split(/[,，、\n]/)
-    .map((tag) => tag.trim())
-    .filter(Boolean);
-
-  const saveMetadata = async () => {
-    await onUpdateImage(image.id, {
-      display_name: displayName,
-      ocr_tags_override: parsedOverrideTags(),
-      reference_text: referenceText,
-      manual_note: manualNote,
-    });
-  };
-
-  const archive = async () => {
-    if (!window.confirm("確定要刪除這張圖片嗎？此操作無法復原。")) return;
-    await onArchiveImage(image.id);
-    onClose();
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end animate-backdrop-in" style={{ backgroundColor: "rgba(28,25,23,0.35)" }}>
-      <div className="w-full max-w-3xl h-full bg-white shadow-xl overflow-y-auto animate-slide-in">
-        <div className="sticky top-0 z-10 px-5 py-4 border-b flex items-center justify-between gap-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
-          <div className="min-w-0">
-            <div className="text-sm font-medium truncate">{image.display_name || image.original_filename}</div>
-            <div className="text-xs text-stone-500 mt-0.5">{flow.label} · {flow.detail}</div>
-          </div>
-          <button type="button" onClick={onClose} className="p-1.5 rounded-md hover:bg-[#EFE9D8]" aria-label="關閉">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="p-5 grid lg:grid-cols-[320px_1fr] gap-5">
-          <div>
-            <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-1">組圖結果</div>
-            {image.branded_thumbnail_url ? (
-              <a href={image.branded_url || image.branded_thumbnail_url} target="_blank" rel="noreferrer" className="block rounded-md border overflow-hidden bg-stone-100" style={{ borderColor: "#E5DDC8", aspectRatio: "827 / 1169" }}>
-                <img src={image.branded_thumbnail_url} alt={`${image.original_filename} composed`} className="w-full h-full object-cover" />
-              </a>
-            ) : (
-              <div className="rounded-md border px-3 py-8 text-center text-xs text-stone-500" style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}>
-                組圖尚未完成
-              </div>
-            )}
-          </div>
-
-          <div className="space-y-4">
-            <label className="block">
-              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">圖片名稱</span>
-              <input
-                value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
-                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none"
-                style={{ borderColor: "#E5DDC8" }}
-                placeholder={image.original_filename}
-              />
-            </label>
-
-            <div className="rounded-md border p-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}>
-              <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-2">OCR 系統 Tags</div>
-              <div className="flex flex-wrap gap-1">
-                {rawTags.map((tag, idx) => (
-                  <span key={`${tag.field}-${tag.tag}-${idx}`} className="rounded px-1.5 py-0.5 text-[10px]" style={{ backgroundColor: "#EEF2FF", color: "#3730A3" }}>
-                    {tag.tag}
-                  </span>
-                ))}
-                {rawTags.length === 0 && <span className="text-xs text-stone-500">尚無 OCR tag</span>}
-              </div>
-            </div>
-
-            <label className="block">
-              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">OCR Tag 人工修正</span>
-              <textarea
-                value={ocrOverride}
-                onChange={(event) => setOcrOverride(event.target.value)}
-                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none resize-none"
-                style={{ borderColor: "#E5DDC8" }}
-                rows={2}
-                placeholder="可用逗號、頓號或換行分隔"
-              />
-            </label>
-
-            <div>
-              <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-2">人工備註 Tags</div>
-              <div className="space-y-2">
-                {(image.manual_tags || []).map((tag) => (
-                  <div key={tag.id} className="flex gap-2">
-                    <input
-                      value={tagEdits[tag.id] ?? tag.tag}
-                      onChange={(event) => setTagEdits((current) => ({ ...current, [tag.id]: event.target.value }))}
-                      onBlur={() => onUpdateTag(tag.id, tagEdits[tag.id] ?? tag.tag)}
-                      className="min-w-0 flex-1 rounded border px-2 py-1 text-xs outline-none"
-                      style={{ borderColor: "#E5DDC8" }}
-                    />
-                    <button type="button" onClick={() => onDeleteTag(tag.id)} className="rounded border px-2 py-1 text-xs" style={{ borderColor: "#E5DDC8" }}>
-                      刪除
-                    </button>
-                  </div>
-                ))}
-                <div className="flex gap-2">
-                  <input
-                    value={tagDraft}
-                    onChange={(event) => setTagDraft(event.target.value)}
-                    className="min-w-0 flex-1 rounded border px-2 py-1 text-xs outline-none"
-                    style={{ borderColor: "#E5DDC8" }}
-                    placeholder="新增人工 tag，例如促銷、買一送一"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onAddTag(image.id, tagDraft);
-                      setTagDraft("");
-                    }}
-                    className="rounded px-2 py-1 text-xs"
-                    style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}
-                  >
-                    新增
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <label className="block">
-              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">Reference 文案</span>
-              <textarea
-                value={referenceText}
-                onChange={(event) => setReferenceText(event.target.value)}
-                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none resize-none"
-                style={{ borderColor: "#E5DDC8" }}
-                rows={4}
-                placeholder="保留給手動輸入或後續 RPA 補入 LINE 文案"
-              />
-            </label>
-
-            <label className="block">
-              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">人工備註 Note</span>
-              <textarea
-                value={manualNote}
-                onChange={(event) => setManualNote(event.target.value)}
-                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none resize-none"
-                style={{ borderColor: "#E5DDC8" }}
-                rows={4}
-                placeholder="例如促銷、買一送一、活動檔期等"
-              />
-            </label>
-
-            <div className="flex items-center justify-between gap-3 pt-2">
-              <button type="button" onClick={archive} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: "#B91C1C", color: "#991B1B" }}>
-                刪除圖片
-              </button>
-              <button type="button" onClick={saveMetadata} className="rounded-md px-4 py-2 text-xs font-medium" style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}>
-                儲存
-              </button>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -3156,6 +1499,120 @@ function CleanImageDetailDrawer({ image, onClose, onAddTag, onDeleteTag, onUpdat
 /* ===================================================================== */
 /* NOTIFICATION PANEL                                                     */
 /* ===================================================================== */
+function MessageBlock({
+  msg,
+  copiedId,
+  onCopy,
+  onAction,
+  suggestions,
+  onPreview,
+  onCompareDup,
+  onReviewDup,
+  onSelect,
+}) {
+  const isUser = msg.role === "user";
+
+  const renderContent = () => {
+    if (msg.type === "welcome") {
+      return <WelcomeMessage suggestions={suggestions} onAction={onAction} />;
+    }
+    if (msg.type === "status") {
+      return <AgentStatusMessage status={msg.status} />;
+    }
+    if (msg.type === "results") {
+      return (
+        <ResultsMessage
+          query={msg.query}
+          criteria={msg.criteria}
+          fallback={msg.fallback}
+          dms={msg.dms || []}
+          copiedId={copiedId}
+          onCopy={onCopy}
+          onPreview={onPreview}
+          onSelect={onSelect}
+        />
+      );
+    }
+    if (msg.type === "daily-summary") {
+      return (
+        <DailySummary
+          dms={msg.dms || []}
+          onPreview={onPreview}
+          onSelect={onSelect}
+          onCopy={onCopy}
+        />
+      );
+    }
+    if (msg.type === "duplicates") {
+      return (
+        <DuplicatesMessage
+          groups={msg.groups || []}
+          onCompareDup={onCompareDup}
+          onReviewDup={onReviewDup}
+          onPreview={onPreview}
+        />
+      );
+    }
+    if (msg.type === "schedule-unavailable") {
+      return <ScheduleUnavailableMessage action={msg.action} requestedTimes={msg.requestedTimes} />;
+    }
+    return <p className="whitespace-pre-wrap leading-relaxed">{msg.content || ""}</p>;
+  };
+
+  return (
+    <div className={`mb-6 flex ${isUser ? "justify-end" : "justify-start"}`}>
+      <div className={`max-w-[92%] ${isUser ? "text-right" : "text-left"}`}>
+        <div
+          className={`rounded-lg border px-4 py-3 text-sm shadow-sm ${isUser ? "text-white" : "bg-white text-stone-800"}`}
+          style={{
+            backgroundColor: isUser ? "#1C1917" : "#FFFFFF",
+            borderColor: isUser ? "#1C1917" : "#E5DDC8",
+          }}
+        >
+          {renderContent()}
+        </div>
+        {msg.time && (
+          <div className={`mt-1 text-[10px] text-stone-500 ${isUser ? "pr-1" : "pl-1"}`}>
+            {msg.time}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WelcomeMessage({ suggestions = [], onAction }) {
+  return (
+    <div>
+      <div className="mb-3 flex items-center gap-2">
+        <Sparkles className="h-4 w-4 text-stone-500" />
+        <span className="text-sm font-medium">DADOVA Agent</span>
+      </div>
+      <p className="mb-4 text-sm leading-relaxed text-stone-700">
+        可以查詢 DM、查看今日圖片、手動觸發抓取 OCR 組圖，或切到圖片上傳 workspace 管理批次圖片。
+      </p>
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+        {suggestions.map((item, index) => {
+          const Icon = item.icon || ArrowUpRight;
+          return (
+            <button
+              key={`${item.label}-${index}`}
+              type="button"
+              onClick={() => onAction?.(item.prompt)}
+              className="group flex items-center gap-3 rounded-lg border bg-white px-4 py-3 text-left transition-all hover:border-stone-900"
+              style={{ borderColor: "#E5DDC8" }}
+            >
+              <Icon className="h-3.5 w-3.5 text-stone-500 transition-colors group-hover:text-stone-900" />
+              <span className="min-w-0 flex-1 text-sm">{item.label}</span>
+              <ArrowUpRight className="h-3 w-3 text-stone-400 transition-all group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-stone-900" />
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function NotificationPanel({
   overview,
   latestCount,
@@ -3420,7 +1877,7 @@ function StatusMetric({ label, value, accent }) {
 }
 
 /* ===================================================================== */
-/* RESULTS ??compact horizontal cards in a single column                  */
+/* RESULTS compact horizontal cards in a single column                    */
 /* ===================================================================== */
 function ResultsMessage({ query, criteria, fallback, dms, copiedId, onCopy, onPreview, onSelect }) {
   const [copiedAll, setCopiedAll] = useState(false);
@@ -3610,19 +2067,19 @@ function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onTogg
             backgroundColor: isSelected ? "#1C1917" : "transparent",
             border: isSelected ? "none" : "1.5px solid #D6CFB8",
           }}
-          aria-label={isSelected ? "???詨?" : "?詨?"}
+          aria-label={isSelected ? "取消選取" : "選取"}
         >
           {isSelected && (
             <Check className="w-3 h-3" style={{ color: "#F5F1E8" }} strokeWidth={3} />
           )}
         </button>
 
-        {/* Thumbnail ??always opens preview */}
+        {/* Thumbnail — always opens preview */}
         <button
           onClick={onPreview}
           className="relative flex-shrink-0 overflow-hidden rounded bg-stone-100 group"
           style={{ width: "60px", aspectRatio: "827 / 1169" }}
-          aria-label="?曉之瑼Ｚ?"
+          aria-label="放大檢視"
         >
           <DmImage dm={dm} alt={dm.title} className="w-full h-full object-cover" />
           <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
@@ -3630,11 +2087,11 @@ function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onTogg
           </div>
         </button>
 
-        {/* Content ??clicking row body also toggles selection (excluding thumbnail and copy btn) */}
+        {/* Content — clicking row body also toggles selection (excluding thumbnail and copy btn) */}
         <button
           onClick={onToggleSelect}
           className="flex-1 min-w-0 flex flex-col justify-between text-left cursor-pointer"
-          aria-label="?詨?甇日?"
+          aria-label="選取此項"
         >
           <div className="min-w-0">
             <div className="flex items-center gap-2 mb-1">
@@ -3650,7 +2107,7 @@ function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onTogg
               {dm.title}
             </h3>
             <div className="text-[11px] text-stone-600 truncate mt-0.5">
-              {dm.region} 繚 {dm.period}
+              {dm.region} · {dm.period}
             </div>
           </div>
           <div className="flex items-baseline justify-between gap-2 mt-1.5">
@@ -3658,13 +2115,13 @@ function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onTogg
               className="text-[13px] font-semibold tabular-nums"
               style={{ color: "#B91C1C" }}
             >
-              {dm.days > 0 ? `${dm.days}??繚 ` : ""}
+              {dm.days > 0 ? `${dm.days}日 · ` : ""}
               {dm.price}
             </span>
           </div>
         </button>
 
-        {/* Per-card quick copy ??single-DM shortcut */}
+        {/* Per-card quick copy — single-DM shortcut */}
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -3679,12 +2136,12 @@ function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onTogg
           {copied ? (
             <>
               <Check className="w-3 h-3" />
-              撌脰?鋆?
+              已複製
             </>
           ) : (
             <>
               <Copy className="w-3 h-3" />
-              銴ˊ
+              複製
             </>
           )}
         </button>
@@ -3713,7 +2170,7 @@ function Field({ label, value, accent, compact }) {
 }
 
 /* ===================================================================== */
-/* DAILY SUMMARY ??Agent latest data, original summary UI                 */
+/* DAILY SUMMARY Agent latest data, original summary UI                   */
 /* ===================================================================== */
 /* DAILY SUMMARY                                                          */
 /* ===================================================================== */
@@ -4018,7 +2475,7 @@ function DuplicateCompareModal({ data, onClose, onReview }) {
         >
           <div>
             <div className="text-[10px] tracking-[0.2em] uppercase text-stone-500 mb-0.5">
-              ??瑼Ｚ? 繚 ????瘥?
+              逐一檢視 · 重複圖片比對
             </div>
             <h2 className="font-serif-tc font-medium text-lg">{data.key}</h2>
           </div>
@@ -4031,8 +2488,8 @@ function DuplicateCompareModal({ data, onClose, onReview }) {
         </div>
         <div className="flex-1 overflow-y-auto scrollbar-thin p-6">
           <p className="text-xs text-stone-600 mb-4">
-            隞乩??箔???<span className="font-medium">{data.count}</span> ?冗蝢斤?????嚗?
-            ?文?靘?嚗?????潛??詨????豢?靽??嚗擗?鋡急飛瑼?
+            以下為來自 <span className="font-medium">{data.count}</span> 個社群的重複圖片，
+            判定依據：地區、期間、價格皆相同。請選擇保留版本，其餘將被歸檔。
           </p>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             {data.images.map((im, i) => {
@@ -4063,12 +2520,12 @@ function DuplicateCompareModal({ data, onClose, onReview }) {
                   </div>
                   <div className="px-3 py-3">
                     <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-1">
-                      靘?
+                      來源
                     </div>
                     <div className="text-sm font-medium mb-2 truncate">{im.source}</div>
                     <div className="flex items-center gap-1.5 text-[10px] text-stone-500">
                       <Clock className="w-3 h-3" />
-                      銝???隞 {im.time}
+                      下載於 今日 {im.time}
                     </div>
                   </div>
                 </div>
@@ -4081,10 +2538,10 @@ function DuplicateCompareModal({ data, onClose, onReview }) {
           style={{ borderColor: "#E5DDC8" }}
         >
           <div className="text-xs text-stone-600">
-            撠???
+            將保留：
             <span className="font-medium ml-1">{data.images[keepIdx].source}</span>
             <span className="text-stone-400 ml-2">
-              ?園? {data.images.length - 1} 隞賣飛瑼?
+              其餘 {data.images.length - 1} 份歸檔
             </span>
           </div>
           <div className="flex gap-2">
@@ -4093,21 +2550,21 @@ function DuplicateCompareModal({ data, onClose, onReview }) {
               className="px-4 py-2 rounded-md text-xs border hover:border-stone-900 transition-colors"
               style={{ borderColor: "#E5DDC8" }}
             >
-              ??
+              取消
             </button>
             <button
               onClick={() => onReview?.(data, keepIdx, "ignore")}
               className="px-4 py-2 rounded-md text-xs border hover:border-stone-900 transition-colors"
               style={{ borderColor: "#E5DDC8" }}
             >
-              銝??
+              不是重複
             </button>
             <button
               onClick={() => onReview?.(data, keepIdx, "keep_one")}
               className="px-4 py-2 rounded-md text-xs font-medium"
               style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}
             >
-              蝣箄?靽?
+              確認保留
             </button>
           </div>
         </div>

@@ -12,12 +12,6 @@ body {
   margin: 0;
 }
 
-.workspace-collapsed .truncate,
-.workspace-collapsed .tabular-nums,
-.workspace-collapsed .rounded-lg.border.bg-white div:not(:last-child) {
-  display: none;
-}
-
 .workspace-collapsed .rounded-lg.border.bg-white {
   display: flex;
   justify-content: center;

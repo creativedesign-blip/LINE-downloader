@@ -50,6 +50,7 @@ AUTH_USERNAME = os.environ.get("OPENCLAW_WEB_USER", "admin_dadova")
 AUTH_PASSWORD = os.environ.get("OPENCLAW_WEB_PASSWORD", "StarBit123")
 AUTH_COOKIE_NAME = "openclaw_session"
 AUTH_SESSION_TTL_SECONDS = 12 * 60 * 60
+SYSTEM_TAGS_CLEARED_SENTINEL = "__openclaw_system_tags_cleared__"
 
 from tools.openclaw.operations import (  # noqa: E402
     DEFAULT_DB_PATH,
@@ -389,7 +390,13 @@ def _media_ids_to_files(media_ids: list[object]) -> list[Path]:
     files: list[Path] = []
     seen: set[Path] = set()
     for value in media_ids:
-        raw = _db_image_path(str(value or ""))
+        media_id = str(value or "")
+        raw = _db_image_path(media_id)
+        if not raw:
+            try:
+                raw = _decode_media_id(media_id)
+            except Exception:
+                raw = ""
         candidate = _resolve_project_file(raw or "")
         if candidate is None or candidate in seen:
             continue
@@ -659,6 +666,27 @@ def _folder_with_runtime_status(folder: dict[str, object]) -> dict[str, object]:
     return copy
 
 
+def _image_flow_label(image: dict[str, object], folder: dict[str, object]) -> str:
+    current_step = str(folder.get("current_step") or "")
+    folder_status = str(folder.get("status") or "")
+    has_ocr = (
+        image.get("ocr_status") == "success"
+        or bool(image.get("system_tags"))
+        or bool(image.get("ocr_tags_override"))
+    )
+    has_composed = (
+        image.get("compose_status") == "success"
+        or bool(image.get("branded_path"))
+        or bool(image.get("branded_url"))
+    )
+
+    if has_composed or folder_status == "success" or current_step == "done":
+        return "執行完成"
+    if has_ocr or current_step == "compose" or image.get("compose_status") == "running":
+        return "組合中"
+    return "辨識中"
+
+
 def _folder_detail(folder: dict[str, object]) -> dict[str, object]:
     folder = _folder_with_runtime_status(folder)
     folder = {**folder, **_folder_pipeline_counts(folder)}
@@ -681,6 +709,7 @@ def _folder_detail(folder: dict[str, object]) -> dict[str, object]:
                 image_copy["branded_thumbnail_url"] = f"/media/thumbnail?path={branded_rel}&w=360"
         image_copy["manual_tags"] = list_manual_tags(int(image["id"]))
         image_copy["system_tags"] = _system_tags_for_image(current_path)
+        image_copy["flow_label"] = _image_flow_label(image_copy, folder)
         images.append(image_copy)
     return {"folder": folder, "images": images}
 
@@ -688,6 +717,140 @@ def _folder_detail(folder: dict[str, object]) -> dict[str, object]:
 def _folder_summary(folder: dict[str, object]) -> dict[str, object]:
     folder = _folder_with_runtime_status(folder)
     return {**folder, **_folder_pipeline_counts(folder)}
+
+
+def _upload_search_terms(message: str, filters: dict[str, object]) -> list[str]:
+    terms: list[str] = []
+    for key in ("countries", "regions", "features"):
+        values = filters.get(key)
+        if isinstance(values, list):
+            terms.extend(str(value).strip() for value in values if str(value).strip())
+    duration = filters.get("duration_days")
+    if duration:
+        terms.extend([str(duration), f"{duration}天"])
+    return terms
+
+
+def _upload_annotation_values(image: dict[str, object]) -> list[str]:
+    values: list[str] = []
+    override_values = [str(value) for value in image.get("ocr_tags_override") or []]
+    system_tags_overridden = bool(override_values)
+    for value in override_values:
+        if str(value) == SYSTEM_TAGS_CLEARED_SENTINEL:
+            continue
+        values.append(str(value))
+    if not system_tags_overridden:
+        for tag in image.get("system_tags") or []:
+            if isinstance(tag, dict):
+                values.append(str(tag.get("tag") or ""))
+            else:
+                values.append(str(tag))
+    for tag in image.get("manual_tags") or []:
+        if isinstance(tag, dict):
+            values.append(str(tag.get("tag") or ""))
+        else:
+            values.append(str(tag))
+    for key in ("reference_text", "manual_note", "display_name", "original_filename"):
+        values.append(str(image.get(key) or ""))
+    return [value.strip() for value in values if value and value.strip()]
+
+
+def _upload_image_matches_query(image: dict[str, object], message: str, terms: list[str]) -> bool:
+    values = _upload_annotation_values(image)
+    haystack = " ".join(values).lower()
+    if not haystack:
+        return False
+    if terms:
+        return all(term.lower() in haystack for term in terms)
+
+    lowered_message = message.lower()
+    for value in values:
+        lowered_value = value.lower()
+        if 1 < len(lowered_value) <= 60 and lowered_value in lowered_message:
+            return True
+
+    for token in re.split(r"[\s,，、。！？!?\[\]（）()]+", message):
+        token = token.strip().lower()
+        if len(token) >= 2 and token in haystack:
+            return True
+    return False
+
+
+def _upload_image_query_item(folder: dict[str, object], image: dict[str, object]) -> dict[str, object]:
+    override_values = [str(tag) for tag in image.get("ocr_tags_override") or []]
+    system_tags_overridden = bool(override_values)
+    system_tags = [] if system_tags_overridden else [
+        str(tag.get("tag") or "") for tag in image.get("system_tags") or [] if isinstance(tag, dict)
+    ]
+    override_tags = [
+        str(tag)
+        for tag in override_values
+        if str(tag).strip() and str(tag) != SYSTEM_TAGS_CLEARED_SENTINEL
+    ]
+    manual_tags = [str(tag.get("tag") or "") for tag in image.get("manual_tags") or [] if isinstance(tag, dict)]
+    features = sorted({tag for tag in [*override_tags, *system_tags, *manual_tags] if tag})
+    media_path = (
+        image.get("branded_path")
+        or image.get("current_path")
+        or image.get("stored_path")
+        or image.get("image_path")
+    )
+    return {
+        "sidecar_path": media_path,
+        "image_path": image.get("current_path") or image.get("stored_path") or media_path,
+        "branded_path": image.get("branded_path") or image.get("current_path") or media_path,
+        "countries": [],
+        "regions": [],
+        "months": [],
+        "features": features,
+        "duration_days": None,
+        "price_from": None,
+        "group_name": folder.get("display_name"),
+        "target_id": folder.get("folder_slug"),
+        "source_time": image.get("uploaded_at"),
+        "indexed_at": image.get("updated_at") or image.get("uploaded_at"),
+        "manual_tags": image.get("manual_tags") or [],
+        "reference_text": image.get("reference_text") or "",
+        "ocr_tags_override": image.get("ocr_tags_override") or [],
+        "source": "upload_catalog",
+    }
+
+
+def _query_upload_catalog(message: str, filters: dict[str, object], *, limit: int) -> list[dict[str, object]]:
+    terms = _upload_search_terms(message, filters)
+    matches: list[dict[str, object]] = []
+    for folder in list_folders(limit=200):
+        detail = _folder_detail(folder)
+        detail_folder = detail["folder"]
+        for image in detail["images"]:
+            if not _upload_image_matches_query(image, message, terms):
+                continue
+            matches.append(_upload_image_query_item(detail_folder, image))
+            if len(matches) >= limit:
+                return matches
+    return matches
+
+
+def _merge_upload_catalog_results(payload: dict, message: str, filters: dict[str, object], *, limit: int) -> dict:
+    upload_items = _query_upload_catalog(message, filters, limit=limit)
+    if not upload_items:
+        return payload
+
+    copy = dict(payload)
+    items = list(copy.get("items") or [])
+    seen = {
+        str(item.get("sidecar_path") or item.get("branded_path") or item.get("image_path") or "")
+        for item in items
+    }
+    for item in upload_items:
+        key = str(item.get("sidecar_path") or item.get("branded_path") or item.get("image_path") or "")
+        if key and key in seen:
+            continue
+        seen.add(key)
+        items.append(item)
+    copy["items"] = items[:limit]
+    copy["count"] = len(copy["items"])
+    return copy
 
 
 def _chat_payload(message: str, limit: int, *, include_archived: bool = False) -> dict:
@@ -743,6 +906,7 @@ def _chat_payload(message: str, limit: int, *, include_archived: bool = False) -
     else:
         payload = {"count": 0, "items": [], "filters": {}, "warning": "沒有足夠條件可查詢。"}
 
+    payload = _merge_upload_catalog_results(payload, message, filters, limit=limit)
     payload = _with_media_urls(payload)
     payload["kind"] = "query"
     payload["query"] = message
@@ -766,6 +930,11 @@ class Handler(SimpleHTTPRequestHandler):
         # The user must still grant/trigger permission, but this header makes
         # the app's intent explicit through reverse proxies and browser checks.
         self.send_header("Permissions-Policy", "clipboard-write=(self), clipboard-read=(self)")
+        request_path = urlparse(self.path).path
+        if request_path == "/" or request_path.startswith("/assets/") or request_path.endswith((".html", ".js", ".css")):
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
         super().end_headers()
 
     def log_message(self, format: str, *args) -> None:
