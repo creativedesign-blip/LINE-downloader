@@ -1577,6 +1577,24 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(WEB_DIR), **kwargs)
 
+    def guess_type(self, path):
+        # SimpleHTTPRequestHandler omits charset on text/* responses, leaving
+        # downstream middleboxes (Cloudflare Tunnel in particular) free to
+        # serve UTF-8-encoded JS/HTML/CSS with a default Big5 fallback on
+        # zh-TW clients, garbling every Chinese label in the bundled UI.
+        mime = super().guess_type(path)
+        if mime in {
+            "text/html",
+            "text/javascript",
+            "application/javascript",
+            "text/css",
+            "text/plain",
+            "application/json",
+            "image/svg+xml",
+        }:
+            return f"{mime}; charset=utf-8"
+        return mime
+
     def end_headers(self) -> None:
         # Clipboard image writes are controlled by browser security policy.
         # The user must still grant/trigger permission, but this header makes
