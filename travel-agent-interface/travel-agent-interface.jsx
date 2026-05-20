@@ -258,7 +258,7 @@ function parseScheduleCommand(query) {
   const matches = [...String(query || "").matchAll(timeRegex)];
   const times = matches.map((match) => `${String(parseInt(match[1], 10)).padStart(2, "0")}:${match[2]}`);
   const text = String(query || "").toLowerCase();
-  const isScheduleContext = text.includes("schedule") || query.includes("??");
+  const isScheduleContext = text.includes("schedule") || query.includes("排程") || query.includes("定時") || query.includes("時間");
 
   if (isScheduleContext && times.length === 0) {
     return { action: "view", times: [] };
@@ -526,7 +526,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
 
   const getTime = () => {
     const d = new Date();
-    return `隞 ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   };
 
   const formatPrice = (value) => {
