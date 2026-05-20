@@ -63,6 +63,7 @@ AUTH_USERNAME = os.environ.get("OPENCLAW_WEB_USER", DEFAULT_AUTH_USERNAME)
 AUTH_PASSWORD = os.environ.get("OPENCLAW_WEB_PASSWORD", DEFAULT_AUTH_PASSWORD)
 AUTH_COOKIE_NAME = "openclaw_session"
 AUTH_SESSION_TTL_SECONDS = 12 * 60 * 60
+AUTH_SESSION_TTL_REMEMBER_SECONDS = 30 * 24 * 60 * 60
 _AUTH_SECRET_LOCK = threading.Lock()
 _AUTH_SECRET_CACHE: bytes | None = None
 SYSTEM_TAGS_CLEARED_SENTINEL = "__openclaw_system_tags_cleared__"
@@ -187,8 +188,8 @@ def _sign_auth_session(username: str, expires_at: int) -> str:
     return hmac.new(_auth_secret(), body, hashlib.sha256).hexdigest()
 
 
-def _encode_auth_session(username: str) -> str:
-    expires_at = int(time.time()) + AUTH_SESSION_TTL_SECONDS
+def _encode_auth_session(username: str, ttl_seconds: int = AUTH_SESSION_TTL_SECONDS) -> str:
+    expires_at = int(time.time()) + ttl_seconds
     signature = _sign_auth_session(username, expires_at)
     raw = f"{username}|{expires_at}|{signature}".encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
@@ -1688,10 +1689,12 @@ class Handler(SimpleHTTPRequestHandler):
                 )
                 return
 
-            token = _encode_auth_session(username)
-            cookie = self._auth_cookie_header(token, max_age=AUTH_SESSION_TTL_SECONDS)
+            remember = bool(data.get("remember"))
+            ttl = AUTH_SESSION_TTL_REMEMBER_SECONDS if remember else AUTH_SESSION_TTL_SECONDS
+            token = _encode_auth_session(username, ttl_seconds=ttl)
+            cookie = self._auth_cookie_header(token, max_age=ttl)
             self._json_auth_response(
-                {"ok": True, "authenticated": True, "username": username},
+                {"ok": True, "authenticated": True, "username": username, "remember": remember},
                 cookie=cookie,
             )
         except Exception as exc:

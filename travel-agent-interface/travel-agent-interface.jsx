@@ -290,6 +290,7 @@ function parseScheduleCommand(query) {
 }
 function LoginScreen({ onLogin }) {
   const [username, setUsername] = useState("admin_dadova");
+  const [remember, setRemember] = useState(true);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -301,7 +302,7 @@ function LoginScreen({ onLogin }) {
     setError("");
     setSubmitting(true);
     try {
-      await onLogin({ username, password });
+      await onLogin({ username, password, remember });
     } catch (loginError) {
       setError(loginError.message || "\u767b\u5165\u5931\u6557\uff0c\u8acb\u7a0d\u5f8c\u518d\u8a66\u3002");
     } finally {
@@ -371,7 +372,7 @@ function LoginScreen({ onLogin }) {
           <label className="block text-xs font-medium text-stone-600 mb-2" htmlFor="login-password">
             {"\u5bc6\u78bc"}
           </label>
-          <div className="relative mb-5">
+          <div className="relative mb-4">
             <KeyRound className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
             <input
               id="login-password"
@@ -383,6 +384,16 @@ function LoginScreen({ onLogin }) {
               required
             />
           </div>
+
+          <label className="flex items-center gap-2 mb-5 text-xs text-stone-600 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={remember}
+              onChange={(event) => setRemember(event.target.checked)}
+              className="h-4 w-4 rounded border-stone-400 accent-[#0F6E56]"
+            />
+            <span>\u8a18\u4f4f\u6211\uff0830 \u5929\u5167\u4e0d\u7528\u518d\u767b\u5165\uff09</span>
+          </label>
 
           {error && (
             <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
@@ -428,12 +439,12 @@ function LoginGate() {
     };
   }, []);
 
-  const handleLogin = async ({ username, password }) => {
+  const handleLogin = async ({ username, password, remember = false }) => {
     const response = await fetch("/api/auth/login", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, remember }),
     });
     const payload = await response.json();
     if (!response.ok || !payload?.ok) {
