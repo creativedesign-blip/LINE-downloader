@@ -584,7 +584,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       previewImage: item.preview_url || item.image_url || item.branded_path || item.image_path || "",
       thumbnail: item.thumbnail_url || item.image_url || item.branded_path || item.image_path || "",
       mediaId: item.media_id || "",
-      title: titleParts.filter(Boolean).join(" 繚 "),
+      title: titleParts.filter(Boolean).join(" · "),
       region: place,
       period: formatPeriod(item),
       days,

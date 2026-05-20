@@ -12,7 +12,17 @@ export const dmPreviewImage = (dm) => dm?.previewImage || dmFullImage(dm);
 const INTERNAL_WEB = import.meta.env.VITE_INTERNAL_WEB === "1";
 
 
-const isLocalClipboardBridgeAvailable = () => Boolean(window.location.origin);
+// The /api/openclaw/clipboard endpoint pipes files into the SERVER process's
+// Windows clipboard via PowerShell. For a remote browser (e.g. via Cloudflare
+// tunnel) that clipboard is on the server machine, not on the user's machine,
+// so the bridge silently "succeeds" while the user's clipboard stays empty.
+// Restrict the bridge to either an explicit internal-web build flag or to
+// loopback / link-local hosts where browser and server are the same machine.
+const isLocalClipboardBridgeAvailable = () => {
+  if (typeof window === "undefined") return false;
+  if (INTERNAL_WEB) return true;
+  return /^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(window.location.host);
+};
 
 const mediaIdsForItems = (items) =>
   items
@@ -443,7 +453,7 @@ async function composeImagesForClipboard(items) {
     canvas.width = canvasWidth;
     canvas.height = canvasHeight;
     const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#F5F1E8";
+    ctx.fillStyle = "#F9F9F9";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     let top = padding;
@@ -453,12 +463,12 @@ async function composeImagesForClipboard(items) {
       ctx.fillStyle = "#FFFFFF";
       ctx.fillRect(left - 1, top - 1, image.width + 2, image.height + 2);
       ctx.drawImage(image.bitmap, left, top, image.width, image.height);
-      ctx.strokeStyle = "#D6CFB8";
+      ctx.strokeStyle = "#B8D9CE";
       ctx.lineWidth = 2;
       ctx.strokeRect(left - 1, top - 1, image.width + 2, image.height + 2);
       if (index < scaled.length - 1) {
         const separatorTop = top + image.height + Math.round(gap / 2);
-        ctx.fillStyle = "#D6CFB8";
+        ctx.fillStyle = "#B8D9CE";
         ctx.fillRect(padding, separatorTop, canvasWidth - padding * 2, 2);
       }
       top += image.height + gap;
