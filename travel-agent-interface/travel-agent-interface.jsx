@@ -67,7 +67,7 @@ function DmImage({ dm, src, alt, className = "", loading = "lazy" }) {
         className={`${className} flex items-center justify-center bg-stone-200 text-stone-500 text-[11px] text-center px-2`}
         title="Image failed to load"
       >
-        ?謘???舀??
+        圖片載入失敗
       </div>
     );
   }
@@ -263,13 +263,13 @@ function parseScheduleCommand(query) {
   if (isScheduleContext && times.length === 0) {
     return { action: "view", times: [] };
   }
-  if (times.length > 0 && (query.includes("?芷") || query.includes("蝘駁") || text.includes("remove"))) {
+  if (times.length > 0 && (query.includes("刪除") || query.includes("移除") || query.includes("取消") || text.includes("remove"))) {
     return { action: "remove", times };
   }
-  if (times.length > 0 && (query.includes("?啣?") || query.includes("?") || text.includes("add"))) {
+  if (times.length > 0 && (query.includes("加上") || query.includes("新增") || query.includes("加入") || text.includes("add"))) {
     return { action: "add", times };
   }
-  if (times.length > 0 && (isScheduleContext || query.includes("?寞?") || query.includes("閮剖?") || text.includes("replace"))) {
+  if (times.length > 0 && (isScheduleContext || query.includes("設為") || query.includes("替換") || query.includes("改為") || text.includes("replace"))) {
     return { action: "replace", times };
   }
   return null;
@@ -459,7 +459,7 @@ function LoginGate() {
 
 export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } = {}) {
   const [messages, setMessages] = useState([
-    { id: 1, role: "agent", type: "welcome", time: "??謑?09:42" },
+    { id: 1, role: "agent", type: "welcome", time: "09:42" },
   ]);
   const [input, setInput] = useState("");
   const [isThinking, setIsThinking] = useState(false);
@@ -1465,7 +1465,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                       STARBIT
                     </span>
                     <span className="font-serif-tc" style={{ color: "#57534E" }}>
-                      ?豲?????????
+                      思偉達應用科技
                     </span>
                   </span>
                 </div>
@@ -1514,10 +1514,10 @@ function UploadToast({ toast, onClose }) {
       <div className="flex items-start gap-3 px-4 py-3">
         {success ? <CheckCircle2 className="mt-0.5 h-4 w-4 text-green-600" /> : <AlertTriangle className="mt-0.5 h-4 w-4 text-red-700" />}
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium">{success ? "??蹌???" : "??蹌行??"}</div>
+          <div className="text-sm font-medium">{success ? "上傳成功" : "上傳失敗"}</div>
           <div className="mt-0.5 text-xs text-stone-600">{toast?.message}</div>
         </div>
-        <button type="button" onClick={onClose} className="rounded p-1 text-stone-500 hover:bg-stone-100" aria-label="?謚??謍船?">
+        <button type="button" onClick={onClose} className="rounded p-1 text-stone-500 hover:bg-stone-100" aria-label="關閉通知">
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -1745,7 +1745,7 @@ function NotificationPanel({
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2 mb-0.5">
-                  <span className="text-xs font-medium">隞?啣?</span>
+                  <span className="text-xs font-medium">最新圖片</span>
                   <span className="text-[10px] text-stone-500 tabular-nums">{latestLabel}</span>
                 </div>
                 <p className="text-[11px] text-stone-600 leading-relaxed">
@@ -2116,7 +2116,7 @@ function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onTogg
             backgroundColor: isSelected ? "#0F6E56" : "transparent",
             border: isSelected ? "none" : "1.5px solid #B8D9CE",
           }}
-          aria-label={isSelected ? "?謘??閰?" : "?閰?"}
+          aria-label={isSelected ? "取消選取" : "選取"}
         >
           {isSelected && (
             <Check className="w-3 h-3" style={{ color: "#F9F9F9" }} strokeWidth={3} />
@@ -2128,7 +2128,7 @@ function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onTogg
           onClick={onPreview}
           className="relative flex-shrink-0 overflow-hidden rounded bg-stone-100 group"
           style={{ width: "60px", aspectRatio: "827 / 1169" }}
-          aria-label="????潘撩?"
+          aria-label="開啟預覽"
         >
           <DmImage dm={dm} alt={dm.title} className="w-full h-full object-cover" />
           <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
@@ -2140,7 +2140,7 @@ function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onTogg
         <button
           onClick={onToggleSelect}
           className="flex-1 min-w-0 flex flex-col justify-between text-left cursor-pointer"
-          aria-label="?閰???"
+          aria-label="切換選取"
         >
           <div className="min-w-0">
             <div className="flex items-center gap-2 mb-1">
@@ -2156,7 +2156,7 @@ function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onTogg
               {dm.title}
             </h3>
             <div className="text-[11px] text-stone-600 truncate mt-0.5">
-              {dm.region} 蝜?{dm.period}
+              {dm.region} · {dm.period}
             </div>
           </div>
           <div className="flex items-baseline justify-between gap-2 mt-1.5">
@@ -2164,7 +2164,7 @@ function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onTogg
               className="text-[13px] font-semibold tabular-nums"
               style={{ color: "#B91C1C" }}
             >
-              {dm.days > 0 ? `${dm.days}??蝜?` : ""}
+              {dm.days > 0 ? `${dm.days}日 · ` : ""}
               {dm.price}
             </span>
           </div>
@@ -2185,12 +2185,12 @@ function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onTogg
           {copied ? (
             <>
               <Check className="w-3 h-3" />
-              ????
+              已複製
             </>
           ) : (
             <>
               <Copy className="w-3 h-3" />
-              ?湛?
+              複製
             </>
           )}
         </button>
@@ -2544,7 +2544,7 @@ function DuplicateCompareModal({ data, onClose, onReview }) {
         >
           <div>
             <div className="text-[10px] tracking-[0.2em] uppercase text-stone-500 mb-0.5">
-              ????潘撩? 蝜?????謘??伍??
+              逐一檢視 · 重複圖片比對
             </div>
             <h2 className="font-serif-tc font-medium text-lg">{data.key}</h2>
           </div>
@@ -2557,8 +2557,8 @@ function DuplicateCompareModal({ data, onClose, onReview }) {
         </div>
         <div className="flex-1 overflow-y-auto scrollbar-thin p-6">
           <p className="text-xs text-stone-600 mb-4">
-            ?鼎??蝞???<span className="font-medium">{data.count}</span> ????Ｘ?????謘???
-            ???????城謓???蹓????蹓鳴??瞏??閰??蹇??鞊??踐????秧???朱??⊥仿??澗???
+            以下為來自 <span className="font-medium">{data.count}</span> 個社群的重複圖片,
+            判定依據:地區、期間、價格皆相同。請選擇保留版本,其餘將被歸檔。
           </p>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             {data.images.map((im, i) => {
@@ -2589,12 +2589,12 @@ function DuplicateCompareModal({ data, onClose, onReview }) {
                   </div>
                   <div className="px-3 py-3">
                     <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-1">
-                      ???
+                      來源
                     </div>
                     <div className="text-sm font-medium mb-2 truncate">{im.source}</div>
                     <div className="flex items-center gap-1.5 text-[10px] text-stone-500">
                       <Clock className="w-3 h-3" />
-                      ???????謑?{im.time}
+                      下載於 今日 {im.time}
                     </div>
                   </div>
                 </div>
@@ -2607,10 +2607,10 @@ function DuplicateCompareModal({ data, onClose, onReview }) {
           style={{ borderColor: "#E1F5EE" }}
         >
           <div className="text-xs text-stone-600">
-            ???謕?
+            將保留:
             <span className="font-medium ml-1">{data.images[keepIdx].source}</span>
             <span className="text-stone-400 ml-2">
-              ??? {data.images.length - 1} ?都憌?
+              其餘 {data.images.length - 1} 份歸檔
             </span>
           </div>
           <div className="flex gap-2">
@@ -2619,21 +2619,21 @@ function DuplicateCompareModal({ data, onClose, onReview }) {
               className="px-4 py-2 rounded-md text-xs border hover:border-stone-900 transition-colors"
               style={{ borderColor: "#E1F5EE" }}
             >
-              ?謘?
+              取消
             </button>
             <button
               onClick={() => onReview?.(data, keepIdx, "ignore")}
               className="px-4 py-2 rounded-md text-xs border hover:border-stone-900 transition-colors"
               style={{ borderColor: "#E1F5EE" }}
             >
-              ??謢???
+              不是重複
             </button>
             <button
               onClick={() => onReview?.(data, keepIdx, "keep_one")}
               className="px-4 py-2 rounded-md text-xs font-medium"
               style={{ backgroundColor: "#0F6E56", color: "#F9F9F9" }}
             >
-              ?????踐??
+              確認保留
             </button>
           </div>
         </div>
