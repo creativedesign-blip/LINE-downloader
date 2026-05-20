@@ -2281,8 +2281,7 @@ function DMPreviewModal({ initial, list, onClose, onCopy, copiedId }) {
     <div className="fixed inset-0 z-50 animate-backdrop-in overflow-hidden" style={{ backgroundColor: "rgba(17,24,39,0.88)" }} onClick={onClose}>
       <div className="absolute top-4 left-4 right-4 flex items-center justify-between text-xs pointer-events-none z-10">
         <div className="pointer-events-auto rounded-md bg-white/90 px-3 py-2 shadow-sm">
-          <div className="font-medium text-stone-900 truncate max-w-[60vw]">{current.title}</div>
-          <div className="text-[10px] text-stone-500">{index + 1} / {dmList.length}</div>
+          <div className="text-xs font-medium text-stone-900 tabular-nums">{index + 1} / {dmList.length}</div>
         </div>
         <button onClick={onClose} className="pointer-events-auto p-2 rounded-md bg-white/90 hover:bg-white transition-colors" aria-label="關閉預覽">
           <X className="w-4 h-4" />
