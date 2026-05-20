@@ -624,7 +624,12 @@ def _with_media_urls(payload: dict) -> dict:
             copy["media_id"] = media_id
             copy["image_url"] = f"/media?id={media_id}"
             copy["thumbnail_url"] = f"/media/thumbnail?id={media_id}&w=360"
-            copy["preview_url"] = f"/media/thumbnail?id={media_id}&w=1200"
+            # preview_url serves the full branded file (brand_stitcher's JPEG q92,
+            # already capped at outputMaxWidth=1200). Going through
+            # /media/thumbnail at w=1200 re-encoded it at q78 with PIL.thumbnail,
+            # producing a visibly softer modal preview than the same file shown
+            # in the upload workspace via /media?path=... (branded_url).
+            copy["preview_url"] = f"/media?id={media_id}"
         return copy
 
     copy = dict(payload)
