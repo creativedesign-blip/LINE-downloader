@@ -2418,9 +2418,12 @@ function DMPreviewModal({ initial, list, onClose, onCopy, copiedId }) {
             <ChevronLeft className="w-5 h-5" />
           </button>
         )}
-        <div className="max-h-[82vh] max-w-[92vw] rounded-lg overflow-hidden bg-stone-100 shadow-2xl" style={{ aspectRatio: "827 / 1169" }}>
-          <DmImage dm={current} alt={current.title} className="h-full w-full object-contain bg-stone-100" loading="eager" />
-        </div>
+        <DmImage
+          dm={current}
+          alt={current.title}
+          className="block max-h-[82vh] max-w-[92vw] rounded-lg shadow-2xl bg-stone-100"
+          loading="eager"
+        />
         {canNavigate && (
           <button onClick={() => setIndex((value) => (value + 1) % dmList.length)} className="absolute right-4 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/90 hover:bg-white" aria-label="下一張">
             <ChevronRight className="w-5 h-5" />
