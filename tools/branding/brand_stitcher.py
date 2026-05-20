@@ -375,12 +375,20 @@ def stitch_one(sidecar_path: Path, ctx: StitchContext) -> Result:
         "configHash": ctx.config_hash,
         "config": ctx.cfg,
     }
+    # tmp+replace so a crash mid-write doesn't leave a truncated JSON that
+    # later breaks reindex.py. Matches the pattern in tools/common/json_store.py.
+    branded_sidecar_tmp = branded_sidecar_path.with_suffix(branded_sidecar_path.suffix + ".tmp")
     try:
-        with open(branded_sidecar_path, "w", encoding="utf-8") as f:
+        with open(branded_sidecar_tmp, "w", encoding="utf-8") as f:
             json.dump(branded_sidecar, f, ensure_ascii=False, indent=2)
+        branded_sidecar_tmp.replace(branded_sidecar_path)
     except OSError as e:
         logger.error("failed to write branded sidecar %s: %s",
                      branded_sidecar_path, e)
+        try:
+            branded_sidecar_tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
         return "error"
 
     logger.info("stitched: %s", orig_img.name)

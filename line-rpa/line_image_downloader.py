@@ -237,13 +237,23 @@ def run_pipeline_after_group(group_name: str, config: dict[str, Any]) -> tuple[s
         target_id,
         "--json",
     ]
+    # 30 minutes covers OCR + branding + reindex for the largest groups we
+    # see today (~few hundred images). Without a timeout, a hung child
+    # (e.g. PaddleOCR stuck on a single image) would block all remaining
+    # LINE groups from downloading.
+    pipeline_timeout_sec = 1800
     try:
         completed = subprocess.run(
             command,
             cwd=project_root,
             capture_output=True,
             text=True,
+            timeout=pipeline_timeout_sec,
         )
+    except subprocess.TimeoutExpired as exc:
+        stdout = (exc.stdout or b"").decode("utf-8", errors="replace").strip() if isinstance(exc.stdout, bytes) else (exc.stdout or "").strip()
+        stderr = (exc.stderr or b"").decode("utf-8", errors="replace").strip() if isinstance(exc.stderr, bytes) else (exc.stderr or "").strip()
+        return "failed", None, stdout, f"pipeline timed out after {pipeline_timeout_sec}s: {stderr}"
     except Exception as exc:
         return "failed", None, "", str(exc)
 

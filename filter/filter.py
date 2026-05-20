@@ -35,14 +35,23 @@ from tools.domains.travel.policy import apply_sidecar_metadata
 
 
 def move_with_sidecar(src: Path, dest: Path) -> None:
-    shutil.move(str(src), str(dest))
+    # Move sidecar before image so a failure leaves the source folder
+    # intact instead of orphaning the OCR sidecar at the src location.
     src_side = sidecar_of(src)
+    dest_side = sidecar_of(dest)
+    sidecar_moved = False
     if src_side.exists():
-        dest_side = sidecar_of(dest)
-        try:
-            shutil.move(str(src_side), str(dest_side))
-        except Exception:
-            pass
+        shutil.move(str(src_side), str(dest_side))
+        sidecar_moved = True
+    try:
+        shutil.move(str(src), str(dest))
+    except Exception:
+        if sidecar_moved:
+            try:
+                shutil.move(str(dest_side), str(src_side))
+            except Exception as rollback_err:
+                print(f"  [錯誤] sidecar 回滾失敗 {dest_side} -> {src_side}: {rollback_err}")
+        raise
 
 
 def utc_now_iso() -> str:
