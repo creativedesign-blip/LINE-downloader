@@ -964,7 +964,6 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
 
     const m = message;
     setChatRequest({ query: m, startedAt: Date.now() });
-    setToast({ type: "success", message: `已送出查詢：${m}` });
 
     if (isManualAgentRunCommand(m)) {
       try {
@@ -1045,8 +1044,6 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       if (!apiResponse.ok) throw new Error(payload?.error || `HTTP ${apiResponse.status}`);
       const response = buildAgentResponse(payload, m);
       setMessages((p) => [...p, response]);
-      const count = Number(payload?.count || payload?.debug?.result_count || 0);
-      setToast({ type: "success", message: `已取得 ${count} 筆結果` });
     } catch (error) {
       const errorMessage =
         error?.name === "AbortError"
