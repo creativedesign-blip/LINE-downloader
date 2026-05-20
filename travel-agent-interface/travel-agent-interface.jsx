@@ -48,6 +48,7 @@ import {
   ShieldCheck,
   UserRound,
   Upload,
+  Download,
 } from "lucide-react";
 
 function DmImage({ dm, src, alt, className = "", loading = "lazy" }) {
@@ -853,39 +854,16 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       };
     }
 
-    if (payload?.kind === "latest") {
-      return {
-        id: Date.now() + 1,
-        role: "agent",
-        type: "daily-summary",
-        query,
-        dms,
-        time: getTime(),
-      };
-    }
-
-    if (dms.length > 6) {
-      return {
-        id: Date.now() + 1,
-        role: "agent",
-        type: "results-light",
-        query,
-        criteria: criteriaFromPayload(payload, query),
-        dms,
-        time: getTime(),
-        fallback: false,
-      };
-    }
-
+    // Single "results" type — ResultsGrid switches layout by dms.length.
     return {
       id: Date.now() + 1,
       role: "agent",
       type: "results",
+      kind: payload?.kind || "query",
       query,
       criteria: criteriaFromPayload(payload, query),
       dms,
       time: getTime(),
-      fallback: false,
     };
   };
 
@@ -1571,35 +1549,15 @@ function MessageBlock({
     }
     if (msg.type === "results") {
       return (
-        <ResultsMessage
+        <ResultsGrid
           query={msg.query}
+          kind={msg.kind}
           criteria={msg.criteria}
-          fallback={msg.fallback}
           dms={msg.dms || []}
           copiedId={copiedId}
           onCopy={onCopy}
           onPreview={onPreview}
           onSelect={onSelect}
-        />
-      );
-    }
-    if (msg.type === "results-light") {
-      return (
-        <ResultsLightMessage
-          query={msg.query}
-          dms={msg.dms || []}
-          onPreview={onPreview}
-          onSelect={onSelect}
-        />
-      );
-    }
-    if (msg.type === "daily-summary") {
-      return (
-        <DailySummary
-          dms={msg.dms || []}
-          onPreview={onPreview}
-          onSelect={onSelect}
-          onCopy={onCopy}
         />
       );
     }
@@ -1936,99 +1894,7 @@ function StatusMetric({ label, value, accent }) {
   );
 }
 
-function ResultsLightMessage({ query, dms, onPreview, onSelect }) {
-  const items = Array.isArray(dms) ? dms : [];
-  const previewItems = items.slice(0, 5);
-
-  return (
-    <div>
-      <div className="mb-3">
-        <p className="text-sm leading-relaxed text-stone-700 mb-1">
-          找到 <span className="font-medium" style={{ color: "#0F6E56" }}>{items.length}</span> 筆相關方案。
-        </p>
-        <div className="flex items-center gap-1.5 text-[10px] text-stone-500">
-          <Search className="w-3 h-3" />
-          <span className="truncate">查詢：{query}</span>
-        </div>
-      </div>
-      <div className="rounded-lg border bg-white overflow-hidden" style={{ borderColor: "#E1F5EE" }}>
-        <div className="divide-y" style={{ borderColor: "#E1F5EE" }}>
-          {previewItems.map((dm) => (
-            <button
-              key={dm.id}
-              onClick={() => onPreview?.(dm, items)}
-              className="w-full px-4 py-3 text-left hover:bg-[#E1F5EE] transition-colors"
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-sm font-medium text-stone-800 truncate">{dm.title}</div>
-                  <div className="mt-0.5 text-[11px] text-stone-500 truncate">{dm.source} · {dm.period}</div>
-                </div>
-                <div className="shrink-0 text-xs font-semibold" style={{ color: "#B91C1C" }}>{dm.price}</div>
-              </div>
-            </button>
-          ))}
-        </div>
-        <button
-          onClick={() => onSelect?.(items)}
-          className="w-full px-4 py-3 border-t flex items-center justify-between hover:bg-[#E1F5EE] transition-colors group"
-          style={{ borderColor: "#E1F5EE", color: "#0F6E56" }}
-        >
-          <div className="flex items-center gap-2">
-            <MousePointerClick className="w-3.5 h-3.5" />
-            <span className="text-sm font-medium">展開完整結果</span>
-            <span className="text-[10px] text-stone-500">{items.length} 筆</span>
-          </div>
-          <ArrowRight className="w-3 h-3 text-stone-500 group-hover:text-stone-900 group-hover:translate-x-0.5 transition-all" />
-        </button>
-      </div>
-      <p className="text-[10px] text-stone-500 leading-relaxed mt-2">
-        先顯示前幾筆結果，點擊可查看完整列表並批次下載圖片包。
-      </p>
-    </div>
-  );
-}
-
-/* ===================================================================== */
-/* RESULTS compact horizontal cards in a single column                    */
-/* ===================================================================== */
-function ResultsMessage({ query, criteria, fallback, dms, copiedId, onCopy, onPreview, onSelect }) {
-  const [copiedAll, setCopiedAll] = useState(false);
-  const [copiedSelected, setCopiedSelected] = useState(false);
-  const [selected, setSelected] = useState(new Set());
-
-  const handleCopyAll = async () => {
-    const ok = await onCopy(dms);
-    if (!ok) return;
-    setCopiedAll(true);
-    setTimeout(() => setCopiedAll(false), 2200);
-  };
-
-  const toggleSelect = (id) => {
-    setSelected((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const selectedDms = () => dms.filter((dm) => selected.has(dm.id));
-
-  const handleCopySelected = async () => {
-    const items = selectedDms();
-    if (items.length === 0) return;
-    const ok = await onCopy(items);
-    if (!ok) return;
-    setCopiedSelected(true);
-    setTimeout(() => {
-      setCopiedSelected(false);
-      setSelected(new Set());
-    }, 1800);
-  };
-
-  const clearSelection = () => setSelected(new Set());
-
+function CriteriaChips({ criteria }) {
   const chips = [];
   if (criteria?.region) chips.push({ label: "地區", value: criteria.region, key: "region" });
   if (criteria?.month) chips.push({ label: "月份", value: `${criteria.month} 月`, key: "month" });
@@ -2043,22 +1909,9 @@ function ResultsMessage({ query, criteria, fallback, dms, copiedId, onCopy, onPr
   if (criteria?.feature) chips.push({ label: "特色", value: criteria.feature, key: "feature" });
   if (criteria?.tag) chips.push({ label: "標籤", value: criteria.tag, key: "tag" });
   if (criteria?.type) chips.push({ label: "類型", value: criteria.type, key: "type" });
-
-  const Summary = () => (
-    <>
-      <p className="text-sm leading-relaxed text-stone-700 mb-1">
-        {fallback ? "找不到完全符合的 DM，先顯示相近結果。" : "已找到符合條件的 DM："}
-        <span className="font-medium"> {dms.length} 筆</span>
-      </p>
-      <div className="flex items-center gap-1.5 text-[10px] text-stone-500">
-        <Search className="w-3 h-3" />
-        <span className="truncate">查詢：{query}</span>
-      </div>
-    </>
-  );
-
-  const CriteriaChips = ({ className = "" }) => chips.length > 0 && (
-    <div className={`rounded-md border px-3 py-2.5 ${className}`} style={{ borderColor: "#E1F5EE", backgroundColor: "#E1F5EE" }}>
+  if (chips.length === 0) return null;
+  return (
+    <div className="rounded-md border px-3 py-2.5 mb-3" style={{ borderColor: "#E1F5EE", backgroundColor: "#E1F5EE" }}>
       <div className="flex items-center gap-2 mb-1.5">
         <Sparkles className="w-3 h-3 text-stone-500" />
         <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500 font-medium">查詢條件</span>
@@ -2073,147 +1926,233 @@ function ResultsMessage({ query, criteria, fallback, dms, copiedId, onCopy, onPr
       </div>
     </div>
   );
+}
 
-  const hasSelection = selected.size > 0;
+function ResultsGrid({ query, dms, criteria, kind, copiedId, onCopy, onPreview, onSelect }) {
+  const items = Array.isArray(dms) ? dms : [];
+  if (items.length === 0) {
+    return <p className="text-sm leading-relaxed text-stone-700">沒有找到相關的旅遊 DM。</p>;
+  }
+  if (items.length === 1) {
+    return <ResultHero dm={items[0]} query={query} kind={kind} criteria={criteria} copiedId={copiedId} onCopy={onCopy} onPreview={onPreview} />;
+  }
+  if (items.length <= 6) {
+    return <ResultGridCompact dms={items} query={query} kind={kind} criteria={criteria} copiedId={copiedId} onCopy={onCopy} onPreview={onPreview} />;
+  }
+  return <ResultGridPreview dms={items} query={query} kind={kind} criteria={criteria} previewCount={8} onCopy={onCopy} onPreview={onPreview} onSelect={onSelect} />;
+}
 
+function ResultHero({ dm, query, kind, criteria, copiedId, onCopy, onPreview }) {
+  const [downloading, setDownloading] = useState(false);
+  const copied = copiedId === dm.id;
+  const handleDownload = async () => {
+    setDownloading(true);
+    try { await onCopy([dm]); } finally { setTimeout(() => setDownloading(false), 1800); }
+  };
+  const headerText = kind === "latest"
+    ? `今日新增 1 筆 DM。`
+    : `找到 1 筆符合條件的 DM。`;
   return (
     <div>
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="min-w-0 flex-1"><Summary /></div>
-        {dms.length > 1 && !hasSelection && (
-          <button onClick={handleCopyAll} className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium border transition-all" style={{ borderColor: copiedAll ? "#1D9E75" : "#0F6E56", backgroundColor: copiedAll ? "#1D9E75" : "transparent", color: copiedAll ? "#F9F9F9" : "#0F6E56" }}>
-            {copiedAll ? <Check className="w-3 h-3" /> : <CopyPlus className="w-3 h-3" />}
-            {copiedAll ? `已下載 ${dms.length} 筆` : "下載全部"}
-          </button>
-        )}
+      <p className="text-sm leading-relaxed text-stone-700 mb-1">{headerText}</p>
+      {query && (
+        <div className="flex items-center gap-1.5 text-[10px] text-stone-500 mb-3">
+          <Search className="w-3 h-3" />
+          <span className="truncate">查詢：{query}</span>
+        </div>
+      )}
+      {kind !== "latest" && <CriteriaChips criteria={criteria} />}
+      <div className="rounded-lg border bg-white overflow-hidden" style={{ borderColor: "#E1F5EE" }}>
+        <button onClick={() => onPreview(dm, [dm])} className="block w-full bg-stone-100" style={{ aspectRatio: "827 / 1309" }}>
+          <DmImage dm={dm} alt={dm.title} className="w-full h-full object-contain" loading="eager" />
+        </button>
+        <div className="p-4">
+          <div className="flex items-baseline justify-between gap-2 mb-2">
+            <h3 className="font-serif-tc text-base font-medium leading-tight truncate flex-1">{dm.title}</h3>
+            <span className="text-sm font-semibold tabular-nums shrink-0" style={{ color: "#B91C1C" }}>{dm.price}</span>
+          </div>
+          <div className="text-xs text-stone-600 mb-1">{dm.region} · {dm.period}</div>
+          <div className="text-[11px] text-stone-500 mb-4 truncate">來源：{dm.source}</div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => onCopy(dm)}
+              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-md text-xs font-medium transition-all"
+              style={{ backgroundColor: copied ? "#1D9E75" : "#0F6E56", color: "#F9F9F9" }}
+            >
+              {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              {copied ? "已複製到剪貼簿" : "複製到 LINE 對話框"}
+            </button>
+            <button
+              onClick={handleDownload}
+              disabled={downloading}
+              className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-md text-xs font-medium border transition-all"
+              style={{ borderColor: "#0F6E56", color: "#0F6E56" }}
+            >
+              <Download className="w-3.5 h-3.5" />
+              {downloading ? "下載中" : "下載"}
+            </button>
+          </div>
+        </div>
       </div>
+    </div>
+  );
+}
 
-      {hasSelection && (
-        <div className="rounded-md px-3 py-2 mb-3 flex items-center justify-between gap-2 animate-fade-up" style={{ backgroundColor: "#0F6E56" }}>
+function DmThumbCard({ dm, onPreview, isSelected, onToggleSelect, onCopy, copied }) {
+  return (
+    <div className="relative rounded-md overflow-hidden border bg-stone-100 transition-all" style={{ borderColor: isSelected ? "#0F6E56" : "#E1F5EE", aspectRatio: "827 / 1309" }}>
+      <button onClick={onPreview} className="block w-full h-full">
+        <DmImage dm={dm} alt={dm.title} className="w-full h-full object-cover" />
+      </button>
+      <div className="absolute inset-x-0 bottom-0 pointer-events-none bg-gradient-to-t from-black/80 via-black/30 to-transparent p-2 pb-2.5">
+        <div className="text-[9px] text-white/80 truncate">{dm.source}</div>
+        <div className="text-[11px] text-white font-medium leading-tight line-clamp-2">{dm.title}</div>
+        <div className="text-[10px] text-white/80 truncate mt-0.5">{dm.region} · {dm.price}</div>
+      </div>
+      {onToggleSelect && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onToggleSelect(); }}
+          className="absolute top-1.5 left-1.5 flex items-center justify-center w-6 h-6 rounded-md transition-colors"
+          style={{ backgroundColor: isSelected ? "#0F6E56" : "rgba(255,255,255,0.92)", color: isSelected ? "#F9F9F9" : "#57534E" }}
+          aria-label={isSelected ? "取消選取" : "選取"}
+        >
+          {isSelected ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
+        </button>
+      )}
+      {onCopy && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onCopy(); }}
+          className="absolute top-1.5 right-1.5 flex items-center justify-center w-6 h-6 rounded-md transition-colors"
+          style={{ backgroundColor: copied ? "#1D9E75" : "rgba(255,255,255,0.92)", color: copied ? "#F9F9F9" : "#0F6E56" }}
+          aria-label="複製到 LINE"
+        >
+          {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ResultGridCompact({ dms, query, kind, criteria, copiedId, onCopy, onPreview }) {
+  const [selected, setSelected] = useState(new Set());
+  const [downloadedAll, setDownloadedAll] = useState(false);
+  const [downloadedSelected, setDownloadedSelected] = useState(false);
+  const hasSelection = selected.size > 0;
+  const toggleSelect = (id) => {
+    setSelected((curr) => {
+      const next = new Set(curr);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const clearSelection = () => setSelected(new Set());
+  const handleDownloadAll = async () => {
+    const ok = await onCopy(dms);
+    if (!ok) return;
+    setDownloadedAll(true);
+    setTimeout(() => setDownloadedAll(false), 2200);
+  };
+  const handleDownloadSelected = async () => {
+    const items = dms.filter((dm) => selected.has(dm.id));
+    if (items.length === 0) return;
+    const ok = await onCopy(items);
+    if (!ok) return;
+    setDownloadedSelected(true);
+    setTimeout(() => { setDownloadedSelected(false); setSelected(new Set()); }, 1800);
+  };
+  const headerText = kind === "latest"
+    ? `今日新增 ${dms.length} 筆 DM。`
+    : `找到 ${dms.length} 筆符合條件的 DM。`;
+  const gridCols = dms.length <= 2 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-2 md:grid-cols-3";
+  return (
+    <div>
+      <p className="text-sm leading-relaxed text-stone-700 mb-1">{headerText}</p>
+      {query && (
+        <div className="flex items-center gap-1.5 text-[10px] text-stone-500 mb-3">
+          <Search className="w-3 h-3" />
+          <span className="truncate">查詢：{query}</span>
+        </div>
+      )}
+      {kind !== "latest" && <CriteriaChips criteria={criteria} />}
+      {hasSelection ? (
+        <div className="rounded-md px-3 py-2 mb-3 flex items-center justify-between gap-2" style={{ backgroundColor: "#0F6E56" }}>
           <span className="text-[11px] text-white/80 tabular-nums">
             <span className="font-display italic text-base text-white">{selected.size}</span>
             <span className="text-white/50 ml-1">/ {dms.length}</span>
             <span className="ml-2">已選取</span>
           </span>
           <div className="flex items-center gap-1.5">
-            <button onClick={clearSelection} className="px-3 py-1 rounded text-[11px] hover:bg-white/10 transition-colors" style={{ color: "#F9F9F9" }}>清除選取</button>
-            <button onClick={handleCopySelected} className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium transition-all" style={{ backgroundColor: copiedSelected ? "#1D9E75" : "#F9F9F9", color: copiedSelected ? "#F9F9F9" : "#0F6E56" }}>
-              {copiedSelected ? <Check className="w-3 h-3" /> : <CopyPlus className="w-3 h-3" />}
-              {copiedSelected ? `已下載 ${selected.size} 筆` : `下載選取 ${selected.size} 筆`}
+            <button onClick={clearSelection} className="px-3 py-1 rounded text-[11px] hover:bg-white/10" style={{ color: "#F9F9F9" }}>清除選取</button>
+            <button onClick={handleDownloadSelected} className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium transition-all" style={{ backgroundColor: downloadedSelected ? "#1D9E75" : "#F9F9F9", color: downloadedSelected ? "#F9F9F9" : "#0F6E56" }}>
+              {downloadedSelected ? <Check className="w-3 h-3" /> : <Download className="w-3 h-3" />}
+              {downloadedSelected ? `已下載 ${selected.size} 筆` : `下載選取 ${selected.size} 筆`}
             </button>
           </div>
         </div>
+      ) : (
+        <div className="flex items-center justify-end gap-2 mb-3">
+          <button onClick={handleDownloadAll} className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border transition-all" style={{ borderColor: downloadedAll ? "#1D9E75" : "#0F6E56", backgroundColor: downloadedAll ? "#1D9E75" : "transparent", color: downloadedAll ? "#F9F9F9" : "#0F6E56" }}>
+            {downloadedAll ? <Check className="w-3 h-3" /> : <Download className="w-3 h-3" />}
+            {downloadedAll ? `已下載 ${dms.length} 筆` : `下載全部 ${dms.length} 筆`}
+          </button>
+        </div>
       )}
-
-      {!hasSelection && <CriteriaChips className="mb-4" />}
-      <div className="space-y-2">
-        {dms.map((dm, i) => (
-          <DMPosterCard key={dm.id} dm={dm} index={i} copied={copiedId === dm.id} onCopy={() => onCopy(dm)} onPreview={() => onPreview(dm, dms)} isSelected={selected.has(dm.id)} onToggleSelect={() => toggleSelect(dm.id)} />
+      <div className={`grid ${gridCols} gap-2`}>
+        {dms.map((dm) => (
+          <DmThumbCard
+            key={dm.id}
+            dm={dm}
+            onPreview={() => onPreview(dm, dms)}
+            isSelected={selected.has(dm.id)}
+            onToggleSelect={() => toggleSelect(dm.id)}
+            onCopy={() => onCopy(dm)}
+            copied={copiedId === dm.id}
+          />
         ))}
       </div>
     </div>
   );
 }
-function DMPosterCard({ dm, index, copied, onCopy, onPreview, isSelected, onToggleSelect }) {
+
+function ResultGridPreview({ dms, query, kind, criteria, previewCount = 8, onCopy, onPreview, onSelect }) {
+  const [downloadedAll, setDownloadedAll] = useState(false);
+  const previewItems = dms.slice(0, previewCount);
+  const handleDownloadAll = async () => {
+    const ok = await onCopy(dms);
+    if (!ok) return;
+    setDownloadedAll(true);
+    setTimeout(() => setDownloadedAll(false), 2200);
+  };
+  const headerText = kind === "latest"
+    ? `今日新增 ${dms.length} 筆 DM。先顯示前 ${previewItems.length} 張,點縮圖預覽或展開完整列表進行勾選與下載。`
+    : `找到 ${dms.length} 筆相關方案。先顯示前 ${previewItems.length} 張,點縮圖預覽或展開完整列表進行勾選與下載。`;
   return (
-    <div
-      className="animate-slide-in rounded-lg border bg-white transition-all relative"
-      style={{
-        borderColor: isSelected ? "#0F6E56" : "#E1F5EE",
-        backgroundColor: isSelected ? "#E1F5EE" : "white",
-        boxShadow: isSelected ? "0 0 0 1px #0F6E56" : undefined,
-        animationDelay: `${index * 60}ms`,
-      }}
-    >
-      <div className="flex gap-3 p-3 items-center">
-        {/* Always-visible checkbox */}
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleSelect();
-          }}
-          className="flex-shrink-0 w-5 h-5 rounded flex items-center justify-center transition-all hover:scale-110"
-          style={{
-            backgroundColor: isSelected ? "#0F6E56" : "transparent",
-            border: isSelected ? "none" : "1.5px solid #B8D9CE",
-          }}
-          aria-label={isSelected ? "取消選取" : "選取"}
-        >
-          {isSelected && (
-            <Check className="w-3 h-3" style={{ color: "#F9F9F9" }} strokeWidth={3} />
-          )}
-        </button>
-
-        {/* Thumbnail ??always opens preview */}
-        <button
-          onClick={onPreview}
-          className="relative flex-shrink-0 overflow-hidden rounded bg-stone-100 group"
-          style={{ width: "60px", aspectRatio: "827 / 1169" }}
-          aria-label="開啟預覽"
-        >
-          <DmImage dm={dm} alt={dm.title} className="w-full h-full object-cover" />
-          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
-            <Maximize2 className="w-3.5 h-3.5 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+    <div>
+      <p className="text-sm leading-relaxed text-stone-700 mb-1">{headerText}</p>
+      {query && (
+        <div className="flex items-center gap-1.5 text-[10px] text-stone-500 mb-3">
+          <Search className="w-3 h-3" />
+          <span className="truncate">查詢：{query}</span>
+        </div>
+      )}
+      {kind !== "latest" && <CriteriaChips criteria={criteria} />}
+      <div className="rounded-lg border bg-white overflow-hidden" style={{ borderColor: "#E1F5EE" }}>
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 p-3">
+          {previewItems.map((dm) => (
+            <DmThumbCard key={dm.id} dm={dm} onPreview={() => onPreview(dm, dms)} />
+          ))}
+        </div>
+        <button onClick={() => onSelect && onSelect(dms)} className="w-full px-4 py-3 border-t flex items-center justify-between hover:bg-[#E1F5EE] transition-colors group" style={{ borderColor: "#E1F5EE", color: "#0F6E56" }}>
+          <div className="flex items-center gap-2">
+            <MousePointerClick className="w-3.5 h-3.5" />
+            <span className="text-sm font-medium">展開完整列表</span>
+            <span className="text-[10px] text-stone-500">共 {dms.length} 筆</span>
           </div>
+          <ArrowRight className="w-3 h-3 text-stone-500 group-hover:text-stone-900 group-hover:translate-x-0.5 transition-all" />
         </button>
-
-        {/* Content ??clicking row body also toggles selection (excluding thumbnail and copy btn) */}
-        <button
-          onClick={onToggleSelect}
-          className="flex-1 min-w-0 flex flex-col justify-between text-left cursor-pointer"
-          aria-label="切換選取"
-        >
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 mb-1">
-              <span
-                className="text-[9px] tracking-wider uppercase px-1.5 py-0.5 rounded-sm flex-shrink-0"
-                style={{ backgroundColor: "#0F6E56", color: "#F9F9F9" }}
-              >
-                {dm.tag}
-              </span>
-              <span className="text-[10px] text-stone-500 truncate">{dm.source}</span>
-            </div>
-            <h3 className="font-serif-tc font-medium text-sm leading-snug truncate">
-              {dm.title}
-            </h3>
-            <div className="text-[11px] text-stone-600 truncate mt-0.5">
-              {dm.region} · {dm.period}
-            </div>
-          </div>
-          <div className="flex items-baseline justify-between gap-2 mt-1.5">
-            <span
-              className="text-[13px] font-semibold tabular-nums"
-              style={{ color: "#B91C1C" }}
-            >
-              {dm.days > 0 ? `${dm.days}日 · ` : ""}
-              {dm.price}
-            </span>
-          </div>
-        </button>
-
-        {/* Per-card quick copy ??single-DM shortcut */}
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onCopy();
-          }}
-          className="flex-shrink-0 self-center flex items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium transition-all whitespace-nowrap"
-          style={{
-            backgroundColor: copied ? "#1D9E75" : "#0F6E56",
-            color: "#F9F9F9",
-          }}
-        >
-          {copied ? (
-            <>
-              <Check className="w-3 h-3" />
-              已複製
-            </>
-          ) : (
-            <>
-              <Copy className="w-3 h-3" />
-              複製
-            </>
-          )}
+        <button onClick={handleDownloadAll} className="w-full px-4 py-3 border-t flex items-center justify-center gap-2 hover:bg-[#E1F5EE] transition-colors" style={{ borderColor: "#E1F5EE", color: downloadedAll ? "#1D9E75" : "#57534E" }}>
+          {downloadedAll ? <Check className="w-3.5 h-3.5" /> : <Download className="w-3.5 h-3.5" />}
+          <span className="text-xs font-medium">{downloadedAll ? `已下載 ${dms.length} 筆` : `下載全部 ${dms.length} 筆`}</span>
         </button>
       </div>
     </div>
@@ -2238,76 +2177,6 @@ function Field({ label, value, accent, compact }) {
     </div>
   );
 }
-
-/* ===================================================================== */
-/* DAILY SUMMARY Agent latest data, original summary UI                   */
-/* ===================================================================== */
-/* DAILY SUMMARY                                                          */
-/* ===================================================================== */
-function DailySummary({ dms = [], onPreview, onSelect, onCopy }) {
-  const todays = Array.isArray(dms) ? dms : [];
-  const previewSet = todays.slice(0, 4);
-  const [copiedAll, setCopiedAll] = useState(false);
-
-  const handleCopyAll = async () => {
-    const ok = await onCopy(todays);
-    if (!ok) return;
-    setCopiedAll(true);
-    setTimeout(() => setCopiedAll(false), 2500);
-  };
-
-  if (todays.length === 0) {
-    return <p className="text-sm leading-relaxed text-stone-700">目前沒有今日新增 DM。</p>;
-  }
-
-  return (
-    <div>
-      <p className="text-sm leading-relaxed text-stone-700 mb-4">
-        今日新增 <span className="font-medium">{todays.length} 筆</span> DM，可預覽、全選或下載圖片包；單張可直接複製到 LINE 對話框。
-      </p>
-      <div className="rounded-lg border bg-white overflow-hidden mb-4" style={{ borderColor: "#E1F5EE" }}>
-        <div className="px-4 py-3 flex items-center justify-between border-b" style={{ borderColor: "#E1F5EE", backgroundColor: "#E1F5EE" }}>
-          <div className="flex items-center gap-2">
-            <Clock className="w-3.5 h-3.5 text-stone-500" />
-            <span className="text-xs font-medium">Agent 今日新增</span>
-          </div>
-          <span className="text-[10px] text-stone-500">最新索引結果</span>
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 p-3">
-          {previewSet.map((dm, i) => (
-            <button key={dm.id} onClick={() => onPreview(dm, todays)} className="group relative overflow-hidden rounded-md bg-stone-100" style={{ aspectRatio: "827 / 1169", animationDelay: `${i * 60}ms` }}>
-              <DmImage dm={dm} alt={dm.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
-              <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent p-2">
-                <div className="text-[10px] text-white/80 mb-0.5 truncate">{dm.source}</div>
-                <div className="text-[11px] text-white font-medium leading-tight line-clamp-1">{dm.title}</div>
-              </div>
-            </button>
-          ))}
-        </div>
-        <button onClick={() => onSelect && onSelect(todays)} className="w-full px-4 py-3 border-t flex items-center justify-between hover:bg-[#E1F5EE] transition-colors group" style={{ borderColor: "#E1F5EE", color: "#0F6E56" }}>
-          <div className="flex items-center gap-2">
-            <MousePointerClick className="w-3.5 h-3.5" />
-            <span className="text-sm font-medium">查看完整結果</span>
-            <span className="text-[10px] text-stone-500">共 {todays.length} 筆</span>
-          </div>
-          <ArrowRight className="w-3 h-3 text-stone-500 group-hover:text-stone-900 group-hover:translate-x-0.5 transition-all" />
-        </button>
-        <div className="border-t flex" style={{ borderColor: "#E1F5EE" }}>
-          <button onClick={() => onPreview(todays[0], todays)} className="flex-1 px-4 py-2.5 flex items-center justify-center gap-1.5 hover:bg-[#E1F5EE] transition-colors text-stone-600 hover:text-stone-900 border-r" style={{ borderColor: "#E1F5EE" }}>
-            <Maximize2 className="w-3 h-3" />
-            <span className="text-[11px]">預覽第一筆</span>
-          </button>
-          <button onClick={handleCopyAll} className="flex-1 px-4 py-2.5 flex items-center justify-center gap-1.5 hover:bg-[#E1F5EE] transition-colors" style={{ color: copiedAll ? "#1D9E75" : "#57534E" }}>
-            {copiedAll ? <Check className="w-3 h-3" /> : <CopyPlus className="w-3 h-3" />}
-            <span className="text-[11px] font-medium">{copiedAll ? `已下載 ${todays.length} 筆` : `下載全部 (${todays.length})`}</span>
-          </button>
-        </div>
-      </div>
-      <p className="text-[10px] text-stone-500 leading-relaxed">今日新增資料由 Agent 索引結果產生，可直接預覽或下載圖片包。</p>
-    </div>
-  );
-}
-
 /* ===================================================================== */
 /* SCHEDULE UNAVAILABLE MESSAGE                                           */
 /* ===================================================================== */
