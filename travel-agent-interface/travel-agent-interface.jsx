@@ -1109,14 +1109,10 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       }
 
       if (copyMode === "download") {
-        window.alert(
-          INTERNAL_WEB
-            ? "剪貼簿橋接失敗，已改為下載圖片。"
-            : "瀏覽器無法複製圖片，已改為下載圖片，請手動貼到 LINE 群組。"
-        );
+        // Multi-DM action is now an explicit "下載全部" button — no surprise,
+        // no need to alert. The browser's own download bar confirms the action.
+        return true;
       }
-
-      if (copyMode === "download") return true;
 
       const copiedKey =
         items.length === 1 && typeof items[0] !== "string"
@@ -1976,7 +1972,7 @@ function ResultsLightMessage({ query, dms, onPreview, onSelect }) {
         </button>
       </div>
       <p className="text-[10px] text-stone-500 leading-relaxed mt-2">
-        先顯示前幾筆結果，點擊可查看完整列表並複製圖片。
+        先顯示前幾筆結果，點擊可查看完整列表並批次下載圖片包。
       </p>
     </div>
   );
@@ -2076,7 +2072,7 @@ function ResultsMessage({ query, criteria, fallback, dms, copiedId, onCopy, onPr
         {dms.length > 1 && !hasSelection && (
           <button onClick={handleCopyAll} className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium border transition-all" style={{ borderColor: copiedAll ? "#1D9E75" : "#0F6E56", backgroundColor: copiedAll ? "#1D9E75" : "transparent", color: copiedAll ? "#F9F9F9" : "#0F6E56" }}>
             {copiedAll ? <Check className="w-3 h-3" /> : <CopyPlus className="w-3 h-3" />}
-            {copiedAll ? `已複製 ${dms.length} 筆` : "複製全部"}
+            {copiedAll ? `已下載 ${dms.length} 筆` : "下載全部"}
           </button>
         )}
       </div>
@@ -2092,7 +2088,7 @@ function ResultsMessage({ query, criteria, fallback, dms, copiedId, onCopy, onPr
             <button onClick={clearSelection} className="px-3 py-1 rounded text-[11px] hover:bg-white/10 transition-colors" style={{ color: "#F9F9F9" }}>清除選取</button>
             <button onClick={handleCopySelected} className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium transition-all" style={{ backgroundColor: copiedSelected ? "#1D9E75" : "#F9F9F9", color: copiedSelected ? "#F9F9F9" : "#0F6E56" }}>
               {copiedSelected ? <Check className="w-3 h-3" /> : <CopyPlus className="w-3 h-3" />}
-              {copiedSelected ? `已複製 ${selected.size} 筆` : `複製選取 ${selected.size} 筆`}
+              {copiedSelected ? `已下載 ${selected.size} 筆` : `下載選取 ${selected.size} 筆`}
             </button>
           </div>
         </div>
@@ -2256,7 +2252,7 @@ function DailySummary({ dms = [], onPreview, onSelect, onCopy }) {
   return (
     <div>
       <p className="text-sm leading-relaxed text-stone-700 mb-4">
-        今日新增 <span className="font-medium">{todays.length} 筆</span> DM，可預覽、全選或複製圖片。
+        今日新增 <span className="font-medium">{todays.length} 筆</span> DM，可預覽、全選或下載圖片包；單張可直接複製到 LINE 對話框。
       </p>
       <div className="rounded-lg border bg-white overflow-hidden mb-4" style={{ borderColor: "#E1F5EE" }}>
         <div className="px-4 py-3 flex items-center justify-between border-b" style={{ borderColor: "#E1F5EE", backgroundColor: "#E1F5EE" }}>
@@ -2292,11 +2288,11 @@ function DailySummary({ dms = [], onPreview, onSelect, onCopy }) {
           </button>
           <button onClick={handleCopyAll} className="flex-1 px-4 py-2.5 flex items-center justify-center gap-1.5 hover:bg-[#E1F5EE] transition-colors" style={{ color: copiedAll ? "#1D9E75" : "#57534E" }}>
             {copiedAll ? <Check className="w-3 h-3" /> : <CopyPlus className="w-3 h-3" />}
-            <span className="text-[11px] font-medium">{copiedAll ? `已複製 ${todays.length} 筆` : `複製全部 (${todays.length})`}</span>
+            <span className="text-[11px] font-medium">{copiedAll ? `已下載 ${todays.length} 筆` : `下載全部 (${todays.length})`}</span>
           </button>
         </div>
       </div>
-      <p className="text-[10px] text-stone-500 leading-relaxed">今日新增資料由 Agent 索引結果產生，可直接預覽或複製圖片。</p>
+      <p className="text-[10px] text-stone-500 leading-relaxed">今日新增資料由 Agent 索引結果產生，可直接預覽或下載圖片包。</p>
     </div>
   );
 }
@@ -2527,7 +2523,7 @@ function SelectionModal({ list, onClose, onCopy }) {
           <button onClick={() => setSelected(new Set())} className="px-3 py-2 rounded-md text-xs border" style={{ borderColor: "#E1F5EE" }}>清除</button>
           <button onClick={copySelected} disabled={selected.size === 0} className="inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-xs font-medium disabled:opacity-50" style={{ backgroundColor: copied ? "#1D9E75" : "#0F6E56", color: "#F9F9F9" }}>
             {copied ? <Check className="w-3 h-3" /> : <CopyPlus className="w-3 h-3" />}
-            {copied ? "已複製" : "複製選取"}
+            {copied ? "已下載" : "下載選取"}
           </button>
         </div>
       </div>
