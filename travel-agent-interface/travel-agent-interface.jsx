@@ -392,7 +392,7 @@ function LoginScreen({ onLogin }) {
               onChange={(event) => setRemember(event.target.checked)}
               className="h-4 w-4 rounded border-stone-400 accent-[#0F6E56]"
             />
-            <span>\u8a18\u4f4f\u6211\uff0830 \u5929\u5167\u4e0d\u7528\u518d\u767b\u5165\uff09</span>
+            <span>Remember me (stay signed in for 30 days)</span>
           </label>
 
           {error && (
@@ -516,7 +516,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
   const inputRef = useRef(null);
 
   const suggestions = [
-    { icon: Inbox, label: "今日新增", prompt: "查看今日新增的旅遊圖片 DM" },
+    { icon: Inbox, label: "今日新增", prompt: "查看今日新增的旅遊組圖 DM" },
     { icon: Zap, label: "手動流程", prompt: "手動觸發抓取+OCR+組圖" },
     { icon: Search, label: "查詢日本方案", prompt: "幫我找日本的所有方案" },
     { icon: Layers, label: "重複圖片", prompt: "檢查重複圖片" },
