@@ -248,6 +248,20 @@ function DadovaLogo({ size = 32, inverted = false }) {
   );
 }
 
+function isManualAgentRunCommand(query) {
+  const text = String(query || "");
+  const lower = text.toLowerCase();
+  const phrases = [
+    "手動觸發", "手動流程", "手動執行", "手動抓圖", "手動跑",
+    "重新跑", "再跑一次", "再抓一次", "立刻執行", "立即執行",
+    "觸發抓圖", "觸發 OCR", "觸發組圖",
+  ];
+  return phrases.some((p) => text.includes(p))
+    || lower.includes("manual run")
+    || lower.includes("trigger run")
+    || lower.includes("rerun pipeline");
+}
+
 /* ===== Schedule command parser =====
  * Detects natural-language schedule commands so the UI can route them to
  * the real scheduler once an Agent/RPA endpoint exists.
