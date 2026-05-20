@@ -8,6 +8,8 @@ import io
 import mimetypes
 import os
 import re
+import secrets
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -22,6 +24,11 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from PIL import Image, ImageOps
 
+try:
+    from opencc import OpenCC
+except ImportError:  # pragma: no cover - optional runtime dependency
+    OpenCC = None
+
 
 APP_DIR = Path(__file__).resolve().parent
 WEB_DIR = APP_DIR / "dist" if (APP_DIR / "dist" / "index.html").is_file() else APP_DIR
@@ -33,10 +40,14 @@ RUN_UPLOAD_SCRIPT = PROJECT_ROOT / "tools" / "openclaw" / "run_uploaded_images.p
 LATEST_JOB_PATH = PROJECT_ROOT / "logs" / "openclaw" / "latest_job.json"
 RUN_LOCK_PATH = PROJECT_ROOT / "logs" / "openclaw" / "line-rpa-scheduled.lock"
 OPENCLAW_SETTINGS_PATH = PROJECT_ROOT / "logs" / "openclaw" / "settings.json"
+PENDING_UPLOAD_JOBS_PATH = PROJECT_ROOT / "logs" / "openclaw" / "pending_upload_jobs.json"
+CHAT_REQUEST_LOG_PATH = PROJECT_ROOT / "logs" / "openclaw" / "chat_requests.jsonl"
+AUTH_SECRET_PATH = PROJECT_ROOT / "logs" / "openclaw" / "auth_secret.bin"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 JOB_LOCK = threading.Lock()
+PENDING_UPLOAD_LOCK = threading.Lock()
 MANUAL_JOB: dict[str, object] = {
     "running": False,
     "pid": None,
@@ -46,11 +57,30 @@ MANUAL_JOB: dict[str, object] = {
     "last_error": None,
     "returncode": None,
 }
-AUTH_USERNAME = os.environ.get("OPENCLAW_WEB_USER", "admin_dadova")
-AUTH_PASSWORD = os.environ.get("OPENCLAW_WEB_PASSWORD", "StarBit123")
+DEFAULT_AUTH_USERNAME = "admin_dadova"
+DEFAULT_AUTH_PASSWORD = "StarBit123"
+AUTH_USERNAME = os.environ.get("OPENCLAW_WEB_USER", DEFAULT_AUTH_USERNAME)
+AUTH_PASSWORD = os.environ.get("OPENCLAW_WEB_PASSWORD", DEFAULT_AUTH_PASSWORD)
 AUTH_COOKIE_NAME = "openclaw_session"
 AUTH_SESSION_TTL_SECONDS = 12 * 60 * 60
+_AUTH_SECRET_LOCK = threading.Lock()
+_AUTH_SECRET_CACHE: bytes | None = None
 SYSTEM_TAGS_CLEARED_SENTINEL = "__openclaw_system_tags_cleared__"
+_OPENCC_T2TW = OpenCC("s2tw") if OpenCC else None
+_OCR_TAG_FALLBACK_TRANSLATION = str.maketrans({
+    "税": "稅",
+    "国": "國",
+    "团": "團",
+    "东": "東",
+    "万": "萬",
+    "龙": "龍",
+    "广": "廣",
+    "门": "門",
+    "乐": "樂",
+    "发": "發",
+    "台": "臺",
+})
+_PUNCTUATION_ONLY_TAG = re.compile(r"^[\s.。…·・,，、;；:：!?！？~～\-—_]+$")
 
 from tools.openclaw.operations import (  # noqa: E402
     DEFAULT_DB_PATH,
@@ -61,18 +91,24 @@ from tools.openclaw.operations import (  # noqa: E402
     record_duplicate_review,
 )
 from tools.openclaw.upload_catalog import (  # noqa: E402
+    CATALOG_DB_PATH,
     add_image,
     add_manual_tag,
     archive_image,
+    archive_folder,
     create_folder,
     delete_manual_tag,
+    delete_image_search_index,
     folder_target_path,
     get_folder,
     list_folders,
     list_images,
     list_manual_tags,
+    missing_search_index_image_ids,
+    query_image_search_index,
     safe_stored_filename,
     stored_path_is_registered,
+    upsert_image_search_index,
     update_image_metadata,
     update_folder_status,
     update_manual_tag,
@@ -93,11 +129,57 @@ def _first(params: dict[str, list[str]], key: str, default: str = "") -> str:
     return values[0] if values else default
 
 
+def _json_list(value: object) -> list:
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _json_object(value: object) -> dict:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _load_or_create_persistent_auth_secret() -> bytes:
+    if AUTH_SECRET_PATH.is_file():
+        try:
+            existing = AUTH_SECRET_PATH.read_bytes()
+        except OSError:
+            existing = b""
+        if len(existing) >= 32:
+            return existing
+    AUTH_SECRET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    new_secret = secrets.token_bytes(32)
+    try:
+        fd = os.open(str(AUTH_SECRET_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return AUTH_SECRET_PATH.read_bytes()
+    try:
+        os.write(fd, new_secret)
+    finally:
+        os.close(fd)
+    return new_secret
+
+
 def _auth_secret() -> bytes:
-    raw = os.environ.get("OPENCLAW_WEB_AUTH_SECRET")
-    if raw:
-        return raw.encode("utf-8")
-    return hashlib.sha256(f"{AUTH_USERNAME}:{AUTH_PASSWORD}:{PROJECT_ROOT}".encode("utf-8")).digest()
+    global _AUTH_SECRET_CACHE
+    if _AUTH_SECRET_CACHE is not None:
+        return _AUTH_SECRET_CACHE
+    with _AUTH_SECRET_LOCK:
+        if _AUTH_SECRET_CACHE is not None:
+            return _AUTH_SECRET_CACHE
+        raw = os.environ.get("OPENCLAW_WEB_AUTH_SECRET")
+        # Previous versions derived this from AUTH_USERNAME:AUTH_PASSWORD:PROJECT_ROOT,
+        # which made the HMAC key trivially reproducible by anyone with repo access.
+        # Random + persisted closes that forgery vector.
+        secret = raw.encode("utf-8") if raw else _load_or_create_persistent_auth_secret()
+        _AUTH_SECRET_CACHE = secret
+        return secret
 
 
 def _sign_auth_session(username: str, expires_at: int) -> str:
@@ -234,6 +316,40 @@ def _latest_job_snapshot() -> dict[str, object] | None:
     return latest
 
 
+def _upload_pipeline_is_busy() -> bool:
+    latest = _latest_job_snapshot()
+    current = _manual_job_snapshot()
+    return bool(current.get("running") or _is_recent_run_lock() or (latest and latest.get("status") == "running"))
+
+
+def _read_pending_upload_jobs() -> list[dict[str, object]]:
+    try:
+        payload = json.loads(PENDING_UPLOAD_JOBS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return payload if isinstance(payload, list) else []
+
+
+def _write_pending_upload_jobs(jobs: list[dict[str, object]]) -> None:
+    PENDING_UPLOAD_JOBS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = PENDING_UPLOAD_JOBS_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(jobs, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(PENDING_UPLOAD_JOBS_PATH)
+
+
+def _queue_pending_upload_job(folder: dict[str, object], *, trigger_source: str = "upload") -> None:
+    folder_id = int(folder["id"])
+    with PENDING_UPLOAD_LOCK:
+        jobs = [job for job in _read_pending_upload_jobs() if int(job.get("folder_id") or 0) != folder_id]
+        jobs.append({
+            "folder_id": folder_id,
+            "folder_slug": folder.get("folder_slug"),
+            "trigger_source": trigger_source,
+            "queued_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        })
+        _write_pending_upload_jobs(jobs)
+
+
 def _manual_job_snapshot() -> dict[str, object]:
     with JOB_LOCK:
         snapshot = dict(MANUAL_JOB)
@@ -249,6 +365,49 @@ def _set_manual_job(**updates: object) -> dict[str, object]:
     with JOB_LOCK:
         MANUAL_JOB.update(updates)
         return dict(MANUAL_JOB)
+
+
+def _try_claim_manual_run() -> tuple[bool, dict[str, object]]:
+    """Atomic check-and-reserve. On claimed=True, caller MUST either fill pid
+    via _set_manual_job or call _abandon_manual_run on failure."""
+    latest = _latest_job_snapshot()
+    with JOB_LOCK:
+        if (
+            MANUAL_JOB.get("running")
+            or _is_recent_run_lock()
+            or (latest and latest.get("status") == "running")
+        ):
+            busy = dict(MANUAL_JOB)
+            if latest and latest.get("trigger_source") == "manual":
+                compat = _job_compat_from_latest(latest)
+                if compat:
+                    busy.update(compat)
+            return False, busy
+        MANUAL_JOB.update({
+            "running": True,
+            "pid": None,
+            "status": "running",
+            "job_id": None,
+            "trigger_source": "manual",
+            "last_started_at": _utc_now_iso(),
+            "last_finished_at": None,
+            "last_success": None,
+            "last_error": None,
+            "returncode": None,
+            "steps": {},
+            "log_path": None,
+        })
+        return True, dict(MANUAL_JOB)
+
+
+def _abandon_manual_run(error: str) -> None:
+    _set_manual_job(
+        running=False,
+        last_finished_at=_utc_now_iso(),
+        last_success=False,
+        last_error=error,
+        returncode=None,
+    )
 
 
 def _status_with_manual_job(*, target_id: str | None = None) -> dict:
@@ -350,9 +509,13 @@ def _db_image_path(media_id: str, *, branded: bool = True) -> str | None:
 
     with sqlite3.connect(str(DEFAULT_DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
+        # sidecar_path is unique, but image_path / branded_path are not — a
+        # re-branded source can leave older rows behind. Pick the newest one
+        # so /media?id=... always resolves to the current branded result.
         row = conn.execute(
             "SELECT sidecar_path, image_path, branded_path FROM itineraries "
-            "WHERE sidecar_path = ? OR image_path = ? OR branded_path = ? LIMIT 1",
+            "WHERE sidecar_path = ? OR image_path = ? OR branded_path = ? "
+            "ORDER BY indexed_at DESC LIMIT 1",
             (key, key, key),
         ).fetchone()
     if row is None:
@@ -525,11 +688,22 @@ def _parse_multipart_form(content_type: str, body: bytes) -> tuple[dict[str, str
     fields: dict[str, str] = {}
     files: list[dict[str, object]] = []
     for part in body.split(delimiter):
-        part = part.strip()
-        if not part or part == b"--":
+        if not part:
             continue
-        if part.endswith(b"--"):
-            part = part[:-2].strip()
+        # The closing "--boundary--" piece starts with "--" (possibly followed
+        # by "\r\n<epilogue>"). Preamble pieces are handled by the not-part check
+        # above (they may be empty) or are skipped at the partition-not-found
+        # check below.
+        if part.startswith(b"--"):
+            continue
+        # Each real part is "\r\n<headers>\r\n\r\n<body>\r\n" — strip exactly
+        # the structural CRLFs. Previously this used part.strip() + rstrip,
+        # which are character-greedy and silently chewed off whitespace bytes
+        # at the end of binary file payloads.
+        if part.startswith(b"\r\n"):
+            part = part[2:]
+        if part.endswith(b"\r\n"):
+            part = part[:-2]
         header_blob, sep, content = part.partition(b"\r\n\r\n")
         if not sep:
             continue
@@ -545,7 +719,6 @@ def _parse_multipart_form(content_type: str, body: bytes) -> tuple[dict[str, str
             continue
         field_name = name_match.group(1)
         filename_match = re.search(r'filename="([^"]*)"', disposition)
-        content = content.rstrip(b"\r\n")
         if filename_match:
             filename = Path(filename_match.group(1)).name
             if filename:
@@ -578,26 +751,167 @@ def _find_current_image_path(image: dict[str, object], folder: dict[str, object]
     return None
 
 
-def _system_tags_for_image(path: Path | None) -> list[dict[str, object]]:
-    if path is None:
+def _normalize_ocr_tag_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or _PUNCTUATION_ONLY_TAG.fullmatch(text):
+        return ""
+    if _OPENCC_T2TW is not None:
+        text = _OPENCC_T2TW.convert(text)
+    else:
+        text = text.translate(_OCR_TAG_FALLBACK_TRANSLATION)
+    return text.strip()
+
+
+def _normalize_ocr_tag_values(values: object) -> list[str]:
+    if not isinstance(values, list):
         return []
-    sidecar = path.with_suffix(path.suffix + ".json")
-    if not sidecar.is_file():
-        return []
-    try:
-        payload = json.loads(sidecar.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value == SYSTEM_TAGS_CLEARED_SENTINEL:
+            normalized.append(value)
+            continue
+        text = _normalize_ocr_tag_text(value)
+        if text and text not in seen:
+            seen.add(text)
+            normalized.append(text)
+    return normalized
+
+
+def _add_system_tag(tags: list[dict[str, object]], seen: set[str], value: object, field: str) -> None:
+    text = _normalize_ocr_tag_text(value)
+    if not text or text in seen:
+        return
+    seen.add(text)
+    tags.append({"tag": text, "source": "ocr", "field": field})
+
+
+def _format_month_tag(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = re.fullmatch(r"0?([1-9]|1[0-2])", text)
+    if match:
+        return f"{int(match.group(1))}月"
+    return text if text.endswith("月") else text
+
+
+def _sidecar_system_tags(payload: dict[str, object]) -> list[dict[str, object]]:
     tags: list[dict[str, object]] = []
-    for key in ("countries", "regions", "features", "months"):
-        values = payload.get(key)
-        if isinstance(values, list):
-            tags.extend({"tag": str(value), "source": "ocr", "field": key} for value in values if value)
-    duration = payload.get("duration_days")
-    if duration:
-        tags.append({"tag": f"{duration}天", "source": "ocr", "field": "duration_days"})
+    seen: set[str] = set()
+
+    sources = [payload]
+    first_pass = payload.get("firstPassSummary")
+    if isinstance(first_pass, dict):
+        sources.append(first_pass)
+
+    for source in sources:
+        for key in ("countries", "regions", "features"):
+            values = source.get(key)
+            if isinstance(values, list):
+                for value in values:
+                    _add_system_tag(tags, seen, value, key)
+        months = source.get("months")
+        if isinstance(months, list):
+            for value in months:
+                _add_system_tag(tags, seen, _format_month_tag(value), "months")
+        duration = source.get("duration_days")
+        if duration:
+            _add_system_tag(tags, seen, f"{duration}\u5929", "duration_days")
+        price = source.get("price_from")
+        if price:
+            _add_system_tag(tags, seen, f"{price}\u5143\u8d77", "price_from")
+
+    ocr = payload.get("ocr")
+    if isinstance(ocr, dict):
+        hits = ocr.get("hits")
+        if isinstance(hits, str):
+            for value in re.split(r"[,，、\s]+", hits):
+                clean = value.strip()
+                if clean and not (clean.startswith("<") and clean.endswith(">")):
+                    _add_system_tag(tags, seen, clean, "ocr_hits")
+
+    classification = payload.get("domain") or (ocr.get("classification") if isinstance(ocr, dict) else None)
+    if classification and classification != "travel":
+        _add_system_tag(tags, seen, classification, "classification")
     return tags
 
+
+def _sidecar_payload_for_image(path: Path | None) -> dict[str, object]:
+    if path is None:
+        return {}
+    sidecar = path.with_suffix(path.suffix + ".json")
+    if not sidecar.is_file():
+        return {}
+    try:
+        return json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _sidecar_text_values(payload: dict[str, object]) -> list[str]:
+    values: list[str] = []
+    ocr = payload.get("ocr")
+    if isinstance(ocr, dict):
+        for key in ("text", "hits"):
+            value = _normalize_ocr_tag_text(ocr.get(key))
+            if value:
+                values.append(value)
+    return values
+
+
+def _sidecar_query_fields(payload: dict[str, object]) -> dict[str, object]:
+    sources = [payload]
+    first_pass = payload.get("firstPassSummary")
+    if isinstance(first_pass, dict):
+        sources.append(first_pass)
+
+    result: dict[str, object] = {
+        "countries": [],
+        "regions": [],
+        "months": [],
+        "duration_days": None,
+        "price_from": None,
+    }
+    for source in sources:
+        for key in ("countries", "regions"):
+            values = source.get(key)
+            if isinstance(values, list):
+                merged = list(result[key])
+                for value in values:
+                    text = _normalize_ocr_tag_text(value)
+                    if text and text not in merged:
+                        merged.append(text)
+                result[key] = merged
+        months = source.get("months")
+        if isinstance(months, list):
+            merged_months = list(result["months"])
+            for value in months:
+                try:
+                    month = int(str(value).strip())
+                except ValueError:
+                    continue
+                if 1 <= month <= 12 and month not in merged_months:
+                    merged_months.append(month)
+            result["months"] = merged_months
+        if result["duration_days"] is None and source.get("duration_days"):
+            try:
+                result["duration_days"] = int(source["duration_days"])
+            except (TypeError, ValueError):
+                pass
+        if result["price_from"] is None and source.get("price_from"):
+            try:
+                result["price_from"] = int(source["price_from"])
+            except (TypeError, ValueError):
+                pass
+    return result
+
+
+def _system_tags_for_image(path: Path | None) -> list[dict[str, object]]:
+    payload = _sidecar_payload_for_image(path)
+    if not payload:
+        return []
+    return _sidecar_system_tags(payload)
 
 def _folder_pipeline_counts(folder: dict[str, object]) -> dict[str, int]:
     base = folder_target_path(folder)
@@ -618,12 +932,13 @@ def _folder_pipeline_counts(folder: dict[str, object]) -> dict[str, int]:
     return {"ocr_count": ocr_count, "composed_count": composed_count}
 
 
-def _branded_images_by_source(folder: dict[str, object]) -> dict[str, Path]:
+def _branded_image_lookup(folder: dict[str, object]) -> tuple[dict[str, Path], dict[str, Path]]:
     branded_dir = folder_target_path(folder) / "branded"
     if not branded_dir.is_dir():
-        return {}
+        return {}, {}
 
     by_source: dict[str, Path] = {}
+    by_hash: dict[str, Path] = {}
     for branded in branded_dir.iterdir():
         if not branded.is_file() or branded.suffix.lower() not in SUPPORTED_UPLOAD_EXT:
             continue
@@ -645,7 +960,65 @@ def _branded_images_by_source(folder: dict[str, object]) -> dict[str, Path]:
         if source_path is None:
             continue
         by_source[source_path.relative_to(PROJECT_ROOT).as_posix()] = branded
-    return by_source
+        try:
+            by_hash.setdefault(file_sha256(source_path), branded)
+        except OSError:
+            pass
+    return by_source, by_hash
+
+
+def _folder_image_progress(folder: dict[str, object]) -> dict[str, int]:
+    by_source, by_hash = _branded_image_lookup(folder)
+    images = list_images(int(folder["id"]))
+    ocr_count = 0
+    composed_count = 0
+    for image in images:
+        current_path = _find_current_image_path(image, folder)
+        current_rel = current_path.relative_to(PROJECT_ROOT).as_posix() if current_path is not None else ""
+        has_ocr = (
+            image.get("ocr_status") == "success"
+            or (current_path is not None and current_path.with_suffix(current_path.suffix + ".json").is_file())
+        )
+        has_composed = bool(by_source.get(current_rel) or by_hash.get(str(image.get("sha256") or "")))
+        if has_ocr:
+            ocr_count += 1
+        if has_composed:
+            composed_count += 1
+    return {"ocr_count": ocr_count, "composed_count": composed_count, "image_count": len(images)}
+
+
+def _folder_with_file_progress(folder: dict[str, object]) -> dict[str, object]:
+    counts = _folder_image_progress(folder)
+    copy = {**folder, **counts}
+    image_count = int(copy.get("image_count") or 0)
+    composed_count = int(copy.get("composed_count") or 0)
+    ocr_count = int(copy.get("ocr_count") or 0)
+    step_statuses = dict(copy.get("step_statuses") or {})
+
+    if image_count > 0 and composed_count >= image_count:
+        copy["status"] = "success"
+        copy["current_step"] = "done"
+        copy["step_statuses"] = {
+            **step_statuses,
+            "upload": "success",
+            "ocr": "success",
+            "compose": "success",
+            "index": "success",
+        }
+    elif image_count > 0 and ocr_count >= image_count:
+        copy["status"] = "running"
+        copy["current_step"] = "compose"
+        copy["step_statuses"] = {
+            **step_statuses,
+            "upload": step_statuses.get("upload") or "success",
+            "ocr": "success",
+            "compose": step_statuses.get("compose") or "pending",
+        }
+    return copy
+
+
+def _branded_images_by_source(folder: dict[str, object]) -> dict[str, Path]:
+    return _branded_image_lookup(folder)[0]
 
 
 def _folder_with_runtime_status(folder: dict[str, object]) -> dict[str, object]:
@@ -663,7 +1036,7 @@ def _folder_with_runtime_status(folder: dict[str, object]) -> dict[str, object]:
             },
         }
         copy["job"] = latest
-    return copy
+    return _folder_with_file_progress(copy)
 
 
 def _image_flow_label(image: dict[str, object], folder: dict[str, object]) -> str:
@@ -687,21 +1060,26 @@ def _image_flow_label(image: dict[str, object], folder: dict[str, object]) -> st
     return "辨識中"
 
 
-def _folder_detail(folder: dict[str, object]) -> dict[str, object]:
+def _folder_detail(
+    folder: dict[str, object],
+    *,
+    uploaded_from: str | None = None,
+    uploaded_to: str | None = None,
+) -> dict[str, object]:
     folder = _folder_with_runtime_status(folder)
-    folder = {**folder, **_folder_pipeline_counts(folder)}
-    branded_by_source = _branded_images_by_source(folder)
+    branded_by_source, branded_by_hash = _branded_image_lookup(folder)
     images = []
-    for image in list_images(int(folder["id"])):
+    for image in list_images(int(folder["id"]), uploaded_from=uploaded_from, uploaded_to=uploaded_to):
         current_path = _find_current_image_path(image, folder)
         image_copy = dict(image)
+        image_copy["ocr_tags_override"] = _normalize_ocr_tag_values(image_copy.get("ocr_tags_override"))
         if current_path is not None:
             rel = current_path.relative_to(PROJECT_ROOT).as_posix()
             image_copy["current_path"] = rel
             image_copy["media_id"] = _media_id(rel)
             image_copy["image_url"] = f"/media?path={rel}"
             image_copy["thumbnail_url"] = f"/media/thumbnail?path={rel}&w=360"
-            branded = branded_by_source.get(rel)
+            branded = branded_by_source.get(rel) or branded_by_hash.get(str(image.get("sha256") or ""))
             if branded is not None:
                 branded_rel = branded.relative_to(PROJECT_ROOT).as_posix()
                 image_copy["branded_path"] = branded_rel
@@ -711,12 +1089,53 @@ def _folder_detail(folder: dict[str, object]) -> dict[str, object]:
         image_copy["system_tags"] = _system_tags_for_image(current_path)
         image_copy["flow_label"] = _image_flow_label(image_copy, folder)
         images.append(image_copy)
+    folder["downloadable_count"] = sum(1 for image in images if image.get("flow_label") == "執行完成" and image.get("branded_path"))
     return {"folder": folder, "images": images}
 
 
 def _folder_summary(folder: dict[str, object]) -> dict[str, object]:
-    folder = _folder_with_runtime_status(folder)
-    return {**folder, **_folder_pipeline_counts(folder)}
+    return _folder_with_runtime_status(folder)
+
+
+def _folder_can_be_archived(folder: dict[str, object]) -> tuple[bool, str]:
+    status = str(folder.get("status") or "")
+    image_count = int(folder.get("image_count") or 0)
+    if image_count == 0:
+        return True, ""
+    if status in {"success", "failed"}:
+        return True, ""
+    return False, "資料夾仍在 OCR / 組圖流程中，完成或失敗後才能刪除。"
+
+
+def _folder_download_files(
+    folder: dict[str, object],
+    *,
+    image_ids: list[object] | None = None,
+    uploaded_from: str | None = None,
+    uploaded_to: str | None = None,
+) -> tuple[list[Path], list[dict[str, object]]]:
+    selected_ids = {int(value) for value in image_ids or [] if _as_int(value) is not None}
+    detail = _folder_detail(folder, uploaded_from=uploaded_from, uploaded_to=uploaded_to)
+    files: list[Path] = []
+    skipped: list[dict[str, object]] = []
+    seen: set[Path] = set()
+    for image in detail["images"]:
+        image_id = int(image.get("id") or 0)
+        if selected_ids and image_id not in selected_ids:
+            continue
+        label = str(image.get("flow_label") or "")
+        if label != "執行完成":
+            skipped.append({"id": image_id, "reason": "流程尚未完成"})
+            continue
+        candidate = _resolve_project_file(str(image.get("branded_path") or ""))
+        if candidate is None:
+            skipped.append({"id": image_id, "reason": "找不到組圖結果"})
+            continue
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        files.append(candidate)
+    return files, skipped
 
 
 def _upload_search_terms(message: str, filters: dict[str, object]) -> list[str]:
@@ -725,6 +1144,12 @@ def _upload_search_terms(message: str, filters: dict[str, object]) -> list[str]:
         values = filters.get(key)
         if isinstance(values, list):
             terms.extend(str(value).strip() for value in values if str(value).strip())
+    months = filters.get("months")
+    if isinstance(months, list):
+        for month in months:
+            text = str(month).strip()
+            if text:
+                terms.extend([text, f"{text}月"])
     duration = filters.get("duration_days")
     if duration:
         terms.extend([str(duration), f"{duration}天"])
@@ -750,7 +1175,7 @@ def _upload_annotation_values(image: dict[str, object]) -> list[str]:
             values.append(str(tag.get("tag") or ""))
         else:
             values.append(str(tag))
-    for key in ("reference_text", "manual_note", "display_name", "original_filename"):
+    for key in ("reference_text", "manual_note", "display_name", "original_filename", "ocr_text", "search_text"):
         values.append(str(image.get(key) or ""))
     return [value.strip() for value in values if value and value.strip()]
 
@@ -776,6 +1201,165 @@ def _upload_image_matches_query(image: dict[str, object], message: str, terms: l
     return False
 
 
+def _manual_tags_for_images(image_ids: list[int]) -> dict[int, list[dict[str, object]]]:
+    ids = [int(image_id) for image_id in image_ids if image_id]
+    if not ids:
+        return {}
+
+    placeholders = ",".join("?" for _ in ids)
+    with sqlite3.connect(str(CATALOG_DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"SELECT * FROM manual_tags WHERE image_id IN ({placeholders}) ORDER BY created_at, id",
+            ids,
+        ).fetchall()
+
+    grouped: dict[int, list[dict[str, object]]] = {image_id: [] for image_id in ids}
+    for row in rows:
+        grouped.setdefault(int(row["image_id"]), []).append(dict(row))
+    return grouped
+
+
+def _upload_image_record(image_id: int) -> tuple[dict[str, object], dict[str, object]] | None:
+    with sqlite3.connect(str(CATALOG_DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT i.*, f.folder_slug, f.display_name AS folder_display_name,
+                   f.note AS folder_note, f.source AS folder_source,
+                   f.status AS folder_status, f.current_step AS folder_current_step,
+                   f.step_statuses AS folder_step_statuses, f.image_count AS folder_image_count,
+                   f.line_groups AS folder_line_groups, f.captured_at AS folder_captured_at,
+                   f.job_id AS folder_job_id, f.archived_at AS folder_archived_at,
+                   f.archived_by AS folder_archived_by, f.delete_after AS folder_delete_after,
+                   f.created_at AS folder_created_at, f.updated_at AS folder_updated_at
+            FROM uploaded_images i
+            JOIN upload_folders f ON f.id = i.folder_id
+            WHERE i.id = ?
+            """,
+            (image_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    image = {
+        "id": row["id"],
+        "folder_id": row["folder_id"],
+        "original_filename": row["original_filename"],
+        "stored_path": row["stored_path"],
+        "sha256": row["sha256"],
+        "display_name": row["display_name"],
+        "ocr_tags_override": _json_list(row["ocr_tags_override"]),
+        "reference_text": row["reference_text"],
+        "manual_note": row["manual_note"],
+        "archived_at": row["archived_at"],
+        "updated_at": row["updated_at"],
+        "updated_by": row["updated_by"],
+        "uploaded_at": row["uploaded_at"],
+        "ocr_status": row["ocr_status"],
+        "compose_status": row["compose_status"],
+    }
+    folder = {
+        "id": row["folder_id"],
+        "folder_slug": row["folder_slug"],
+        "display_name": row["folder_display_name"],
+        "note": row["folder_note"],
+        "source": row["folder_source"],
+        "status": row["folder_status"],
+        "current_step": row["folder_current_step"],
+        "step_statuses": _json_object(row["folder_step_statuses"]),
+        "image_count": row["folder_image_count"],
+        "line_groups": _json_list(row["folder_line_groups"]),
+        "captured_at": row["folder_captured_at"],
+        "job_id": row["folder_job_id"],
+        "archived_at": row["folder_archived_at"],
+        "archived_by": row["folder_archived_by"],
+        "delete_after": row["folder_delete_after"],
+        "created_at": row["folder_created_at"],
+        "updated_at": row["folder_updated_at"],
+        "target_id": row["folder_slug"],
+    }
+    return image, folder
+
+
+def _refresh_upload_search_index_for_image(image_id: int) -> None:
+    record = _upload_image_record(image_id)
+    if record is None:
+        delete_image_search_index(image_id)
+        return
+    image, folder = record
+    if image.get("archived_at") or folder.get("archived_at"):
+        delete_image_search_index(image_id)
+        return
+
+    current_path = _find_current_image_path(image, folder)
+    sidecar_payload = _sidecar_payload_for_image(current_path)
+    fields = _sidecar_query_fields(sidecar_payload)
+    system_tags = _sidecar_system_tags(sidecar_payload) if sidecar_payload else []
+    override_values = _normalize_ocr_tag_values(image.get("ocr_tags_override"))
+    system_tags_overridden = bool(override_values)
+    system_tag_values = [] if system_tags_overridden else [
+        str(tag.get("tag") or "") for tag in system_tags if isinstance(tag, dict)
+    ]
+    override_tags = [
+        str(tag)
+        for tag in override_values
+        if str(tag).strip() and str(tag) != SYSTEM_TAGS_CLEARED_SENTINEL
+    ]
+    manual_tags = _manual_tags_for_images([image_id]).get(image_id, [])
+    manual_tag_values = [str(tag.get("tag") or "") for tag in manual_tags if isinstance(tag, dict)]
+    sidecar_text = _sidecar_text_values(sidecar_payload)
+    branded_path = ""
+    if current_path is not None:
+        current_rel = current_path.relative_to(PROJECT_ROOT).as_posix()
+        by_source, by_hash = _branded_image_lookup(folder)
+        branded = by_source.get(current_rel) or by_hash.get(str(image.get("sha256") or ""))
+        if branded is not None:
+            branded_path = branded.relative_to(PROJECT_ROOT).as_posix()
+    else:
+        current_rel = str(image.get("stored_path") or "")
+
+    features = sorted({tag for tag in [*override_tags, *system_tag_values, *manual_tag_values] if tag})
+    search_parts = [
+        str(folder.get("display_name") or ""),
+        str(image.get("display_name") or ""),
+        str(image.get("original_filename") or ""),
+        str(image.get("reference_text") or ""),
+        str(image.get("manual_note") or ""),
+        *features,
+        *[str(value) for value in fields.get("countries") or []],
+        *[str(value) for value in fields.get("regions") or []],
+        *[f"{value}月" for value in fields.get("months") or []],
+        *sidecar_text,
+    ]
+    upsert_image_search_index(
+        image_id,
+        folder_id=int(folder["id"]),
+        search_text=" ".join(part for part in search_parts if part).strip(),
+        raw_text=" ".join(sidecar_text),
+        countries=list(fields.get("countries") or []),
+        regions=list(fields.get("regions") or []),
+        months=list(fields.get("months") or []),
+        features=features,
+        price_from=fields.get("price_from"),
+        duration_days=fields.get("duration_days"),
+        sidecar_path=branded_path or current_rel,
+        image_path=current_rel,
+        branded_path=branded_path,
+        source_time=str(image.get("uploaded_at") or ""),
+    )
+
+
+def _ensure_upload_search_index_current() -> None:
+    for image_id in missing_search_index_image_ids():
+        _refresh_upload_search_index_for_image(image_id)
+
+
+def _image_id_for_manual_tag(tag_id: int) -> int | None:
+    with sqlite3.connect(str(CATALOG_DB_PATH)) as conn:
+        row = conn.execute("SELECT image_id FROM manual_tags WHERE id = ?", (tag_id,)).fetchone()
+    return int(row[0]) if row else None
+
+
 def _upload_image_query_item(folder: dict[str, object], image: dict[str, object]) -> dict[str, object]:
     override_values = [str(tag) for tag in image.get("ocr_tags_override") or []]
     system_tags_overridden = bool(override_values)
@@ -799,12 +1383,12 @@ def _upload_image_query_item(folder: dict[str, object], image: dict[str, object]
         "sidecar_path": media_path,
         "image_path": image.get("current_path") or image.get("stored_path") or media_path,
         "branded_path": image.get("branded_path") or image.get("current_path") or media_path,
-        "countries": [],
-        "regions": [],
-        "months": [],
+        "countries": image.get("countries") or [],
+        "regions": image.get("regions") or [],
+        "months": image.get("months") or [],
         "features": features,
-        "duration_days": None,
-        "price_from": None,
+        "duration_days": image.get("duration_days"),
+        "price_from": image.get("price_from"),
         "group_name": folder.get("display_name"),
         "target_id": folder.get("folder_slug"),
         "source_time": image.get("uploaded_at"),
@@ -812,23 +1396,27 @@ def _upload_image_query_item(folder: dict[str, object], image: dict[str, object]
         "manual_tags": image.get("manual_tags") or [],
         "reference_text": image.get("reference_text") or "",
         "ocr_tags_override": image.get("ocr_tags_override") or [],
+        "raw_text": image.get("ocr_text") or "",
+        "search_text": image.get("search_text") or image.get("ocr_text") or "",
         "source": "upload_catalog",
     }
 
 
 def _query_upload_catalog(message: str, filters: dict[str, object], *, limit: int) -> list[dict[str, object]]:
+    _ensure_upload_search_index_current()
     terms = _upload_search_terms(message, filters)
-    matches: list[dict[str, object]] = []
-    for folder in list_folders(limit=200):
-        detail = _folder_detail(folder)
-        detail_folder = detail["folder"]
-        for image in detail["images"]:
-            if not _upload_image_matches_query(image, message, terms):
-                continue
-            matches.append(_upload_image_query_item(detail_folder, image))
-            if len(matches) >= limit:
-                return matches
-    return matches
+    return query_image_search_index(
+        query_text=message,
+        terms=terms,
+        countries=list(filters.get("countries") or []),
+        regions=list(filters.get("regions") or []),
+        months=list(filters.get("months") or []),
+        features=list(filters.get("features") or []),
+        price_min=filters.get("price_min"),
+        price_max=filters.get("price_max"),
+        duration_days=filters.get("duration_days"),
+        limit=limit,
+    )
 
 
 def _merge_upload_catalog_results(payload: dict, message: str, filters: dict[str, object], *, limit: int) -> dict:
@@ -855,18 +1443,7 @@ def _merge_upload_catalog_results(payload: dict, message: str, filters: dict[str
 
 def _chat_payload(message: str, limit: int, *, include_archived: bool = False) -> dict:
     lower = message.lower()
-    if any(token in message for token in ["狀態", "進度", "處理狀況", "資料庫", "db"]) or "status" in lower:
-        payload = _status_with_manual_job()
-        payload["kind"] = "status"
-        payload["message"] = "Agent 狀態已讀取。"
-        return payload
-
-    if any(token in message for token in ["重複", "相同", "去重"]) or "duplicate" in lower:
-        payload = _with_media_urls(check_duplicates(limit_groups=min(limit, 30), include_same_source=True))
-        payload["kind"] = "duplicates"
-        payload["message"] = f"Agent 找到 {payload.get('count', 0)} 組可能重複圖片。"
-        return payload
-
+    # Order matters: specific intent (latest/duplicates) beats general state queries (status).
     if any(token in message for token in ["最新", "今日", "今天", "新組合", "新 DM", "新DM"]) or "latest" in lower:
         is_today = any(token in message for token in ["今日", "今天"])
         is_combo = any(token in message for token in ["組合", "組圖", "新組合"])
@@ -887,6 +1464,18 @@ def _chat_payload(message: str, limit: int, *, include_archived: bool = False) -
             if is_today and is_combo
             else f"Agent 找到 {payload.get('count', 0)} 份最新旅遊 DM。"
         )
+        return payload
+
+    if any(token in message for token in ["重複", "相同", "去重"]) or "duplicate" in lower:
+        payload = _with_media_urls(check_duplicates(limit_groups=min(limit, 30), include_same_source=True))
+        payload["kind"] = "duplicates"
+        payload["message"] = f"Agent 找到 {payload.get('count', 0)} 組可能重複圖片。"
+        return payload
+
+    if any(token in message for token in ["狀態", "進度", "處理狀況", "資料庫", "db"]) or "status" in lower:
+        payload = _status_with_manual_job()
+        payload["kind"] = "status"
+        payload["message"] = "Agent 狀態已讀取。"
         return payload
 
     filters = _parse_search(message)
@@ -917,6 +1506,69 @@ def _chat_payload(message: str, limit: int, *, include_archived: bool = False) -
         else f"Agent 查詢「{message}」找到 {count} 份旅遊 DM。"
     )
     return payload
+
+
+def _launch_upload_pipeline(folder: dict[str, object], *, trigger_source: str = "upload") -> dict[str, object]:
+    if not RUN_UPLOAD_SCRIPT.is_file():
+        return {"ok": False, "error": "upload runner script missing"}
+    update_folder_status(
+        int(folder["id"]),
+        status="running",
+        current_step="ocr",
+        step_statuses={"upload": "success", "ocr": "pending", "compose": "pending", "index": "pending"},
+    )
+    process = subprocess.Popen(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(RUN_UPLOAD_SCRIPT),
+            "-Target",
+            str(folder["folder_slug"]),
+            "-FolderId",
+            str(folder["id"]),
+            "-TriggerSource",
+            trigger_source,
+        ],
+        cwd=str(PROJECT_ROOT),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+    )
+    # Without this watcher, queued upload jobs would only drain when the next
+    # browser GET /api/uploads/* fired _start_pending_upload_pipeline_if_idle.
+    # Closing the tab while a job was running could strand later uploads.
+    threading.Thread(target=_watch_upload_pipeline, args=(process,), daemon=True).start()
+    return {"ok": True, "started": True, "pid": process.pid}
+
+
+def _watch_upload_pipeline(process: subprocess.Popen) -> None:
+    try:
+        process.wait()
+    except Exception:
+        pass
+    try:
+        _start_pending_upload_pipeline_if_idle()
+    except Exception:
+        pass
+
+
+def _start_pending_upload_pipeline_if_idle() -> dict[str, object] | None:
+    if _upload_pipeline_is_busy():
+        return None
+    with PENDING_UPLOAD_LOCK:
+        jobs = _read_pending_upload_jobs()
+        while jobs:
+            job = jobs.pop(0)
+            _write_pending_upload_jobs(jobs)
+            folder = get_folder(int(job.get("folder_id") or 0))
+            if not folder:
+                continue
+            result = _launch_upload_pipeline(folder, trigger_source=str(job.get("trigger_source") or "upload"))
+            return {"job": job, "result": result}
+    return None
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -1134,7 +1786,13 @@ class Handler(SimpleHTTPRequestHandler):
                 return
 
             if path == "/api/openclaw/run":
-                self._json({"kind": "manual-run", "job": _manual_job_snapshot(), "latest_job": _latest_job_snapshot()})
+                body = json.dumps({"ok": False, "error": "method not allowed", "allow": ["POST"]}, ensure_ascii=False).encode("utf-8")
+                self.send_response(HTTPStatus.METHOD_NOT_ALLOWED)
+                self.send_header("Allow", "POST")
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
                 return
 
             if path == "/api/openclaw/latest":
@@ -1204,45 +1862,20 @@ class Handler(SimpleHTTPRequestHandler):
     def _start_upload_pipeline(self, folder: dict[str, object], *, trigger_source: str = "upload") -> dict[str, object]:
         latest = _latest_job_snapshot()
         current = _manual_job_snapshot()
-        if current.get("running") or _is_recent_run_lock() or (latest and latest.get("status") == "running"):
+        if _upload_pipeline_is_busy():
+            _queue_pending_upload_job(folder, trigger_source=trigger_source)
             return {
                 "ok": True,
                 "started": False,
+                "queued": True,
                 "job": latest or current,
-                "message": "目前已有圖片流程執行中",
+                "message": "pipeline is busy; upload processing has been queued",
             }
-        if not RUN_UPLOAD_SCRIPT.is_file():
-            return {"ok": False, "error": "upload runner script missing"}
-        update_folder_status(
-            int(folder["id"]),
-            status="running",
-            current_step="ocr",
-            step_statuses={"upload": "success", "ocr": "pending", "compose": "pending", "index": "pending"},
-        )
-        process = subprocess.Popen(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(RUN_UPLOAD_SCRIPT),
-                "-Target",
-                str(folder["folder_slug"]),
-                "-FolderId",
-                str(folder["id"]),
-                "-TriggerSource",
-                trigger_source,
-            ],
-            cwd=str(PROJECT_ROOT),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
-        )
-        return {"ok": True, "started": True, "pid": process.pid}
+        return _launch_upload_pipeline(folder, trigger_source=trigger_source)
 
     def _handle_uploads_get(self, path: str, params: dict[str, list[str]]) -> None:
         try:
+            _start_pending_upload_pipeline_if_idle()
             if path == "/api/uploads/folders":
                 limit = _as_int(_first(params, "limit", "50"), 50) or 50
                 folders = [_folder_summary(folder) for folder in list_folders(limit=limit)]
@@ -1255,7 +1888,14 @@ class Handler(SimpleHTTPRequestHandler):
                 if not folder:
                     self._json({"ok": False, "error": "folder not found"}, HTTPStatus.NOT_FOUND)
                     return
-                self._json({"ok": True, **_folder_detail(folder)})
+                self._json({
+                    "ok": True,
+                    **_folder_detail(
+                        folder,
+                        uploaded_from=_first(params, "uploaded_from") or None,
+                        uploaded_to=_first(params, "uploaded_to") or None,
+                    ),
+                })
                 return
 
             self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
@@ -1326,6 +1966,29 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"ok": bool(pipeline.get("ok")), "folder": folder, "images": added, "pipeline": pipeline})
                 return
 
+            match = re.fullmatch(r"/api/uploads/folders/(\d+)/download", path)
+            if match:
+                folder = get_folder(int(match.group(1)))
+                if not folder:
+                    self._json({"ok": False, "error": "folder not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                data = self._read_json_body()
+                files, skipped = _folder_download_files(
+                    folder,
+                    image_ids=list(data.get("image_ids") or []),
+                    uploaded_from=str(data.get("uploaded_from") or "") or None,
+                    uploaded_to=str(data.get("uploaded_to") or "") or None,
+                )
+                if not files:
+                    self._json({
+                        "ok": False,
+                        "error": "沒有可下載的組圖結果",
+                        "skipped": skipped,
+                    }, HTTPStatus.BAD_REQUEST)
+                    return
+                self._send_download_zip(files)
+                return
+
             match = re.fullmatch(r"/api/uploads/images/(\d+)/manual-tags", path)
             if match:
                 data = self._read_json_body()
@@ -1335,15 +1998,8 @@ class Handler(SimpleHTTPRequestHandler):
                     note=str(data.get("note") or ""),
                     created_by=str(data.get("created_by") or "web"),
                 )
+                _refresh_upload_search_index_for_image(int(match.group(1)))
                 self._json({"ok": True, "tag": tag})
-                return
-
-            if path == "/api/openclaw/settings":
-                data = self._read_json_body()
-                settings = {}
-                if "line_auto_enabled" in data:
-                    settings["line_auto_enabled"] = bool(data.get("line_auto_enabled"))
-                self._json({"ok": True, "settings": _write_openclaw_settings(settings)})
                 return
 
             self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
@@ -1352,15 +2008,34 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _handle_uploads_delete(self, path: str) -> None:
         try:
+            match = re.fullmatch(r"/api/uploads/folders/(\d+)", path)
+            if match:
+                folder = get_folder(int(match.group(1)))
+                if not folder:
+                    self._json({"ok": False, "error": "folder not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                ok_to_archive, reason = _folder_can_be_archived(_folder_with_runtime_status(folder))
+                if not ok_to_archive:
+                    self._json({"ok": False, "error": reason}, HTTPStatus.CONFLICT)
+                    return
+                archived = archive_folder(int(match.group(1)), updated_by="web")
+                self._json({"ok": bool(archived), "archived": bool(archived), "folder": archived})
+                return
+
             match = re.fullmatch(r"/api/uploads/images/(\d+)", path)
             if match:
                 ok = archive_image(int(match.group(1)), updated_by="web")
+                if ok:
+                    delete_image_search_index(int(match.group(1)))
                 self._json({"ok": ok, "archived": ok})
                 return
 
             match = re.fullmatch(r"/api/uploads/manual-tags/(\d+)", path)
             if match:
+                image_id = _image_id_for_manual_tag(int(match.group(1)))
                 ok = delete_manual_tag(int(match.group(1)))
+                if ok and image_id is not None:
+                    _refresh_upload_search_index_for_image(image_id)
                 self._json({"ok": ok})
                 return
             self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
@@ -1385,6 +2060,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if not image:
                     self._json({"ok": False, "error": "image not found"}, HTTPStatus.NOT_FOUND)
                     return
+                _refresh_upload_search_index_for_image(int(match.group(1)))
                 self._json({"ok": True, "image": image})
                 return
 
@@ -1399,6 +2075,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if not tag:
                     self._json({"ok": False, "error": "tag not found"}, HTTPStatus.NOT_FOUND)
                     return
+                _refresh_upload_search_index_for_image(int(tag["image_id"]))
                 self._json({"ok": True, "tag": tag})
                 return
 
@@ -1407,6 +2084,9 @@ class Handler(SimpleHTTPRequestHandler):
             self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _handle_chat(self) -> None:
+        started = time.perf_counter()
+        message = ""
+        status = HTTPStatus.OK
         try:
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length).decode("utf-8") if length else "{}"
@@ -1420,11 +2100,56 @@ class Handler(SimpleHTTPRequestHandler):
             limit = int(data.get("limit") or 100)
             include_archived = bool(data.get("include_archived"))
             if not message:
-                self._json({"kind": "empty", "message": "請輸入要交給 Agent 的旅遊任務。"})
-                return
-            self._json(_chat_payload(message, limit, include_archived=include_archived))
+                payload = {"kind": "empty", "message": "請輸入要交給 Agent 的旅遊任務。"}
+            else:
+                payload = _chat_payload(message, limit, include_archived=include_archived)
         except Exception as exc:
-            self._json({"error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            status = HTTPStatus.INTERNAL_SERVER_ERROR
+            payload = {"error": str(exc), "type": exc.__class__.__name__}
+
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        count = int(payload.get("count") or 0) if isinstance(payload, dict) else 0
+        if isinstance(payload, dict):
+            payload = {
+                **payload,
+                "debug": {
+                    "duration_ms": duration_ms,
+                    "query": message,
+                    "result_count": count,
+                    "server_pid": os.getpid(),
+                },
+            }
+        sys.stderr.write(f"chat query={message!r} status={int(status)} duration_ms={duration_ms} count={count}\n")
+        try:
+            CHAT_REQUEST_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with CHAT_REQUEST_LOG_PATH.open("a", encoding="utf-8") as fp:
+                fp.write(json.dumps({
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "query": message,
+                    "status": int(status),
+                    "duration_ms": duration_ms,
+                    "count": count,
+                    "pid": os.getpid(),
+                    "user_agent": self.headers.get("User-Agent", ""),
+                    "forwarded_for": self.headers.get("X-Forwarded-For", ""),
+                    "forwarded_proto": self.headers.get("X-Forwarded-Proto", ""),
+                }, ensure_ascii=False) + "\n")
+        except Exception as log_exc:
+            sys.stderr.write(f"chat request log failed: {log_exc}\n")
+
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        encoded_query = base64.urlsafe_b64encode(message.encode("utf-8")).decode("ascii").rstrip("=")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-OpenClaw-Duration-Ms", str(duration_ms))
+        self.send_header("X-OpenClaw-Result-Count", str(count))
+        self.send_header("X-OpenClaw-Server-Pid", str(os.getpid()))
+        self.send_header("X-OpenClaw-Query-Encoding", "utf-8-base64url")
+        self.send_header("X-OpenClaw-Query", encoded_query)
+        self.end_headers()
+        self.wfile.write(body)
 
     def _handle_clipboard(self) -> None:
         try:
@@ -1510,51 +2235,38 @@ class Handler(SimpleHTTPRequestHandler):
             if not RUN_RPA_SCRIPT.is_file():
                 self._json({"ok": False, "error": "manual run script missing"}, HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
-            current = _manual_job_snapshot()
-            latest = _latest_job_snapshot()
-            if current.get("running") or _is_recent_run_lock() or (latest and latest.get("status") == "running"):
-                job = current
-                if latest and latest.get("status") == "running":
-                    job = _job_compat_from_latest(latest) or current
+            claimed, job = _try_claim_manual_run()
+            if not claimed:
                 self._json({
                     "ok": True,
                     "kind": "manual-run",
                     "started": False,
                     "job": job,
-                    "latest_job": latest,
+                    "latest_job": _latest_job_snapshot(),
                     "message": "Agent 流程仍在執行中。",
                 })
                 return
-            process = subprocess.Popen(
-                [
-                    "powershell.exe",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    str(RUN_RPA_SCRIPT),
-                    "-TriggerSource",
-                    "manual",
-                ],
-                cwd=str(PROJECT_ROOT),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
-            )
-            job = _set_manual_job(
-                running=True,
-                pid=process.pid,
-                status="running",
-                job_id=None,
-                trigger_source="manual",
-                last_started_at=_utc_now_iso(),
-                last_finished_at=None,
-                last_success=None,
-                last_error=None,
-                returncode=None,
-                steps={},
-                log_path=None,
-            )
+            try:
+                process = subprocess.Popen(
+                    [
+                        "powershell.exe",
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                        str(RUN_RPA_SCRIPT),
+                        "-TriggerSource",
+                        "manual",
+                    ],
+                    cwd=str(PROJECT_ROOT),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+                )
+            except Exception as exc:
+                _abandon_manual_run(f"failed to spawn manual run: {exc}")
+                raise
+            job = _set_manual_job(pid=process.pid)
             threading.Thread(target=_watch_manual_process, args=(process,), daemon=True).start()
             self._json({
                 "ok": True,
@@ -1582,24 +2294,39 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_error(HTTPStatus.FORBIDDEN, "path outside project")
             return
 
+        thumbnail_failed = False
         if thumbnail:
             try:
                 candidate = _ensure_thumbnail(candidate, _as_int(_first(params, "w", "360"), 360) or 360)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Don't send the original full-size image with an immutable
+                # year-long cache header — a single transient failure would
+                # otherwise pin a 5-15 MB original in every downstream cache
+                # under the thumbnail URL.
+                sys.stderr.write(f"[openclaw_web] thumbnail failed for {candidate}: {exc}\n")
+                thumbnail_failed = True
 
         ctype = mimetypes.guess_type(str(candidate))[0] or "application/octet-stream"
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(candidate.stat().st_size))
-        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        if thumbnail_failed:
+            self.send_header("Cache-Control", "no-store")
+        else:
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
         self.end_headers()
         with candidate.open("rb") as fh:
-            self.wfile.write(fh.read())
+            shutil.copyfileobj(fh, self.wfile, 64 * 1024)
 
 
 def main() -> int:
     port = _as_int(sys.argv[1] if len(sys.argv) > 1 else "4173", 4173) or 4173
+    if AUTH_USERNAME == DEFAULT_AUTH_USERNAME and AUTH_PASSWORD == DEFAULT_AUTH_PASSWORD:
+        sys.stderr.write(
+            "[openclaw_web] WARNING: using built-in default credentials. "
+            "Set OPENCLAW_WEB_USER and OPENCLAW_WEB_PASSWORD before exposing this "
+            "service publicly (e.g. via Cloudflare Tunnel).\n"
+        )
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     print(f"Agent travel interface listening on http://0.0.0.0:{port}/", flush=True)
     try:
