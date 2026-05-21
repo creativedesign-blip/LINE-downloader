@@ -628,6 +628,13 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
     if (filters.price_min) criteria.minPrice = filters.price_min;
     if (filters.price_max) criteria.maxPrice = filters.price_max;
     if (features.length) criteria.feature = features.join(" / ");
+    // Free-text queries (e.g. "新疆") fall through extract_country/region
+    // and leave filters empty, but _merge_upload_catalog_results can still
+    // hit a match on OCR text / manual tags / display name. Surface what
+    // the user typed as the visible criterion so the chip isn't missing.
+    if (Object.keys(criteria).length === 0 && fallbackQuery) {
+      criteria.keyword = fallbackQuery;
+    }
     return criteria;
   };
 
@@ -1906,6 +1913,7 @@ function CriteriaChips({ criteria }) {
   if (criteria?.feature) chips.push({ label: "特色", value: criteria.feature, key: "feature" });
   if (criteria?.tag) chips.push({ label: "標籤", value: criteria.tag, key: "tag" });
   if (criteria?.type) chips.push({ label: "類型", value: criteria.type, key: "type" });
+  if (criteria?.keyword) chips.push({ label: "關鍵字", value: criteria.keyword, key: "keyword" });
   if (chips.length === 0) return null;
   return (
     <div className="rounded-md border px-3 py-2.5 mb-3" style={{ borderColor: "#E1F5EE", backgroundColor: "#E1F5EE" }}>
@@ -1959,9 +1967,9 @@ function ResultHero({ dm, query, kind, criteria, copiedId, onCopy, onPreview }) 
         </div>
       )}
       {kind !== "latest" && <CriteriaChips criteria={criteria} />}
-      <div className="rounded-lg border bg-white overflow-hidden" style={{ borderColor: "#E1F5EE" }}>
+      <div className="mx-auto max-w-xs rounded-lg border bg-white overflow-hidden" style={{ borderColor: "#E1F5EE" }}>
         <button onClick={() => onPreview(dm, [dm])} className="block w-full bg-stone-100" style={{ aspectRatio: "827 / 1309" }}>
-          <DmImage dm={dm} alt={dm.title} className="w-full h-full object-contain" loading="eager" />
+          <DmImage src={dm.fullImage || dm.previewImage} dm={dm} alt={dm.title} className="w-full h-full object-contain" loading="eager" />
         </button>
         <div className="p-4">
           <div className="flex items-baseline justify-between gap-2 mb-2">
@@ -2295,6 +2303,7 @@ function DMPreviewModal({ initial, list, onClose, onCopy, copiedId }) {
           </button>
         )}
         <DmImage
+          src={current.fullImage || current.previewImage}
           dm={current}
           alt={current.title}
           className="block max-h-[82vh] max-w-[92vw] rounded-lg shadow-2xl bg-stone-100"
