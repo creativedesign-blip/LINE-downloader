@@ -14,12 +14,12 @@ import {
   tagValues,
 } from "./tagUtils.js";
 
-export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDeleteTag, onUpdateImage, onArchiveImage }) {
-  const initialDisplayName = image.display_name || image.original_filename || "";
-  const [displayName, setDisplayName] = useState(initialDisplayName);
+export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDeleteTag, onUpdateImage, onArchiveImage, onSaved }) {
+  const imageTitle = image.display_name || image.original_filename || "圖片";
   const [ocrTags, setOcrTags] = useState(imageTagValues(image));
   const [referenceText, setReferenceText] = useState(image.reference_text || "");
   const [tagDraft, setTagDraft] = useState("");
+  const [saving, setSaving] = useState(false);
   const [copyStatus, setCopyStatus] = useState("");
   const [copyError, setCopyError] = useState("");
   const flow = imageFlowStatus(image);
@@ -32,7 +32,7 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
     fullImage: composedImageUrl,
     image: image.branded_thumbnail_url || composedImageUrl,
     previewImage: image.branded_thumbnail_url || composedImageUrl,
-    title: displayName || image.display_name || image.original_filename || "圖片",
+    title: imageTitle,
     region: "圖片上傳",
     period: flow,
     price: "",
@@ -44,10 +44,10 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
   };
 
   useEffect(() => {
-    setDisplayName(image.display_name || image.original_filename || "");
     setOcrTags(imageTagValues(image));
     setReferenceText(image.reference_text || "");
     setTagDraft("");
+    setSaving(false);
     setCopyStatus("");
     setCopyError("");
   }, [image.id]);
@@ -71,11 +71,18 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
   };
 
   const saveMetadata = async () => {
-    await onUpdateImage(image.id, {
-      display_name: displayName,
-      ocr_tags_override: parsedOverrideTags(),
-      reference_text: referenceText,
-    });
+    setSaving(true);
+    try {
+      await onUpdateImage(image.id, {
+        ocr_tags_override: parsedOverrideTags(),
+        reference_text: referenceText,
+      });
+      setSaving(false);
+      onSaved?.();
+    } catch (error) {
+      setSaving(false);
+      throw error;
+    }
   };
 
   const archive = async () => {
@@ -122,14 +129,21 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end animate-backdrop-in" style={{ backgroundColor: "rgba(28,25,23,0.35)" }}>
-      <div className="w-full max-w-3xl h-full bg-white shadow-xl overflow-y-auto animate-slide-in">
-        <div className="sticky top-0 z-10 px-5 py-4 border-b flex items-center justify-between gap-3" style={{ borderColor: "#E5DDC8", backgroundColor: "#FAF7EE" }}>
+    <div className="fixed inset-0 z-50 flex justify-end animate-backdrop-in" style={{ backgroundColor: "rgba(17,24,39,0.48)" }}>
+      <style>{`
+        @keyframes upload-drawer-slide-in {
+          from { opacity: 0; transform: translateX(32px); }
+          to { opacity: 1; transform: translateX(0); }
+        }
+        .animate-upload-drawer-in { animation: upload-drawer-slide-in 0.24s ease-out; }
+      `}</style>
+      <div className="w-full max-w-3xl h-full bg-white shadow-xl overflow-y-auto animate-upload-drawer-in">
+        <div className="sticky top-0 z-10 px-5 py-4 border-b flex items-center justify-between gap-3" style={{ borderColor: "#E1F5EE", backgroundColor: "#E1F5EE" }}>
           <div className="min-w-0">
-            <div className="text-sm font-medium truncate">{image.display_name || image.original_filename}</div>
+            <div className="text-sm font-medium truncate">{imageTitle}</div>
             <div className="text-xs text-stone-500 mt-0.5">{flow}</div>
           </div>
-          <button type="button" onClick={onClose} className="p-1.5 rounded-md hover:bg-[#EFE9D8]" aria-label="關閉">
+          <button type="button" onClick={onClose} className="p-1.5 rounded-md hover:bg-[#D4EFE5]" aria-label="關閉">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -138,11 +152,11 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
           <div>
             <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-1">組圖結果</div>
             {hasComposedImage ? (
-              <a href={composedImageUrl} target="_blank" rel="noreferrer" className="block rounded-md border overflow-hidden bg-stone-100" style={{ borderColor: "#E5DDC8", aspectRatio: "827 / 1169" }}>
+              <a href={composedImageUrl} target="_blank" rel="noreferrer" className="block rounded-md border overflow-hidden bg-stone-100" style={{ borderColor: "#E1F5EE", aspectRatio: "827 / 1169" }}>
                 <img src={composedImageUrl} alt={`${image.original_filename} composed`} className="w-full h-full object-contain" />
               </a>
             ) : (
-              <div className="rounded-md border px-3 py-8 text-center text-xs text-stone-500" style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}>
+              <div className="rounded-md border px-3 py-8 text-center text-xs text-stone-500" style={{ borderColor: "#E1F5EE", backgroundColor: "#FFFFFF" }}>
                 組圖尚未完成
               </div>
             )}
@@ -152,7 +166,7 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
                   type="button"
                   onClick={copyComposedImage}
                   className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border px-3 text-xs"
-                  style={{ borderColor: "#E5DDC8", color: "#292524" }}
+                  style={{ borderColor: "#E1F5EE", color: "#292524" }}
                 >
                   {copyStatus === "copying" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Copy className="w-3.5 h-3.5" />}
                   {copyStatus === "copied" ? "已複製" : copyStatus === "error" ? "複製失敗" : "複製圖片"}
@@ -161,7 +175,7 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
                   type="button"
                   onClick={downloadComposedImage}
                   className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border px-3 text-xs"
-                  style={{ borderColor: "#E5DDC8", color: "#292524" }}
+                  style={{ borderColor: "#E1F5EE", color: "#292524" }}
                 >
                   <ArrowDownToLine className="w-3.5 h-3.5" />
                   下載圖片
@@ -169,7 +183,7 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
               </div>
             )}
             {!hasComposedImage && (
-              <div className="mt-2 rounded-md border px-3 py-2 text-xs text-stone-600" style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}>
+              <div className="mt-2 rounded-md border px-3 py-2 text-xs text-stone-600" style={{ borderColor: "#E1F5EE", backgroundColor: "#FFFFFF" }}>
                 組圖完成後才可複製或下載。
               </div>
             )}
@@ -182,19 +196,8 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
 
           <div className="space-y-4">
             <label className="block">
-              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">圖片名稱</span>
-              <input
-                value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
-                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none"
-                style={{ borderColor: "#E5DDC8" }}
-                placeholder={image.original_filename}
-              />
-            </label>
-
-            <label className="block">
               <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">圖片貼標（系統）</span>
-              <div className="mt-2 rounded-md border px-3 py-2" style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}>
+              <div className="mt-2 rounded-md border px-3 py-2" style={{ borderColor: "#E1F5EE", backgroundColor: "#FFFFFF" }}>
                 <TagBadgeList tags={ocrTags} tone="system" emptyText="尚無圖片貼標" onRemove={removeOcrOverrideTag} />
               </div>
             </label>
@@ -202,7 +205,7 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
             <div>
               <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-2">人工標籤</div>
               <div className="space-y-3">
-                <div className="rounded-md border px-3 py-2" style={{ borderColor: "#E5DDC8", backgroundColor: "#FDFBF5" }}>
+                <div className="rounded-md border px-3 py-2" style={{ borderColor: "#E1F5EE", backgroundColor: "#FFFFFF" }}>
                   <TagBadgeList
                     tags={image.manual_tags || []}
                     tone="manual"
@@ -224,14 +227,14 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
                       }
                     }}
                     className="min-w-0 flex-1 h-9 rounded-md border px-3 text-sm outline-none"
-                    style={{ borderColor: "#E5DDC8" }}
+                    style={{ borderColor: "#E1F5EE" }}
                     placeholder="輸入人工標籤後按 Enter 新增"
                   />
                   <button
                     type="button"
                     onClick={addManualTag}
                     className="h-9 rounded-md px-3 text-xs"
-                    style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}
+                    style={{ backgroundColor: "#0F6E56", color: "#F9F9F9" }}
                   >
                     新增
                   </button>
@@ -240,14 +243,14 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
             </div>
 
             <label className="block">
-              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">來源文案 Note</span>
+              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">來源文案</span>
               <textarea
                 value={referenceText}
                 onChange={(event) => setReferenceText(event.target.value)}
-                className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none resize-none"
-                style={{ borderColor: "#E5DDC8" }}
-                rows={4}
-                placeholder="[提供給 LINE 文案備註使用]"
+                className="mt-1 w-full rounded-md border px-3 py-2 text-sm leading-relaxed outline-none resize-y"
+                style={{ borderColor: "#E1F5EE", minHeight: "10rem" }}
+                rows={8}
+                placeholder="提供給 LINE 文案備註使用"
               />
             </label>
 
@@ -255,8 +258,9 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
               <button type="button" onClick={archive} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: "#B91C1C", color: "#991B1B" }}>
                 刪除圖片
               </button>
-              <button type="button" onClick={saveMetadata} className="rounded-md px-4 py-2 text-xs font-medium" style={{ backgroundColor: "#1C1917", color: "#F5F1E8" }}>
-                儲存
+              <button type="button" onClick={saveMetadata} disabled={saving} className="inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60" style={{ backgroundColor: "#0F6E56", color: "#F9F9F9" }}>
+                {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                {saving ? "儲存中" : "儲存"}
               </button>
             </div>
           </div>
