@@ -365,15 +365,15 @@ function UploadTargetModal({ folders, initialFolder, onClose, onNext }) {
                   value={displayName}
                   onChange={(event) => { setDisplayName(event.target.value); setLocalError(""); }}
                   className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none"
-                  style={{ borderColor: "#E1F5EE" }}
+                  style={{ borderColor: duplicateMatches.length > 0 ? "#DC2626" : "#E1F5EE" }}
                   placeholder="韓國促銷05/20"
                   autoFocus
                 />
               </label>
               {duplicateMatches.length > 0 && (
-                <div className="rounded-md border px-3 py-2.5 text-xs" style={{ borderColor: "#D97706", backgroundColor: "#FEF3C7", color: "#92400E" }}>
+                <div className="rounded-md border px-3 py-2.5 text-xs" style={{ borderColor: "#DC2626", backgroundColor: "#FEE2E2", color: "#991B1B" }}>
                   <div className="font-medium mb-1.5">
-                    已有 {duplicateMatches.length} 個同名「{displayName.trim()}」資料夾
+                    已有 {duplicateMatches.length} 個同名「{displayName.trim()}」資料夾,請選擇併入或改名
                   </div>
                   <div className="space-y-1 mb-2">
                     {duplicateMatches.slice(0, 3).map((folder) => (
@@ -385,14 +385,13 @@ function UploadTargetModal({ folders, initialFolder, onClose, onNext }) {
                           type="button"
                           onClick={() => mergeIntoExisting(folder)}
                           className="shrink-0 rounded px-2 py-0.5 text-[11px] font-medium"
-                          style={{ backgroundColor: "#92400E", color: "#FEF3C7" }}
+                          style={{ backgroundColor: "#991B1B", color: "#FEE2E2" }}
                         >
                           併入此資料夾
                         </button>
                       </div>
                     ))}
                   </div>
-                  <div className="text-[10px] text-stone-700">不選擇併入則會建立新資料夾。</div>
                 </div>
               )}
             </div>
@@ -417,7 +416,16 @@ function UploadTargetModal({ folders, initialFolder, onClose, onNext }) {
         </div>
         <div className="px-5 py-4 border-t flex items-center justify-between gap-3" style={{ borderColor: "#E1F5EE", backgroundColor: "#E1F5EE" }}>
           <button type="button" onClick={onClose} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: "#E1F5EE" }}>取消</button>
-          <button type="button" onClick={next} className="rounded-md px-3 py-2 text-xs font-medium" style={{ backgroundColor: "#0F6E56", color: "#F9F9F9" }}>下一步：選擇圖片</button>
+          <button
+            type="button"
+            onClick={next}
+            disabled={targetMode === "new" && duplicateMatches.length > 0}
+            className="rounded-md px-3 py-2 text-xs font-medium transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+            style={{ backgroundColor: "#0F6E56", color: "#F9F9F9" }}
+            title={targetMode === "new" && duplicateMatches.length > 0 ? "請先選擇併入既有資料夾或改用其他名稱" : ""}
+          >
+            下一步：選擇圖片
+          </button>
         </div>
       </div>
     </div>
