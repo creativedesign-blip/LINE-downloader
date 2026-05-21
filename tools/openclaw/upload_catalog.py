@@ -6,7 +6,7 @@ import re
 import shutil
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,8 @@ from tools.common.targets import DOWNLOADS_DIR, PROJECT_ROOT, relpath_from_root
 
 CATALOG_DB_PATH = PROJECT_ROOT / "logs" / "openclaw" / "upload_catalog.db"
 INVALID_LINE_PATH_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+DEFAULT_FOLDER_DELETE_RETENTION_DAYS = 30
+FAILED_FOLDER_DELETE_RETENTION_DAYS = 7
 
 
 def utc_now_iso() -> str:
@@ -74,6 +76,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             line_groups TEXT NOT NULL DEFAULT '[]',
             captured_at TEXT,
             job_id TEXT,
+            archived_at TEXT,
+            archived_by TEXT,
+            delete_after TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -107,13 +112,60 @@ def init_db(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(image_id) REFERENCES uploaded_images(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS uploaded_image_search_index (
+            image_id INTEGER PRIMARY KEY,
+            folder_id INTEGER NOT NULL,
+            search_text TEXT NOT NULL DEFAULT '',
+            raw_text TEXT NOT NULL DEFAULT '',
+            country_csv TEXT,
+            region_csv TEXT,
+            months_csv TEXT,
+            features_csv TEXT,
+            price_from INTEGER,
+            duration_days INTEGER,
+            sidecar_path TEXT,
+            image_path TEXT,
+            branded_path TEXT,
+            source_time TEXT,
+            indexed_at TEXT NOT NULL,
+            FOREIGN KEY(image_id) REFERENCES uploaded_images(id) ON DELETE CASCADE,
+            FOREIGN KEY(folder_id) REFERENCES upload_folders(id) ON DELETE CASCADE
+        );
+
         CREATE INDEX IF NOT EXISTS idx_upload_folders_created
             ON upload_folders(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_uploaded_images_folder
             ON uploaded_images(folder_id);
+        CREATE INDEX IF NOT EXISTS idx_uploaded_images_folder_uploaded
+            ON uploaded_images(folder_id, uploaded_at);
         CREATE INDEX IF NOT EXISTS idx_manual_tags_image
             ON manual_tags(image_id);
+        CREATE INDEX IF NOT EXISTS idx_upload_search_folder
+            ON uploaded_image_search_index(folder_id);
+        CREATE INDEX IF NOT EXISTS idx_upload_search_country
+            ON uploaded_image_search_index(country_csv);
+        CREATE INDEX IF NOT EXISTS idx_upload_search_region
+            ON uploaded_image_search_index(region_csv);
+        CREATE INDEX IF NOT EXISTS idx_upload_search_months
+            ON uploaded_image_search_index(months_csv);
+        CREATE INDEX IF NOT EXISTS idx_upload_search_price
+            ON uploaded_image_search_index(price_from);
+        CREATE INDEX IF NOT EXISTS idx_upload_search_duration
+            ON uploaded_image_search_index(duration_days);
         """
+    )
+    _ensure_columns(
+        conn,
+        "upload_folders",
+        {
+            "archived_at": "TEXT",
+            "archived_by": "TEXT",
+            "delete_after": "TEXT",
+        },
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_upload_folders_active_created "
+        "ON upload_folders(archived_at, created_at DESC)"
     )
     _ensure_columns(
         conn,
@@ -129,6 +181,21 @@ def init_db(conn: sqlite3.Connection) -> None:
         },
     )
     conn.commit()
+
+
+def _wrap_csv(values: Any) -> str | None:
+    cleaned = []
+    for value in values or []:
+        text = str(value).strip()
+        if text:
+            cleaned.append(text)
+    return "," + ",".join(cleaned) + "," if cleaned else None
+
+
+def _csv_tokens(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item for item in str(value).split(",") if item]
 
 
 def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
@@ -159,6 +226,9 @@ def _folder_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "line_groups": _json_loads(row["line_groups"], []),
         "captured_at": row["captured_at"],
         "job_id": row["job_id"],
+        "archived_at": row["archived_at"],
+        "archived_by": row["archived_by"],
+        "delete_after": row["delete_after"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "target_id": row["folder_slug"],
@@ -264,23 +334,52 @@ def prepare_line_run_folder(
     )
 
 
-def get_folder(folder_id: int, *, db_path: Path = CATALOG_DB_PATH) -> dict[str, Any] | None:
+def get_folder(folder_id: int, *, include_archived: bool = False, db_path: Path = CATALOG_DB_PATH) -> dict[str, Any] | None:
     with closing(connect(db_path)) as conn:
-        row = conn.execute("SELECT * FROM upload_folders WHERE id = ?", (folder_id,)).fetchone()
+        query = "SELECT * FROM upload_folders WHERE id = ?"
+        params: list[Any] = [folder_id]
+        if not include_archived:
+            query += " AND archived_at IS NULL"
+        row = conn.execute(query, params).fetchone()
     return _folder_from_row(row) if row else None
 
 
-def get_folder_by_slug(folder_slug: str, *, db_path: Path = CATALOG_DB_PATH) -> dict[str, Any] | None:
+def get_folder_by_slug(folder_slug: str, *, include_archived: bool = False, db_path: Path = CATALOG_DB_PATH) -> dict[str, Any] | None:
     with closing(connect(db_path)) as conn:
-        row = conn.execute("SELECT * FROM upload_folders WHERE folder_slug = ?", (folder_slug,)).fetchone()
+        query = "SELECT * FROM upload_folders WHERE folder_slug = ?"
+        params: list[Any] = [folder_slug]
+        if not include_archived:
+            query += " AND archived_at IS NULL"
+        row = conn.execute(query, params).fetchone()
     return _folder_from_row(row) if row else None
 
 
-def list_folders(*, limit: int = 50, db_path: Path = CATALOG_DB_PATH) -> list[dict[str, Any]]:
+def list_folders(
+    *,
+    sources: tuple[str, ...] | None = ("upload",),
+    limit: int = 50,
+    include_archived: bool = False,
+    db_path: Path = CATALOG_DB_PATH,
+) -> list[dict[str, Any]]:
+    """List folders. Defaults to source='upload' so the manual upload
+    workspace UI does not get LINE RPA history markers mixed in.
+    Pass sources=None for an unfiltered list (e.g. admin views)."""
+    if not include_archived:
+        purge_expired_archived_folders(db_path=db_path)
+    clauses: list[str] = []
+    params: list[Any] = []
+    if not include_archived:
+        clauses.append("archived_at IS NULL")
+    if sources:
+        placeholders = ",".join("?" for _ in sources)
+        clauses.append(f"source IN ({placeholders})")
+        params.extend(sources)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    params.append(max(1, min(int(limit), 200)))
     with closing(connect(db_path)) as conn:
         rows = conn.execute(
-            "SELECT * FROM upload_folders ORDER BY created_at DESC LIMIT ?",
-            (max(1, min(int(limit), 200)),),
+            f"SELECT * FROM upload_folders {where} ORDER BY created_at DESC LIMIT ?",
+            params,
         ).fetchall()
     return [_folder_from_row(row) for row in rows]
 
@@ -426,13 +525,94 @@ def ingest_line_run_images(
     return added
 
 
-def list_images(folder_id: int, *, db_path: Path = CATALOG_DB_PATH) -> list[dict[str, Any]]:
+def list_images(
+    folder_id: int,
+    *,
+    uploaded_from: str | None = None,
+    uploaded_to: str | None = None,
+    db_path: Path = CATALOG_DB_PATH,
+) -> list[dict[str, Any]]:
+    clauses = ["folder_id = ?", "archived_at IS NULL"]
+    params: list[Any] = [folder_id]
+    if uploaded_from:
+        clauses.append("uploaded_at >= ?")
+        params.append(uploaded_from)
+    if uploaded_to:
+        clauses.append("uploaded_at <= ?")
+        params.append(uploaded_to)
     with closing(connect(db_path)) as conn:
         rows = conn.execute(
-            "SELECT * FROM uploaded_images WHERE folder_id = ? AND archived_at IS NULL ORDER BY uploaded_at, id",
-            (folder_id,),
+            f"SELECT * FROM uploaded_images WHERE {' AND '.join(clauses)} ORDER BY uploaded_at, id",
+            params,
         ).fetchall()
     return [_image_from_row(row) for row in rows]
+
+
+def archive_folder(folder_id: int, *, updated_by: str = "web", db_path: Path = CATALOG_DB_PATH) -> dict[str, Any] | None:
+    now = utc_now_iso()
+    with closing(connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT * FROM upload_folders WHERE id = ? AND archived_at IS NULL",
+            (folder_id,),
+        ).fetchone()
+        if not row:
+            return None
+        folder = _folder_from_row(row)
+        retention_days = FAILED_FOLDER_DELETE_RETENTION_DAYS if folder.get("status") == "failed" else DEFAULT_FOLDER_DELETE_RETENTION_DAYS
+        delete_after = (
+            datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            + timedelta(days=retention_days)
+        ).isoformat().replace("+00:00", "Z")
+        conn.execute(
+            """
+            UPDATE upload_folders
+            SET archived_at = ?, archived_by = ?, delete_after = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (now, updated_by.strip() or "web", delete_after, now, folder_id),
+        )
+        conn.commit()
+    return get_folder(folder_id, include_archived=True, db_path=db_path)
+
+
+def purge_expired_archived_folders(
+    *,
+    now: str | None = None,
+    delete_files: bool = True,
+    db_path: Path = CATALOG_DB_PATH,
+) -> dict[str, Any]:
+    now_iso = now or utc_now_iso()
+    with closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM upload_folders
+            WHERE archived_at IS NOT NULL
+              AND delete_after IS NOT NULL
+              AND delete_after <= ?
+            ORDER BY delete_after, id
+            """,
+            (now_iso,),
+        ).fetchall()
+    folders = [_folder_from_row(row) for row in rows]
+    deleted: list[int] = []
+    errors: list[dict[str, Any]] = []
+    downloads_root = DOWNLOADS_DIR.resolve()
+    for folder in folders:
+        folder_id = int(folder["id"])
+        target = folder_target_path(folder).resolve()
+        try:
+            target.relative_to(downloads_root)
+            if delete_files and target.exists():
+                shutil.rmtree(target)
+        except Exception as exc:
+            errors.append({"folder_id": folder_id, "error": str(exc)})
+            continue
+        with closing(connect(db_path)) as conn:
+            conn.execute("DELETE FROM upload_folders WHERE id = ? AND archived_at IS NOT NULL", (folder_id,))
+            conn.commit()
+        deleted.append(folder_id)
+    return {"deleted": deleted, "errors": errors}
 
 
 def update_image_metadata(
@@ -511,6 +691,182 @@ def list_manual_tags(image_id: int, *, db_path: Path = CATALOG_DB_PATH) -> list[
             (image_id,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def upsert_image_search_index(
+    image_id: int,
+    *,
+    folder_id: int,
+    search_text: str,
+    raw_text: str = "",
+    countries: list[str] | None = None,
+    regions: list[str] | None = None,
+    months: list[int] | None = None,
+    features: list[str] | None = None,
+    price_from: int | None = None,
+    duration_days: int | None = None,
+    sidecar_path: str = "",
+    image_path: str = "",
+    branded_path: str = "",
+    source_time: str = "",
+    db_path: Path = CATALOG_DB_PATH,
+) -> dict[str, Any]:
+    now = utc_now_iso()
+    with closing(connect(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO uploaded_image_search_index (
+                image_id, folder_id, search_text, raw_text, country_csv, region_csv,
+                months_csv, features_csv, price_from, duration_days, sidecar_path,
+                image_path, branded_path, source_time, indexed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(image_id) DO UPDATE SET
+                folder_id = excluded.folder_id,
+                search_text = excluded.search_text,
+                raw_text = excluded.raw_text,
+                country_csv = excluded.country_csv,
+                region_csv = excluded.region_csv,
+                months_csv = excluded.months_csv,
+                features_csv = excluded.features_csv,
+                price_from = excluded.price_from,
+                duration_days = excluded.duration_days,
+                sidecar_path = excluded.sidecar_path,
+                image_path = excluded.image_path,
+                branded_path = excluded.branded_path,
+                source_time = excluded.source_time,
+                indexed_at = excluded.indexed_at
+            """,
+            (
+                image_id,
+                folder_id,
+                search_text.strip(),
+                raw_text.strip(),
+                _wrap_csv(countries),
+                _wrap_csv(regions),
+                _wrap_csv(months),
+                _wrap_csv(features),
+                price_from,
+                duration_days,
+                sidecar_path,
+                image_path,
+                branded_path,
+                source_time,
+                now,
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM uploaded_image_search_index WHERE image_id = ?",
+            (image_id,),
+        ).fetchone()
+    return dict(row)
+
+
+def delete_image_search_index(image_id: int, *, db_path: Path = CATALOG_DB_PATH) -> bool:
+    with closing(connect(db_path)) as conn:
+        cursor = conn.execute("DELETE FROM uploaded_image_search_index WHERE image_id = ?", (image_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def missing_search_index_image_ids(*, db_path: Path = CATALOG_DB_PATH) -> list[int]:
+    with closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            """
+            SELECT i.id
+            FROM uploaded_images i
+            JOIN upload_folders f ON f.id = i.folder_id
+            LEFT JOIN uploaded_image_search_index s ON s.image_id = i.id
+            WHERE i.archived_at IS NULL
+              AND f.archived_at IS NULL
+              AND s.image_id IS NULL
+            ORDER BY i.uploaded_at, i.id
+            """
+        ).fetchall()
+    return [int(row["id"]) for row in rows]
+
+
+def _search_index_row_to_public(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "image_id": row["image_id"],
+        "folder_id": row["folder_id"],
+        "sidecar_path": row["sidecar_path"],
+        "image_path": row["image_path"],
+        "branded_path": row["branded_path"] or row["image_path"],
+        "target_id": row["folder_slug"],
+        "group_name": row["folder_name"],
+        "countries": _csv_tokens(row["country_csv"]),
+        "regions": _csv_tokens(row["region_csv"]),
+        "months": [int(value) for value in _csv_tokens(row["months_csv"]) if str(value).isdigit()],
+        "features": _csv_tokens(row["features_csv"]),
+        "price_from": row["price_from"],
+        "duration_days": row["duration_days"],
+        "source_time": row["source_time"] or row["uploaded_at"],
+        "indexed_at": row["indexed_at"],
+        "raw_text": row["raw_text"],
+        "search_text": row["search_text"],
+        "source": "upload_catalog",
+    }
+
+
+def _add_csv_any(clauses: list[str], params: list[Any], column: str, values: list[Any] | None) -> None:
+    cleaned = [str(value).strip() for value in values or [] if str(value).strip()]
+    if not cleaned:
+        return
+    clauses.append("(" + " OR ".join(f"s.{column} LIKE ?" for _ in cleaned) + ")")
+    params.extend(f"%,{value},%" for value in cleaned)
+
+
+def query_image_search_index(
+    *,
+    query_text: str = "",
+    terms: list[str] | None = None,
+    countries: list[str] | None = None,
+    regions: list[str] | None = None,
+    months: list[int] | None = None,
+    features: list[str] | None = None,
+    price_min: int | None = None,
+    price_max: int | None = None,
+    duration_days: int | None = None,
+    limit: int = 60,
+    db_path: Path = CATALOG_DB_PATH,
+) -> list[dict[str, Any]]:
+    clauses = ["i.archived_at IS NULL", "f.archived_at IS NULL"]
+    params: list[Any] = []
+    _add_csv_any(clauses, params, "country_csv", countries)
+    _add_csv_any(clauses, params, "region_csv", regions)
+    _add_csv_any(clauses, params, "months_csv", months)
+    _add_csv_any(clauses, params, "features_csv", features)
+    if price_min is not None:
+        clauses.append("s.price_from >= ?")
+        params.append(int(price_min))
+    if price_max is not None:
+        clauses.append("s.price_from <= ?")
+        params.append(int(price_max))
+    if duration_days is not None:
+        clauses.append("s.duration_days = ?")
+        params.append(int(duration_days))
+
+    search_terms = [str(term).strip() for term in terms or [] if str(term).strip()]
+    if not search_terms and str(query_text).strip():
+        search_terms = [str(query_text).strip()]
+    for term in search_terms:
+        clauses.append("s.search_text LIKE ?")
+        params.append(f"%{term}%")
+
+    params.append(max(1, min(int(limit), 200)))
+    sql = (
+        "SELECT s.*, i.original_filename, i.display_name, i.uploaded_at, "
+        "f.display_name AS folder_name, f.folder_slug "
+        "FROM uploaded_image_search_index s "
+        "JOIN uploaded_images i ON i.id = s.image_id "
+        "JOIN upload_folders f ON f.id = s.folder_id "
+        f"WHERE {' AND '.join(clauses)} "
+        "ORDER BY s.indexed_at DESC, i.uploaded_at DESC LIMIT ?"
+    )
+    with closing(connect(db_path)) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_search_index_row_to_public(row) for row in rows]
 
 
 def add_manual_tag(
