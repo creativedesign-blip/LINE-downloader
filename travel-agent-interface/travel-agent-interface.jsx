@@ -2296,7 +2296,7 @@ function DMPreviewModal({ initial, list, onClose, onCopy, copiedId }) {
         </button>
       </div>
 
-      <div className="h-full flex items-center justify-center p-5" onClick={(event) => event.stopPropagation()}>
+      <div className="h-full flex items-center justify-center px-5 pt-16 pb-28" onClick={(event) => event.stopPropagation()}>
         {canNavigate && (
           <button onClick={() => setIndex((value) => (value - 1 + dmList.length) % dmList.length)} className="absolute left-4 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/90 hover:bg-white" aria-label="上一張">
             <ChevronLeft className="w-5 h-5" />
@@ -2306,7 +2306,7 @@ function DMPreviewModal({ initial, list, onClose, onCopy, copiedId }) {
           src={current.fullImage || current.previewImage}
           dm={current}
           alt={current.title}
-          className="block max-h-[82vh] max-w-[92vw] rounded-lg shadow-2xl bg-stone-100"
+          className="block max-h-full max-w-[92vw] rounded-lg shadow-2xl bg-stone-100"
           loading="eager"
         />
         {canNavigate && (
