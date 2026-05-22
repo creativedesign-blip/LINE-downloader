@@ -434,22 +434,56 @@ function UploadTargetModal({ folders, initialFolder, onClose, onNext }) {
   );
 }
 
-function uploadFileKey(file) {
-  return `${file?.name || ""}-${file?.size || 0}-${file?.lastModified || 0}`;
+function uploadFileKey(file, index = 0) {
+  // Prefix with index so two genuinely-distinct files with the same
+  // name+size+lastModified (Save-As preserves mtime, duplicate copies in
+  // different folders) don't collide on React keys / dimension cache.
+  return `${index}-${file?.name || ""}-${file?.size || 0}-${file?.lastModified || 0}`;
 }
 
-function readUploadImageDimensions(file) {
+const UPLOAD_DIMENSION_TIMEOUT_MS = 10000;
+
+function readUploadImageDimensions(file, signal) {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file);
     const image = new Image();
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      // Detach listeners and clear src so the browser aborts any in-flight
+      // decode; revoke the URL so the blob slot is freed even if the user
+      // changed files before this one finished.
+      image.onload = null;
+      image.onerror = null;
+      image.src = "";
+      URL.revokeObjectURL(url);
+      if (timer) clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
+      resolve(result);
+    };
+    const onAbort = () => finish({ error: "尺寸檢查已取消" });
     image.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve({ width: image.naturalWidth || image.width || 0, height: image.naturalHeight || image.height || 0 });
+      const width = image.naturalWidth || image.width || 0;
+      const height = image.naturalHeight || image.height || 0;
+      if (width === 0 || height === 0) {
+        finish({ error: "圖片尺寸無法判讀" });
+        return;
+      }
+      finish({ width, height });
     };
-    image.onerror = () => {
-      URL.revokeObjectURL(url);
-      resolve({ error: "圖片無法讀取或格式損壞" });
-    };
+    image.onerror = () => finish({ error: "圖片無法讀取或格式損壞" });
+    const timer = setTimeout(
+      () => finish({ error: `圖片尺寸檢查逾時（${UPLOAD_DIMENSION_TIMEOUT_MS / 1000}s）` }),
+      UPLOAD_DIMENSION_TIMEOUT_MS,
+    );
+    if (signal) {
+      if (signal.aborted) {
+        finish({ error: "尺寸檢查已取消" });
+        return;
+      }
+      signal.addEventListener("abort", onAbort);
+    }
     image.src = url;
   });
 }
@@ -463,7 +497,7 @@ function UploadFilesModal({ target, uploading, error, onBack, onClose, onSubmit 
   const totalBytes = fileList.reduce((sum, file) => sum + Number(file.size || 0), 0);
   const fileMessage = files ? validateUploadFiles(files) : "";
   const dimensionIssues = fileList
-    .map((file) => ({ file, result: fileDimensions[uploadFileKey(file)] }))
+    .map((file, index) => ({ file, result: fileDimensions[uploadFileKey(file, index)] }))
     .filter((item) => item.result?.error || item.result?.message);
   const dimensionMessage = dimensionIssues[0]
     ? `${dimensionIssues[0].file.name}: ${dimensionIssues[0].result.error || dimensionIssues[0].result.message}`
@@ -472,29 +506,33 @@ function UploadFilesModal({ target, uploading, error, onBack, onClose, onSubmit 
 
   useEffect(() => {
     const currentFiles = Array.from(files || []);
-    let cancelled = false;
-    setFileDimensions({});
+    // AbortController lets the cleanup actually stop in-flight Image decodes
+    // and revoke their object URLs; the old `let cancelled` flag only blocked
+    // setState but kept bitmaps alive in memory until the browser GC'd them.
+    const controller = new AbortController();
     if (currentFiles.length === 0 || validateUploadFiles(files)) {
+      // Don't clear prior dimensions — if the user trims an over-limit
+      // selection back to valid, the per-file checks we already did for the
+      // files that didn't change are still meaningful.
       setCheckingDimensions(false);
-      return undefined;
+      return () => controller.abort();
     }
+    setFileDimensions({});
     setCheckingDimensions(true);
     Promise.all(
-      currentFiles.map(async (file) => {
-        const key = uploadFileKey(file);
-        const dimensions = await readUploadImageDimensions(file);
+      currentFiles.map(async (file, index) => {
+        const key = uploadFileKey(file, index);
+        const dimensions = await readUploadImageDimensions(file, controller.signal);
         if (dimensions.error) return [key, dimensions];
         const message = validateUploadImageDimensions(dimensions.width, dimensions.height);
         return [key, { ...dimensions, message }];
       })
     ).then((entries) => {
-      if (cancelled) return;
+      if (controller.signal.aborted) return;
       setFileDimensions(Object.fromEntries(entries));
       setCheckingDimensions(false);
     });
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [files]);
 
   const submit = async () => {
@@ -544,12 +582,13 @@ function UploadFilesModal({ target, uploading, error, onBack, onClose, onSubmit 
           </div>
           {fileList.length > 0 && (
             <div className="max-h-44 overflow-y-auto scrollbar-thin rounded-md border" style={{ borderColor: "#E1F5EE" }}>
-              {fileList.map((file) => {
-                const result = fileDimensions[uploadFileKey(file)];
+              {fileList.map((file, index) => {
+                const fileKey = uploadFileKey(file, index);
+                const result = fileDimensions[fileKey];
                 const issue = result?.error || result?.message || "";
                 const dimensions = result?.width && result?.height ? `${result.width}x${result.height}px` : checkingDimensions ? "檢查中" : "";
                 return (
-                  <div key={uploadFileKey(file)} className="px-3 py-2 text-xs" style={{ borderTop: "1px solid #E1F5EE" }}>
+                  <div key={fileKey} className="px-3 py-2 text-xs" style={{ borderTop: "1px solid #E1F5EE" }}>
                     <div className="flex items-center justify-between gap-3">
                       <span className="truncate">{file.name}</span>
                       <span className="text-stone-500 flex-shrink-0">{[dimensions, formatBytes(file.size)].filter(Boolean).join(" · ")}</span>
