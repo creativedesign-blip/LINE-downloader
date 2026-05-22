@@ -47,7 +47,7 @@ DEFAULT_CONFIG = {
     "line_start_timeout_seconds": 90,
     "test_limit": 1,
     "wait_seconds": 2,
-    "run_pipeline_after_group": True,
+    "run_pipeline_after_group": False,
     "pipeline_python": sys.executable,
     "max_images_per_group": 500,
     "max_no_new_download_rounds": 5,
@@ -92,13 +92,6 @@ INVALID_PATH_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 def trace(message: str) -> None:
     print(f"trace: {message}", flush=True)
-
-
-@dataclass
-class DownloadTarget:
-    path: Path
-    should_download: bool
-    reason: str
 
 
 @dataclass
@@ -193,16 +186,10 @@ def group_download_dir(save_root: Path, group_name: str) -> Path:
     return save_root / sanitize_folder_name(group_name)
 
 
-def prepare_download_target(path: Path) -> DownloadTarget:
-    if path.exists():
-        return DownloadTarget(path=path, should_download=False, reason="exists")
-    return DownloadTarget(path=path, should_download=True, reason="")
-
-
 def should_run_pipeline(config: dict[str, Any], override: bool | None = None) -> bool:
     if override is not None:
         return override
-    return bool(config.get("run_pipeline_after_group", True))
+    return bool(config.get("run_pipeline_after_group", False))
 
 
 def resolve_pipeline_python(config: dict[str, Any]) -> str:
@@ -706,16 +693,6 @@ class LineRpa:
         trace("LINE.exe process found but no usable visible LINE window matched")
         return None
 
-    def find_line_window_from_process(self) -> int | None:
-        candidates = self._line_window_candidates(line_pids=self._line_process_ids())
-        if candidates:
-            self._trace_line_window_candidates(candidates)
-            for candidate in candidates:
-                if self._usable_line_window(candidate):
-                    return candidate.hwnd
-        trace("LINE.exe process found but no usable visible LINE window matched")
-        return None
-
     def search_and_open_group(self, group_name: str) -> None:
         trace(f"search group: {group_name}")
         self.click_ratio("search_box")
@@ -1180,6 +1157,7 @@ def run(
                     executed_at=now,
                 )
             )
+        write_log(save_root / "line_download_log.xlsx", records)
     else:
         rpa = LineRpa(config)
         for group in groups:
@@ -1236,7 +1214,6 @@ def run(
                     mark_pipeline_skipped(record, "download status is not ok/partial")
             write_log(log_path, records)
 
-    write_log(save_root / "line_download_log.xlsx", records)
     for record in records:
         pipeline = f", pipeline={record.pipeline_status}" if record.pipeline_status != "not-run" else ""
         failure = f", category={record.failure_category}, reason={record.failure_reason}" if record.status == "failed" else ""

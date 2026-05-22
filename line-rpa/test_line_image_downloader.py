@@ -74,16 +74,6 @@ class LineImageDownloaderTests(unittest.TestCase):
             self.assertEqual(folder.name, "A_B_C_D__E_F_G_")
             self.assertTrue(str(folder).startswith(tmp))
 
-    def test_existing_download_is_skipped_without_overwrite(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "image.jpg"
-            target.write_text("old", encoding="utf-8")
-
-            result = app.prepare_download_target(target)
-
-            self.assertFalse(result.should_download)
-            self.assertEqual(target.read_text(encoding="utf-8"), "old")
-
     def test_write_log_creates_expected_columns_and_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "log.xlsx"
