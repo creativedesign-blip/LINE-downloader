@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from PIL import Image, ImageOps
 
@@ -616,6 +616,74 @@ def _zip_bytes_for_files(files: list[Path]) -> bytes:
     return buffer.getvalue()
 
 
+_LINE_FILENAME_RE = re.compile(r"^(.+?)_\d{4}_line_\d+_\d+\.[A-Za-z]+$")
+_UPLOAD_DISPLAY_NAME_CACHE: dict[str, str] = {}
+
+
+def _lookup_upload_folder_display_name(folder_slug: str) -> str | None:
+    """Look up upload_catalog for display_name by folder_slug. Cache hits
+    only; None values re-query so a missing catalog DB recovers as soon as
+    one appears."""
+    cached = _UPLOAD_DISPLAY_NAME_CACHE.get(folder_slug)
+    if cached:
+        return cached
+    try:
+        with sqlite3.connect(str(CATALOG_DB_PATH)) as conn:
+            row = conn.execute(
+                "SELECT display_name FROM upload_folders WHERE folder_slug = ? LIMIT 1",
+                (folder_slug,),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    display = (row[0] if row else "") or ""
+    if display:
+        _UPLOAD_DISPLAY_NAME_CACHE[folder_slug] = display
+        return display
+    return None
+
+
+def _humanize_source(item: dict) -> tuple[str, str]:
+    """Return (label, kind) describing the human-readable source. kind is
+    'line' (auto-crawled LINE) or 'upload' (manual upload) or 'unknown'.
+    The label is what we want on screen — never the raw batch slug."""
+    target_id = str(item.get("target_id") or "")
+    group_name = str(item.get("group_name") or "")
+    image_path = str(item.get("image_path") or item.get("branded_path") or "")
+
+    # LINE auto-fetch batch slug — derive real group from filename prefix,
+    # because RPA didn't write source.groupName into the sidecar and reindex
+    # falls back to the run folder name, mashing all groups together.
+    if target_id.startswith("line_auto_") or group_name.startswith("line_auto_"):
+        leaf = image_path.replace("\\", "/").rsplit("/", 1)[-1]
+        match = _LINE_FILENAME_RE.match(leaf)
+        if match:
+            return (match.group(1), "line")
+        # Fallback: skip 'line_auto_YYYYMMDD_HHMMSS_' (4 tokens) to find groups
+        rest = target_id.split("_", 4)
+        if len(rest) >= 5:
+            return (rest[4], "line")
+        return (target_id or group_name, "line")
+
+    # Manual upload folder — look up display_name from upload_catalog
+    if target_id.startswith("upload_") or group_name.startswith("upload_"):
+        slug = target_id or group_name
+        display = _lookup_upload_folder_display_name(slug)
+        if display:
+            return (display, "upload")
+        # Fallback: strip prefix + timestamp tokens (upload_YYYYMMDD_HHMMSS_)
+        rest = slug.split("_", 3)
+        if len(rest) >= 4:
+            return (rest[3], "upload")
+        return (slug, "upload")
+
+    # Legacy / pre-batch LINE: target_id IS the group name
+    if group_name:
+        return (group_name, "line")
+    if target_id:
+        return (target_id, "line")
+    return ("Agent", "unknown")
+
+
 def _with_media_urls(payload: dict) -> dict:
     def convert_item(item: dict) -> dict:
         copy = dict(item)
@@ -631,6 +699,9 @@ def _with_media_urls(payload: dict) -> dict:
             # producing a visibly softer modal preview than the same file shown
             # in the upload workspace via /media?path=... (branded_url).
             copy["preview_url"] = f"/media?id={media_id}"
+        source_label, source_kind = _humanize_source(item)
+        copy["source_label"] = source_label
+        copy["source_kind"] = source_kind
         return copy
 
     copy = dict(payload)
@@ -1145,16 +1216,18 @@ def _folder_detail(
         image_copy["ocr_tags_override"] = _normalize_ocr_tag_values(image_copy.get("ocr_tags_override"))
         if current_path is not None:
             rel = current_path.relative_to(PROJECT_ROOT).as_posix()
+            media_rel = quote(rel, safe="/")
             image_copy["current_path"] = rel
             image_copy["media_id"] = _media_id(rel)
-            image_copy["image_url"] = f"/media?path={rel}"
-            image_copy["thumbnail_url"] = f"/media/thumbnail?path={rel}&w=360"
+            image_copy["image_url"] = f"/media?path={media_rel}"
+            image_copy["thumbnail_url"] = f"/media/thumbnail?path={media_rel}&w=360"
             branded = branded_by_source.get(rel) or branded_by_hash.get(str(image.get("sha256") or ""))
             if branded is not None:
                 branded_rel = branded.relative_to(PROJECT_ROOT).as_posix()
+                branded_media_rel = quote(branded_rel, safe="/")
                 image_copy["branded_path"] = branded_rel
-                image_copy["branded_url"] = f"/media?path={branded_rel}"
-                image_copy["branded_thumbnail_url"] = f"/media/thumbnail?path={branded_rel}&w=360"
+                image_copy["branded_url"] = f"/media?path={branded_media_rel}"
+                image_copy["branded_thumbnail_url"] = f"/media/thumbnail?path={branded_media_rel}&w=360"
         image_copy["manual_tags"] = list_manual_tags(int(image["id"]))
         image_copy["system_tags"] = _system_tags_for_image(current_path)
         image_copy["flow_label"] = _image_flow_label(image_copy, folder)

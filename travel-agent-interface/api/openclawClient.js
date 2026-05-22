@@ -24,8 +24,12 @@ export const uploadApi = {
     return Array.isArray(payload.folders) ? payload.folders : [];
   },
 
-  async getFolder(folderId) {
-    const response = await fetch(`/api/uploads/folders/${folderId}`);
+  async getFolder(folderId, filters = {}) {
+    const params = new URLSearchParams();
+    if (filters.uploadedFrom) params.set("uploaded_from", filters.uploadedFrom);
+    if (filters.uploadedTo) params.set("uploaded_to", filters.uploadedTo);
+    const query = params.toString();
+    const response = await fetch(`/api/uploads/folders/${folderId}${query ? `?${query}` : ""}`);
     return readJson(response, "folder detail failed");
   },
 
@@ -91,6 +95,38 @@ export const uploadApi = {
   async archiveImage(imageId) {
     const response = await fetch(`/api/uploads/images/${imageId}`, { method: "DELETE" });
     return readJson(response, "archive image failed");
+  },
+
+  async archiveFolder(folderId) {
+    const response = await fetch(`/api/uploads/folders/${folderId}`, { method: "DELETE" });
+    return readJson(response, "archive folder failed");
+  },
+
+  async downloadFolder(folderId, filters = {}) {
+    const response = await fetch(`/api/uploads/folders/${folderId}/download`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image_ids: filters.imageIds || [],
+        uploaded_from: filters.uploadedFrom || "",
+        uploaded_to: filters.uploadedTo || "",
+      }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error || "download folder failed");
+    }
+    const blob = await response.blob();
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `upload-folder-${folderId}-${stamp}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return { ok: true };
   },
 };
 

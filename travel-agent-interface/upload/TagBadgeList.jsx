@@ -2,10 +2,10 @@ import { tagValues } from "./tagUtils.js";
 
 export default function TagBadgeList({ tags, emptyText = "雙擊新增", tone = "system", onRemove }) {
   const values = tagValues(tags);
-  if (!values.length) return <span className="text-stone-400">{emptyText}</span>;
+  if (!values.length) return <span className="text-xs leading-4 text-stone-400">{emptyText}</span>;
   const badgeStyle = tone === "manual"
-    ? { backgroundColor: "#ECFDF5", borderColor: "#BBF7D0", color: "#166534" }
-    : { backgroundColor: "#EEF2FF", borderColor: "#C7D2FE", color: "#3730A3" };
+    ? { backgroundColor: "#F9F9F9", borderColor: "#1D9E75", color: "#0F6E56" }
+    : { backgroundColor: "#E1F5EE", borderColor: "#1D9E75", color: "#0F6E56" };
   return (
     <div className="flex flex-wrap gap-1">
       {values.map((tag) => (

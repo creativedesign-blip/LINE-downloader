@@ -25,6 +25,12 @@ $JobStatusPath = Join-Path $LogDir "latest_job.json"
 $SettingsPath = Join-Path $LogDir "settings.json"
 $RapidOcrModelDir = Join-Path $ProjectRoot ".cache\rapidocr-models"
 
+$pythonPathParts = @($ProjectRoot)
+if ($env:PYTHONPATH) {
+    $pythonPathParts += ($env:PYTHONPATH -split ";" | Where-Object { $_ })
+}
+$env:PYTHONPATH = (($pythonPathParts | Select-Object -Unique) -join ";")
+
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 if ($TriggerSource -ne "test" -and (Test-Path $SettingsPath)) {

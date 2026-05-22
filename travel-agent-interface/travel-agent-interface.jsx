@@ -608,7 +608,8 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
         regions.length ? `地區：${regions.join("、")}` : "地區未標示",
         item.group_name || item.target_id ? `來源：${item.group_name || item.target_id}` : "來源未標示",
       ],
-      source: item.group_name || item.target_id || "Agent",
+      source: item.source_label || item.group_name || item.target_id || "Agent",
+      sourceKind: item.source_kind || "unknown",
       raw: item,
     };
   };
@@ -2318,7 +2319,18 @@ function DMPreviewModal({ initial, list, onClose, onCopy, copiedId }) {
 
       <div className="absolute left-4 right-4 bottom-4 flex items-center justify-between gap-3 rounded-lg bg-white/95 px-4 py-3 shadow-xl">
         <div className="min-w-0">
-          <div className="text-sm font-medium truncate">{current.source}</div>
+          <div className="flex items-center gap-1.5 mb-0.5">
+            <span
+              className="shrink-0 rounded-sm px-1.5 py-0.5 text-[9px] font-medium tracking-wider uppercase"
+              style={{
+                backgroundColor: current.sourceKind === "upload" ? "#0F6E56" : current.sourceKind === "line" ? "#2D8BC0" : "#78716C",
+                color: "#F9F9F9",
+              }}
+            >
+              {current.sourceKind === "upload" ? "上傳" : current.sourceKind === "line" ? "LINE" : "來源"}
+            </span>
+            <div className="text-sm font-medium truncate">{current.source}</div>
+          </div>
           <div className="text-xs text-stone-500 truncate">{current.region} · {current.period}</div>
         </div>
         <div className="shrink-0 flex items-center gap-2">
