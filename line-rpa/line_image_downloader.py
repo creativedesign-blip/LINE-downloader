@@ -1242,11 +1242,26 @@ class LineRpa:
             win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
         finally:
             win32clipboard.CloseClipboard()
+        # Snapshot seq AFTER our write. If it advances during the paste
+        # window, someone else (user copying, Phone Link sync) modified
+        # the clipboard and we must not stomp their fresh content.
+        try:
+            seq_after_our_write: int | None = win32clipboard.GetClipboardSequenceNumber()
+        except Exception:
+            seq_after_our_write = None
         self.hotkey(win32con.VK_CONTROL, ord("V"))
         if saved_text is not None:
             # 250ms gives LINE's WM_PASTE a chance to read CF_UNICODETEXT
             # before we overwrite. 100ms wasn't enough on loaded machines.
             time.sleep(0.25)
+            if seq_after_our_write is not None:
+                try:
+                    seq_now = win32clipboard.GetClipboardSequenceNumber()
+                except Exception:
+                    seq_now = seq_after_our_write
+                if seq_now != seq_after_our_write:
+                    trace("clipboard changed during paste window; skipping restore to preserve user's new content")
+                    return
             restored = False
             try:
                 self._open_clipboard_retry()
