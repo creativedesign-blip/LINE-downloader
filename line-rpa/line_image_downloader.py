@@ -1,4 +1,5 @@
 import argparse
+import copy
 import ctypes
 import hashlib
 import json
@@ -126,10 +127,10 @@ class GroupResult:
 
 def load_config(path: Path) -> dict[str, Any]:
     if not path.exists():
-        return DEFAULT_CONFIG.copy()
+        return copy.deepcopy(DEFAULT_CONFIG)
     with path.open("r", encoding="utf-8") as f:
         user_config = json.load(f)
-    config = DEFAULT_CONFIG.copy()
+    config = copy.deepcopy(DEFAULT_CONFIG)
     config.update(user_config)
     config["coordinates"] = DEFAULT_CONFIG["coordinates"].copy() | user_config.get("coordinates", {})
     return config
@@ -370,6 +371,9 @@ class LineRpa:
         started = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         save_dir.mkdir(parents=True, exist_ok=True)
         trace(f"start group: {group_name}")
+        # Clear any per-group counts leftover from a previous group so the
+        # except path below can't surface stale numbers.
+        self._last_counts = {}
         result = GroupResult(
             group_name=group_name,
             status="running",
@@ -450,9 +454,17 @@ class LineRpa:
             else:
                 result.status = "ok" if counts["failed"] == 0 else "partial"
         except Exception as exc:
-            result.status = "failed"
+            # download_all_visible_images may have already moved files into
+            # save_dir and flushed hashes before the exception. Surface that
+            # partial progress so log and image_index stay consistent.
+            partial = getattr(self, "_last_counts", None) or {}
+            result.expected_count = partial.get("attempted", 0)
+            result.success_count = partial.get("success", 0)
+            result.skipped_count = partial.get("skipped", 0)
+            result.duplicate_count = partial.get("duplicate", 0)
             result.failed_count += 1
             result.failure_reason = str(exc)
+            result.status = "partial" if partial.get("success", 0) > 0 else "failed"
         finally:
             self.try_close_viewer()
             self.close_extra_line_windows()
@@ -789,6 +801,12 @@ class LineRpa:
         seen_log_path: Path | None = None,
     ) -> dict[str, int]:
         counts = {"attempted": 0, "success": 0, "skipped": 0, "duplicate": 0, "failed": 0, "save_dialog_seen": 0}
+        # Exposed so run_group's except handler can read partial progress when
+        # this method raises mid-loop, instead of reporting success_count=0
+        # while the finally block flushes hashes for those same downloads.
+        self._last_counts = counts
+        duplicate_dir = save_dir / ".duplicate_dropped"
+        self._cleanup_old_duplicate_drops(duplicate_dir)
         max_images = int(self.config.get("max_images_per_group", 500))
         next_image_wait = float(self.config.get("next_image_wait_seconds", 1.0))
         no_new_rounds = 0
@@ -797,8 +815,16 @@ class LineRpa:
         media_hwnd = self.find_media_window()
         if not media_hwnd:
             raise RuntimeError("media window not found")
-        if media_hwnd != self.hwnd:
-            self.apply_window_layout(media_hwnd, "media_window", DEFAULT_CONFIG["media_window"])
+        if media_hwnd == self.hwnd:
+            # find_media_window's no-candidate fallback returns self.hwnd; the
+            # photos/videos sub-window never opened. Don't silently click the
+            # chat list at first_photo_thumbnail's ratio.
+            raise RuntimeError(
+                "media window not detected: find_media_window fell back to the main "
+                "LINE window. The photos/videos sub-window may not have opened, "
+                "or LINE titled it with something other than 'LINE'."
+            )
+        self.apply_window_layout(media_hwnd, "media_window", DEFAULT_CONFIG["media_window"])
         trace(f"media hwnd={media_hwnd}")
 
         self.double_click_window_ratio(media_hwnd, "first_photo_thumbnail")
@@ -810,7 +836,6 @@ class LineRpa:
         # block bounds crash loss to fewer than INDEX_FLUSH_EVERY hashes.
         INDEX_FLUSH_EVERY = 10
         pending_index_writes = 0
-        duplicate_dir = save_dir / ".duplicate_dropped"
         try:
             for _ in range(max_images):
                 if not win32gui.IsWindow(viewer_hwnd):
@@ -838,22 +863,21 @@ class LineRpa:
                         image_seen_log=image_seen_log,
                         target_id=group_name,
                     )
-                    if duplicate_paths:
-                        duplicate_dir.mkdir(exist_ok=True)
                     for duplicate_path in duplicate_paths:
                         # Move duplicates to .duplicate_dropped/ instead of deleting,
                         # so review of "why was this rejected" stays possible.
                         try:
+                            duplicate_dir.mkdir(parents=True, exist_ok=True)
                             target = duplicate_dir / duplicate_path.name
                             if target.exists():
                                 stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                                 target = duplicate_dir / f"{stamp}_{duplicate_path.name}"
-                            shutil.move(str(duplicate_path), str(target))
+                            if not self._safe_move(duplicate_path, target):
+                                try: duplicate_path.unlink()
+                                except OSError: pass
                         except OSError:
-                            try:
-                                duplicate_path.unlink()
-                            except OSError:
-                                pass
+                            try: duplicate_path.unlink()
+                            except OSError: pass
                     counts["success"] += unique_count
                     counts["duplicate"] += len(duplicate_paths)
                     no_new_rounds = 0
@@ -878,7 +902,12 @@ class LineRpa:
                 time.sleep(next_image_wait)
         finally:
             if pending_index_writes and image_index is not None and index_path is not None and group_name is not None:
-                save_image_index(index_path, image_index)
+                try:
+                    save_image_index(index_path, image_index)
+                except Exception as flush_exc:
+                    # Swallow so a failing flush in the cleanup path doesn't
+                    # replace the original exception that put us here.
+                    trace(f"final image_index flush failed: {flush_exc}")
         return counts
 
     @staticmethod
@@ -918,6 +947,22 @@ class LineRpa:
     @staticmethod
     def file_sha256(path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    @staticmethod
+    def _cleanup_old_duplicate_drops(duplicate_dir: Path, *, retention_days: int = 30) -> None:
+        if not duplicate_dir.exists():
+            return
+        cutoff = time.time() - retention_days * 24 * 60 * 60
+        try:
+            candidates = list(duplicate_dir.iterdir())
+        except OSError:
+            return
+        for path in candidates:
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+            except OSError:
+                continue
 
     def find_viewer_window(self, exclude_hwnds: set[int] | None = None) -> int | None:
         excluded = exclude_hwnds or set()
@@ -992,24 +1037,53 @@ class LineRpa:
         return files
 
     @staticmethod
-    def _wait_file_stable(path: Path, *, settle_seconds: float = 0.3) -> bool:
-        """Return True if path's size and mtime are unchanged across settle_seconds.
+    def _wait_file_stable(path: Path, *, settle_seconds: float = 0.3,
+                          timeout_seconds: float = 3.0) -> bool:
+        """Return True once path's size and mtime stop changing within a
+        settle_seconds window, polling up to timeout_seconds total.
 
-        Mirrors filter.py:wait_stable so a download that's still flushing
-        doesn't get copied half-written.
+        Polling (vs filter.py:wait_stable's one-shot 0.3s check) gives slow
+        LINE writes a second chance instead of being orphaned in ~/Downloads
+        on the very next iteration's `before` snapshot.
         """
-        try:
-            st1 = path.stat()
-        except FileNotFoundError:
-            return False
-        if st1.st_size == 0:
-            return False
-        time.sleep(settle_seconds)
-        try:
-            st2 = path.stat()
-        except FileNotFoundError:
-            return False
-        return st2.st_size == st1.st_size and st2.st_mtime == st1.st_mtime
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                st1 = path.stat()
+            except FileNotFoundError:
+                return False
+            if st1.st_size == 0:
+                time.sleep(0.1)
+                continue
+            time.sleep(settle_seconds)
+            try:
+                st2 = path.stat()
+            except FileNotFoundError:
+                return False
+            if st2.st_size == st1.st_size and st2.st_mtime == st1.st_mtime:
+                return True
+        return False
+
+    @staticmethod
+    def _safe_move(src: Path, dst: Path, *, attempts: int = 3,
+                   backoff: float = 0.25) -> bool:
+        """shutil.move with retry on Windows sharing violations.
+
+        LINE may keep a file handle open briefly after writing it (thumbnail
+        generation, AV scan); the first os.rename then raises WinError 32.
+        Retrying after a short backoff usually succeeds.
+        """
+        for i in range(attempts):
+            try:
+                shutil.move(str(src), str(dst))
+                return True
+            except PermissionError:
+                if i == attempts - 1:
+                    return False
+                time.sleep(backoff * (i + 1))
+            except FileNotFoundError:
+                return False
+        return False
 
     def move_new_downloads(self, before: set[Path], save_dir: Path) -> list[Path]:
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -1027,7 +1101,9 @@ class LineRpa:
                 except OSError:
                     pass
                 continue
-            shutil.move(str(source), str(target))
+            if not self._safe_move(source, target):
+                trace(f"could not move {source.name} (file locked?); will retry next iteration")
+                continue
             moved.append(target)
         return moved
 
@@ -1140,8 +1216,10 @@ class LineRpa:
         try:
             try:
                 saved_text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-            except (TypeError, OSError):
-                # Non-text clipboard formats (image, file list) are not restored.
+            except Exception:
+                # Non-text clipboard formats (image, file list) plus
+                # pywintypes.error from older pywin32 builds — restore is
+                # best-effort, so any failure here means skip restoration.
                 saved_text = None
             win32clipboard.EmptyClipboard()
             win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
@@ -1149,16 +1227,22 @@ class LineRpa:
             win32clipboard.CloseClipboard()
         self.hotkey(win32con.VK_CONTROL, ord("V"))
         if saved_text is not None:
-            time.sleep(0.1)  # let paste finish reading before we overwrite
+            # 250ms gives LINE's WM_PASTE a chance to read CF_UNICODETEXT
+            # before we overwrite. 100ms wasn't enough on loaded machines.
+            time.sleep(0.25)
+            restored = False
             try:
                 win32clipboard.OpenClipboard()
                 try:
                     win32clipboard.EmptyClipboard()
                     win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, saved_text)
+                    restored = True
                 finally:
                     win32clipboard.CloseClipboard()
             except Exception:
                 pass
+            if not restored:
+                trace(f"clipboard restore failed; user clipboard may be empty ({len(saved_text)} chars lost)")
 
     def hotkey(self, modifier: int, key: int) -> None:
         win32api.keybd_event(modifier, 0, 0, 0)

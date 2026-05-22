@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 import json
 import shutil
@@ -210,6 +211,48 @@ class LineImageDownloaderTests(unittest.TestCase):
 
             self.assertEqual(flushed_groups, [["group-a"], ["group-a", "group-b"]])
 
+    def test_run_keeps_first_group_log_when_next_group_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            workbook_path = tmp_path / "line.xlsx"
+            config_path = tmp_path / "config.json"
+            save_root = tmp_path / "download"
+
+            wb = Workbook()
+            ws = wb.active
+            ws["A1"] = "group-a"
+            ws["A2"] = "group-b"
+            wb.save(workbook_path)
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "excel_path": str(workbook_path),
+                        "save_root": str(save_root),
+                        "stop_on_group_failure": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            flushed_groups = []
+
+            class FakeRpa:
+                def __init__(self, config):
+                    pass
+
+                def run_group(self, group_name, save_dir):
+                    if group_name == "group-b":
+                        raise RuntimeError("boom")
+                    return app.GroupResult(group_name, "ok", "", 1, 1, 0, 0, 0, str(save_dir), "")
+
+            def fake_write_log(log_path, records):
+                flushed_groups.append([record.group_name for record in records])
+
+            with patch.object(app, "LineRpa", FakeRpa), patch.object(app, "write_log", fake_write_log):
+                with self.assertRaises(RuntimeError):
+                    app.run(config_path, process_all=True)
+
+            self.assertEqual(flushed_groups, [["group-a"]])
+
     def test_config_relative_paths_resolve_from_config_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -235,6 +278,15 @@ class LineImageDownloaderTests(unittest.TestCase):
             app.run(config_path, dry_run=True)
 
             self.assertTrue((save_root / "line_download_log.xlsx").exists())
+
+    def test_load_config_returns_independent_nested_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = app.load_config(Path(tmp) / "missing-a.json")
+            first["coordinates"]["search_box"][0] = 0.999
+
+            second = app.load_config(Path(tmp) / "missing-b.json")
+
+            self.assertEqual(second["coordinates"]["search_box"], app.DEFAULT_CONFIG["coordinates"]["search_box"])
 
     def test_default_paths_are_inside_line_rpa_folder(self):
         self.assertEqual(Path(app.DEFAULT_CONFIG["excel_path"]).name, "line.XLSX")
@@ -475,6 +527,50 @@ class LineImageDownloaderTests(unittest.TestCase):
             self.assertTrue((save_dir / "stable.png").exists())
             self.assertTrue(unstable.exists())
             self.assertFalse((save_dir / "unstable.png").exists())
+
+    def test_wait_file_stable_returns_true_for_settled_tmp_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settled.png"
+            path.write_bytes(b"settled")
+
+            self.assertTrue(app.LineRpa._wait_file_stable(path, settle_seconds=0.01, timeout_seconds=0.2))
+
+    def test_wait_file_stable_returns_false_while_size_is_growing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "growing.png"
+            path.write_bytes(b"x")
+
+            def grow_file():
+                deadline = app.time.monotonic() + 0.25
+                while app.time.monotonic() < deadline:
+                    with path.open("ab") as f:
+                        f.write(b"x")
+                    app.time.sleep(0.015)
+
+            thread = threading.Thread(target=grow_file)
+            thread.start()
+            try:
+                stable = app.LineRpa._wait_file_stable(path, settle_seconds=0.05, timeout_seconds=0.18)
+            finally:
+                thread.join()
+
+            self.assertFalse(stable)
+
+    def test_duplicate_drop_cleanup_removes_files_older_than_retention(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            duplicate_dir = Path(tmp) / ".duplicate_dropped"
+            duplicate_dir.mkdir()
+            old_file = duplicate_dir / "old.png"
+            fresh_file = duplicate_dir / "fresh.png"
+            old_file.write_bytes(b"old")
+            fresh_file.write_bytes(b"fresh")
+            old_time = app.time.time() - 31 * 24 * 60 * 60
+            app.os.utime(old_file, (old_time, old_time))
+
+            app.LineRpa._cleanup_old_duplicate_drops(duplicate_dir, retention_days=30)
+
+            self.assertFalse(old_file.exists())
+            self.assertTrue(fresh_file.exists())
 
     def test_download_stops_and_moves_duplicate_when_hash_exists_in_index(self):
         with tempfile.TemporaryDirectory() as tmp:
