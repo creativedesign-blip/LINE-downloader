@@ -1210,9 +1210,26 @@ class LineRpa:
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, x, y, 0, 0)
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, x, y, 0, 0)
 
+    @staticmethod
+    def _open_clipboard_retry(*, attempts: int = 5, backoff: float = 0.05) -> None:
+        """OpenClipboard with backoff retry.
+
+        Clipboard managers (Win+V history, Ditto), AV shell hooks, and any
+        process that just copied can briefly hold the global clipboard lock.
+        Backoff: 50/100/150/200ms — total under 500ms in the worst case.
+        """
+        for i in range(attempts):
+            try:
+                win32clipboard.OpenClipboard()
+                return
+            except Exception:
+                if i == attempts - 1:
+                    raise
+                time.sleep(backoff * (i + 1))
+
     def type_clipboard(self, text: str) -> None:
         saved_text: str | None = None
-        win32clipboard.OpenClipboard()
+        self._open_clipboard_retry()
         try:
             try:
                 saved_text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
@@ -1232,7 +1249,7 @@ class LineRpa:
             time.sleep(0.25)
             restored = False
             try:
-                win32clipboard.OpenClipboard()
+                self._open_clipboard_retry()
                 try:
                     win32clipboard.EmptyClipboard()
                     win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, saved_text)
