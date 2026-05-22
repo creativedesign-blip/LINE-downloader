@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import io
+import math
 import mimetypes
 import os
 import re
@@ -679,6 +680,69 @@ SUPPORTED_UPLOAD_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_UPLOAD_FILE_BYTES = 15 * 1024 * 1024
 MAX_UPLOAD_TOTAL_BYTES = 200 * 1024 * 1024
 MAX_UPLOAD_FILE_COUNT = 50
+MIN_UPLOAD_IMAGE_EDGE_PX = 50
+FALLBACK_MIN_UPLOAD_IMAGE_WIDTH_PX = 620
+BRANDING_CONFIG_PATH = PROJECT_ROOT / "config" / "branding.json"
+
+
+def _minimum_brandable_width(
+    logo_width: int,
+    logo_width_ratio: float,
+    logo_scale_min: float,
+    logo_padding_ratio: float,
+) -> int:
+    if logo_width <= 0 or logo_width_ratio <= 0 or logo_scale_min <= 0:
+        return FALLBACK_MIN_UPLOAD_IMAGE_WIDTH_PX
+    padding_ratio = max(0.0, min(float(logo_padding_ratio or 0.0), 0.49))
+    approximate = max(
+        MIN_UPLOAD_IMAGE_EDGE_PX,
+        int(math.ceil((logo_width * logo_scale_min) / logo_width_ratio)),
+    )
+    if padding_ratio:
+        approximate = int(math.ceil(approximate / (1.0 - (2.0 * padding_ratio))))
+
+    width = max(MIN_UPLOAD_IMAGE_EDGE_PX, approximate)
+    while True:
+        pad = int(width * padding_ratio)
+        available_w = max(1, width - (pad * 2))
+        scale = (available_w * logo_width_ratio) / logo_width
+        if scale >= logo_scale_min:
+            return width
+        width += 1
+
+
+def _upload_image_size_requirement() -> tuple[int, int]:
+    try:
+        cfg = json.loads(BRANDING_CONFIG_PATH.read_text(encoding="utf-8"))
+        logo_path = (PROJECT_ROOT / str(cfg["logoPath"])).resolve()
+        with Image.open(logo_path) as logo:
+            logo_width = int(logo.size[0])
+        min_width = _minimum_brandable_width(
+            logo_width,
+            float(cfg.get("logoWidthRatio") or 0),
+            float(cfg.get("logoScaleMin") or 0),
+            float(cfg.get("logoPaddingRatio") or 0),
+        )
+    except Exception:
+        min_width = FALLBACK_MIN_UPLOAD_IMAGE_WIDTH_PX
+    return max(MIN_UPLOAD_IMAGE_EDGE_PX, min_width), MIN_UPLOAD_IMAGE_EDGE_PX
+
+
+def _validate_upload_image_dimensions(content: bytes) -> str | None:
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            width, height = image.size
+            image.verify()
+    except Exception:
+        return "圖片無法讀取或格式損壞"
+
+    min_width, min_edge = _upload_image_size_requirement()
+    if width < min_edge or height < min_edge or width < min_width:
+        return (
+            f"圖片太小：{width}x{height}px。品牌組圖需要寬度至少 {min_width}px，"
+            f"且寬、高都必須至少 {min_edge}px。請上傳 LINE 原圖或較高解析度圖片。"
+        )
+    return None
 
 
 def _extract_multipart_boundary(content_type: str) -> bytes:
@@ -1975,6 +2039,10 @@ class Handler(SimpleHTTPRequestHandler):
                     if len(content) > MAX_UPLOAD_FILE_BYTES:
                         rejected.append(f"{filename}: file too large")
                         continue
+                    size_error = _validate_upload_image_dimensions(content)
+                    if size_error:
+                        rejected.append(f"{filename}: {size_error}")
+                        continue
                     while True:
                         target = target_inbox / safe_stored_filename(filename, next_index)
                         if not target.exists() and not stored_path_is_registered(target):
@@ -1989,7 +2057,13 @@ class Handler(SimpleHTTPRequestHandler):
                     return
                 folder = get_folder(int(folder["id"])) or folder
                 pipeline = self._start_upload_pipeline(folder, trigger_source="upload")
-                self._json({"ok": bool(pipeline.get("ok")), "folder": folder, "images": added, "pipeline": pipeline})
+                self._json({
+                    "ok": bool(pipeline.get("ok")),
+                    "folder": folder,
+                    "images": added,
+                    "rejected": rejected,
+                    "pipeline": pipeline,
+                })
                 return
 
             match = re.fullmatch(r"/api/uploads/folders/(\d+)/download", path)
