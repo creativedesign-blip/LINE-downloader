@@ -35,6 +35,118 @@ class UploadCatalogTests(unittest.TestCase):
             self.assertEqual(tags[0]["id"], tag["id"])
             self.assertEqual(tags[0]["tag"], "主打")
 
+    def test_manual_tags_apply_to_same_sha_images(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "catalog.db"
+            folder = upload_catalog.create_folder("Same image", folder_slug="upload_test_same_sha", db_path=db_path)
+            first_path = Path(tmp) / "first.jpg"
+            second_path = Path(tmp) / "second.jpg"
+            first_path.write_bytes(b"same image bytes")
+            second_path.write_bytes(b"same image bytes")
+            first = upload_catalog.add_image(folder["id"], first_path, "first.jpg", db_path=db_path)
+            second = upload_catalog.add_image(folder["id"], second_path, "second.jpg", db_path=db_path)
+
+            upload_catalog.add_manual_tag(first["id"], "New Zealand", db_path=db_path)
+
+            self.assertEqual(
+                [tag["tag"] for tag in upload_catalog.list_manual_tags(first["id"], db_path=db_path)],
+                ["New Zealand"],
+            )
+            self.assertEqual(
+                [tag["tag"] for tag in upload_catalog.list_manual_tags(second["id"], db_path=db_path)],
+                ["New Zealand"],
+            )
+
+    def test_manual_tag_updates_and_deletes_apply_to_same_sha_images(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "catalog.db"
+            folder = upload_catalog.create_folder("Same image", folder_slug="upload_test_same_sha_edit", db_path=db_path)
+            first_path = Path(tmp) / "first.jpg"
+            second_path = Path(tmp) / "second.jpg"
+            first_path.write_bytes(b"same image bytes")
+            second_path.write_bytes(b"same image bytes")
+            first = upload_catalog.add_image(folder["id"], first_path, "first.jpg", db_path=db_path)
+            second = upload_catalog.add_image(folder["id"], second_path, "second.jpg", db_path=db_path)
+            tag = upload_catalog.add_manual_tag(first["id"], "old", db_path=db_path)
+
+            updated = upload_catalog.update_manual_tag(tag["id"], "new", note="synced", db_path=db_path)
+
+            self.assertIsNotNone(updated)
+            self.assertEqual(
+                [item["tag"] for item in upload_catalog.list_manual_tags(first["id"], db_path=db_path)],
+                ["new"],
+            )
+            self.assertEqual(
+                [item["tag"] for item in upload_catalog.list_manual_tags(second["id"], db_path=db_path)],
+                ["new"],
+            )
+
+            self.assertTrue(upload_catalog.delete_manual_tag(updated["id"], db_path=db_path))
+            self.assertEqual(upload_catalog.list_manual_tags(first["id"], db_path=db_path), [])
+            self.assertEqual(upload_catalog.list_manual_tags(second["id"], db_path=db_path), [])
+
+    def test_manual_tag_update_repairs_same_sha_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "catalog.db"
+            folder = upload_catalog.create_folder("Same image", folder_slug="upload_test_same_sha_drift", db_path=db_path)
+            first_path = Path(tmp) / "first.jpg"
+            second_path = Path(tmp) / "second.jpg"
+            first_path.write_bytes(b"same image bytes")
+            second_path.write_bytes(b"same image bytes")
+            first = upload_catalog.add_image(folder["id"], first_path, "first.jpg", db_path=db_path)
+            second = upload_catalog.add_image(folder["id"], second_path, "second.jpg", db_path=db_path)
+            with closing(sqlite3.connect(str(db_path))) as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO manual_tags (image_id, tag, note, created_by, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (first["id"], "old", "", "web", "2026-05-22T00:00:00Z"),
+                )
+                conn.commit()
+                tag_id = cursor.lastrowid
+
+            upload_catalog.update_manual_tag(tag_id, "new", db_path=db_path)
+
+            with closing(sqlite3.connect(str(db_path))) as conn:
+                rows = conn.execute(
+                    "SELECT image_id, tag FROM manual_tags WHERE tag = ? ORDER BY image_id",
+                    ("new",),
+                ).fetchall()
+
+            self.assertEqual([row[0] for row in rows], [first["id"], second["id"]])
+
+    def test_manual_tag_add_repairs_existing_same_sha_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "catalog.db"
+            folder = upload_catalog.create_folder("Same image", folder_slug="upload_test_same_sha_add_drift", db_path=db_path)
+            first_path = Path(tmp) / "first.jpg"
+            second_path = Path(tmp) / "second.jpg"
+            first_path.write_bytes(b"same image bytes")
+            second_path.write_bytes(b"same image bytes")
+            first = upload_catalog.add_image(folder["id"], first_path, "first.jpg", db_path=db_path)
+            second = upload_catalog.add_image(folder["id"], second_path, "second.jpg", db_path=db_path)
+            with closing(sqlite3.connect(str(db_path))) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO manual_tags (image_id, tag, note, created_by, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (first["id"], "drifted", "", "web", "2026-05-22T00:00:00Z"),
+                )
+                conn.commit()
+
+            upload_catalog.add_manual_tag(second["id"], "added", db_path=db_path)
+
+            self.assertEqual(
+                [tag["tag"] for tag in upload_catalog.list_manual_tags(first["id"], db_path=db_path)],
+                ["drifted", "added"],
+            )
+            self.assertEqual(
+                [tag["tag"] for tag in upload_catalog.list_manual_tags(second["id"], db_path=db_path)],
+                ["drifted", "added"],
+            )
+
     def test_search_index_queries_uploaded_images(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "catalog.db"

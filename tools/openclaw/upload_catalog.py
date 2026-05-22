@@ -684,15 +684,6 @@ def archive_image(image_id: int, *, updated_by: str = "web", db_path: Path = CAT
     return True
 
 
-def list_manual_tags(image_id: int, *, db_path: Path = CATALOG_DB_PATH) -> list[dict[str, Any]]:
-    with closing(connect(db_path)) as conn:
-        rows = conn.execute(
-            "SELECT * FROM manual_tags WHERE image_id = ? ORDER BY created_at, id",
-            (image_id,),
-        ).fetchall()
-    return [dict(row) for row in rows]
-
-
 def upsert_image_search_index(
     image_id: int,
     *,
@@ -881,21 +872,42 @@ def add_manual_tag(
     if not tag:
         raise ValueError("tag is required")
     with closing(connect(db_path)) as conn:
-        cursor = conn.execute(
-            """
-            INSERT INTO manual_tags (image_id, tag, note, created_by, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (image_id, tag, note.strip(), created_by, utc_now_iso()),
-        )
+        image_ids = _same_sha_image_ids(conn, image_id)
+        if not image_ids:
+            raise ValueError("image not found")
+        created_at = utc_now_iso()
+        note_value = note.strip()
+        created_by_value = created_by.strip() or "web"
+        for related_image_id in image_ids:
+            if _manual_tag_row_by_image_and_tag(conn, related_image_id, tag):
+                continue
+            conn.execute(
+                """
+                INSERT INTO manual_tags (image_id, tag, note, created_by, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (related_image_id, tag, note_value, created_by_value, created_at),
+            )
+        _sync_manual_tags_for_same_sha(conn, image_id)
         conn.commit()
-        row = conn.execute("SELECT * FROM manual_tags WHERE id = ?", (cursor.lastrowid,)).fetchone()
+        row = _manual_tag_row_by_image_and_tag(conn, image_id, tag)
     return dict(row)
 
 
 def delete_manual_tag(tag_id: int, *, db_path: Path = CATALOG_DB_PATH) -> bool:
     with closing(connect(db_path)) as conn:
-        cursor = conn.execute("DELETE FROM manual_tags WHERE id = ?", (tag_id,))
+        row = conn.execute("SELECT * FROM manual_tags WHERE id = ?", (tag_id,)).fetchone()
+        if not row:
+            return False
+        image_ids = _same_sha_image_ids(conn, int(row["image_id"]))
+        if not image_ids:
+            image_ids = [int(row["image_id"])]
+        placeholders = ",".join("?" for _ in image_ids)
+        cursor = conn.execute(
+            f"DELETE FROM manual_tags WHERE image_id IN ({placeholders}) AND TRIM(tag) = ?",
+            [*image_ids, str(row["tag"]).strip()],
+        )
+        _sync_manual_tags_for_same_sha(conn, int(row["image_id"]))
         conn.commit()
         return cursor.rowcount > 0
 
@@ -914,12 +926,37 @@ def update_manual_tag(
         row = conn.execute("SELECT * FROM manual_tags WHERE id = ?", (tag_id,)).fetchone()
         if not row:
             return None
-        conn.execute(
-            "UPDATE manual_tags SET tag = ?, note = ? WHERE id = ?",
-            (tag, (note if note is not None else row["note"]).strip(), tag_id),
-        )
+        image_ids = _same_sha_image_ids(conn, int(row["image_id"]))
+        if not image_ids:
+            image_ids = [int(row["image_id"])]
+        note_value = (note if note is not None else row["note"]).strip()
+        placeholders = ",".join("?" for _ in image_ids)
+        rows = conn.execute(
+            f"SELECT * FROM manual_tags WHERE image_id IN ({placeholders}) AND TRIM(tag) = ? ORDER BY id",
+            [*image_ids, str(row["tag"]).strip()],
+        ).fetchall()
+        for related_row in rows:
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM manual_tags
+                WHERE image_id = ?
+                  AND tag = ?
+                  AND id != ?
+                LIMIT 1
+                """,
+                (related_row["image_id"], tag, related_row["id"]),
+            ).fetchone()
+            if existing:
+                conn.execute("DELETE FROM manual_tags WHERE id = ?", (related_row["id"],))
+            else:
+                conn.execute(
+                    "UPDATE manual_tags SET tag = ?, note = ? WHERE id = ?",
+                    (tag, note_value, related_row["id"]),
+                )
+        _sync_manual_tags_for_same_sha(conn, int(row["image_id"]))
         conn.commit()
-        row = conn.execute("SELECT * FROM manual_tags WHERE id = ?", (tag_id,)).fetchone()
+        row = _manual_tag_row_by_image_and_tag(conn, int(row["image_id"]), tag)
     return dict(row) if row else None
 
 
@@ -976,6 +1013,110 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"images": images, "count": len(images)}, ensure_ascii=False))
         return 0
     return 1
+
+
+def _same_sha_image_ids(conn: sqlite3.Connection, image_id: int) -> list[int]:
+    row = conn.execute("SELECT sha256 FROM uploaded_images WHERE id = ?", (image_id,)).fetchone()
+    if not row:
+        return []
+    rows = conn.execute(
+        """
+        SELECT id
+        FROM uploaded_images
+        WHERE sha256 = ?
+          AND archived_at IS NULL
+        ORDER BY id
+        """,
+        (row["sha256"],),
+    ).fetchall()
+    return [int(item["id"]) for item in rows]
+
+
+def same_sha_image_ids(image_id: int, *, db_path: Path = CATALOG_DB_PATH) -> list[int]:
+    with closing(connect(db_path)) as conn:
+        return _same_sha_image_ids(conn, image_id)
+
+
+def list_manual_tags(image_id: int, *, db_path: Path = CATALOG_DB_PATH) -> list[dict[str, Any]]:
+    with closing(connect(db_path)) as conn:
+        image_ids = _same_sha_image_ids(conn, image_id)
+        if not image_ids:
+            return []
+        placeholders = ",".join("?" for _ in image_ids)
+        rows = conn.execute(
+            f"SELECT * FROM manual_tags WHERE image_id IN ({placeholders}) ORDER BY created_at, id",
+            image_ids,
+        ).fetchall()
+    tags: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        tag_value = str(row["tag"]).strip()
+        if not tag_value or tag_value in seen:
+            continue
+        seen.add(tag_value)
+        tags.append(dict(row))
+    return tags
+
+
+def _manual_tag_row_by_image_and_tag(
+    conn: sqlite3.Connection,
+    image_id: int,
+    tag: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT *
+        FROM manual_tags
+        WHERE image_id = ?
+          AND TRIM(tag) = ?
+        ORDER BY created_at, id
+        LIMIT 1
+        """,
+        (image_id, tag),
+    ).fetchone()
+
+
+def _sync_manual_tags_for_same_sha(conn: sqlite3.Connection, image_id: int) -> list[int]:
+    image_ids = _same_sha_image_ids(conn, image_id)
+    if not image_ids:
+        return []
+    placeholders = ",".join("?" for _ in image_ids)
+    rows = conn.execute(
+        f"SELECT * FROM manual_tags WHERE image_id IN ({placeholders}) ORDER BY created_at, id",
+        image_ids,
+    ).fetchall()
+    canonical_by_tag: dict[str, sqlite3.Row] = {}
+    seen_pairs: set[tuple[int, str]] = set()
+    for row in rows:
+        related_image_id = int(row["image_id"])
+        tag_value = str(row["tag"]).strip()
+        if not tag_value:
+            conn.execute("DELETE FROM manual_tags WHERE id = ?", (row["id"],))
+            continue
+        pair = (related_image_id, tag_value)
+        if pair in seen_pairs:
+            conn.execute("DELETE FROM manual_tags WHERE id = ?", (row["id"],))
+            continue
+        seen_pairs.add(pair)
+        canonical_by_tag.setdefault(tag_value, row)
+        if tag_value != row["tag"]:
+            conn.execute("UPDATE manual_tags SET tag = ? WHERE id = ?", (tag_value, row["id"]))
+
+    created_at = utc_now_iso()
+    for tag_value, canonical in canonical_by_tag.items():
+        for related_image_id in image_ids:
+            pair = (related_image_id, tag_value)
+            if pair in seen_pairs:
+                continue
+            conn.execute(
+                """
+                INSERT INTO manual_tags (image_id, tag, note, created_by, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (related_image_id, tag_value, canonical["note"], canonical["created_by"], created_at),
+            )
+            seen_pairs.add(pair)
+    return image_ids
 
 
 if __name__ == "__main__":

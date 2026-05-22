@@ -109,6 +109,7 @@ from tools.openclaw.upload_catalog import (  # noqa: E402
     missing_search_index_image_ids,
     query_image_search_index,
     safe_stored_filename,
+    same_sha_image_ids,
     stored_path_is_registered,
     upsert_image_search_index,
     update_image_metadata,
@@ -1349,18 +1350,7 @@ def _manual_tags_for_images(image_ids: list[int]) -> dict[int, list[dict[str, ob
     if not ids:
         return {}
 
-    placeholders = ",".join("?" for _ in ids)
-    with sqlite3.connect(str(CATALOG_DB_PATH)) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            f"SELECT * FROM manual_tags WHERE image_id IN ({placeholders}) ORDER BY created_at, id",
-            ids,
-        ).fetchall()
-
-    grouped: dict[int, list[dict[str, object]]] = {image_id: [] for image_id in ids}
-    for row in rows:
-        grouped.setdefault(int(row["image_id"]), []).append(dict(row))
-    return grouped
+    return {image_id: list_manual_tags(image_id) for image_id in ids}
 
 
 def _upload_image_record(image_id: int) -> tuple[dict[str, object], dict[str, object]] | None:
@@ -1490,6 +1480,12 @@ def _refresh_upload_search_index_for_image(image_id: int) -> None:
         branded_path=branded_path,
         source_time=str(image.get("uploaded_at") or ""),
     )
+
+
+def _refresh_upload_search_index_for_same_sha_images(image_id: int) -> None:
+    image_ids = same_sha_image_ids(image_id) or [image_id]
+    for related_image_id in image_ids:
+        _refresh_upload_search_index_for_image(related_image_id)
 
 
 def _ensure_upload_search_index_current() -> None:
@@ -2171,7 +2167,7 @@ class Handler(SimpleHTTPRequestHandler):
                     note=str(data.get("note") or ""),
                     created_by=str(data.get("created_by") or "web"),
                 )
-                _refresh_upload_search_index_for_image(int(match.group(1)))
+                _refresh_upload_search_index_for_same_sha_images(int(match.group(1)))
                 self._json({"ok": True, "tag": tag})
                 return
 
@@ -2208,7 +2204,7 @@ class Handler(SimpleHTTPRequestHandler):
                 image_id = _image_id_for_manual_tag(int(match.group(1)))
                 ok = delete_manual_tag(int(match.group(1)))
                 if ok and image_id is not None:
-                    _refresh_upload_search_index_for_image(image_id)
+                    _refresh_upload_search_index_for_same_sha_images(image_id)
                 self._json({"ok": ok})
                 return
             self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
@@ -2248,7 +2244,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if not tag:
                     self._json({"ok": False, "error": "tag not found"}, HTTPStatus.NOT_FOUND)
                     return
-                _refresh_upload_search_index_for_image(int(tag["image_id"]))
+                _refresh_upload_search_index_for_same_sha_images(int(tag["image_id"]))
                 self._json({"ok": True, "tag": tag})
                 return
 
