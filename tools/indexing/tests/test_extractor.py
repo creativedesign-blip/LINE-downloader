@@ -77,6 +77,13 @@ class TestExtractCountry(unittest.TestCase):
         self.assertEqual(extract_country("嗨玩答里岛 小婆罗浮屠塔 Bali"), ["印尼"])
         self.assertEqual(extract_country("魔幻西葡 里斯本 巴塞隆納"), ["西班牙", "葡萄牙"])
 
+    def test_country_hints_beat_transit_airport_and_generic_train(self):
+        text = (
+            "西蘭航空NZ078桃園機場18:30/奧克蘭機場10:20 "
+            "AIRNEWZEALAND 纽西蘭8號 高山火車"
+        )
+        self.assertEqual(extract_country(text), ["紐西蘭"])
+
 
 class TestExtractMonths(unittest.TestCase):
     def test_full_date(self):
@@ -232,6 +239,12 @@ class TestExtractRegion(unittest.TestCase):
 
     def test_no_match(self):
         self.assertEqual(extract_region("早鳥優惠"), [])
+
+    def test_transit_airport_and_generic_train_are_not_destination_regions(self):
+        result = extract_region("AIRNEWZEALAND 纽西蘭8號 桃園機場 高山火車 奧克蘭")
+        self.assertNotIn("桃園", result)
+        self.assertNotIn("高山", result)
+        self.assertIn("奧克蘭", result)
 
 
 class TestExtractDuration(unittest.TestCase):

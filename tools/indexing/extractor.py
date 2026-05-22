@@ -239,7 +239,10 @@ def extract_country(text: str) -> list[str]:
 
     inferred: list[str] = []
     seen: set[str] = set()
-    for region in _match_vocab(text, _get_vocab("regions.txt")):
+    for region in _exclude_contextual_regions(
+        text,
+        _match_vocab(text, _get_vocab("regions.txt")),
+    ):
         country = _REGION_COUNTRY_HINTS.get(region)
         if country and country not in seen:
             inferred.append(country)
@@ -290,6 +293,27 @@ _LANDMARK_REGION_HINTS = {
              "濑長岛", "OKINAWA", "Okinawa", "okinawa"],
 }
 
+_REGION_CONTEXT_EXCLUSIONS = {
+    "桃園": ("桃園機場", "桃園机场"),
+    "高山": ("高山火車", "高山火车", "高山列車", "高山列车"),
+}
+
+
+def _exclude_contextual_regions(text: str, regions: list[str]) -> list[str]:
+    normalized = _normalize(text)
+    haystacks = (text, normalized) if normalized != text else (text,)
+    kept: list[str] = []
+    for region in regions:
+        exclusions = _REGION_CONTEXT_EXCLUSIONS.get(region)
+        if exclusions and any(
+            exclusion in haystack
+            for haystack in haystacks
+            for exclusion in exclusions
+        ):
+            continue
+        kept.append(region)
+    return kept
+
 
 def extract_region(text: str) -> list[str]:
     """Sub-region / city names (vocab/regions.txt) — '九州', '荷比盧', '京都'…
@@ -299,7 +323,10 @@ def extract_region(text: str) -> list[str]:
     region name still gets the region tag — e.g. "美麗海水族館 + 玉泉洞"
     -> 沖繩 even when "沖繩" itself didn't survive OCR.
     """
-    direct = _match_vocab(text, _get_vocab("regions.txt"))
+    direct = _exclude_contextual_regions(
+        text,
+        _match_vocab(text, _get_vocab("regions.txt")),
+    )
     for region, landmarks in _LANDMARK_REGION_HINTS.items():
         if region in direct:
             continue
