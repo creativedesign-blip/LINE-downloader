@@ -172,6 +172,44 @@ class LineImageDownloaderTests(unittest.TestCase):
             self.assertEqual(ws["B2"].value, "group-a")
             self.assertEqual(ws["B3"].value, "group-b")
 
+    def test_run_flushes_log_after_each_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            workbook_path = tmp_path / "line.xlsx"
+            config_path = tmp_path / "config.json"
+            save_root = tmp_path / "download"
+
+            wb = Workbook()
+            ws = wb.active
+            ws["A1"] = "group-a"
+            ws["A2"] = "group-b"
+            wb.save(workbook_path)
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "excel_path": str(workbook_path),
+                        "save_root": str(save_root),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            flushed_groups = []
+
+            class FakeRpa:
+                def __init__(self, config):
+                    pass
+
+                def run_group(self, group_name, save_dir):
+                    return app.GroupResult(group_name, "ok", "", 1, 1, 0, 0, 0, str(save_dir), "")
+
+            def fake_write_log(log_path, records):
+                flushed_groups.append([record.group_name for record in records])
+
+            with patch.object(app, "LineRpa", FakeRpa), patch.object(app, "write_log", fake_write_log):
+                app.run(config_path, process_all=True)
+
+            self.assertEqual(flushed_groups, [["group-a"], ["group-a", "group-b"]])
+
     def test_config_relative_paths_resolve_from_config_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -390,7 +428,7 @@ class LineImageDownloaderTests(unittest.TestCase):
 
             self.assertEqual(app.load_image_index(index_path), index)
 
-    def test_download_stops_and_deletes_file_when_hash_exists_in_index(self):
+    def test_download_stops_and_moves_duplicate_when_hash_exists_in_index(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             save_dir = tmp_path / "group-a"
@@ -425,6 +463,7 @@ class LineImageDownloaderTests(unittest.TestCase):
             self.assertEqual(counts["attempted"], 1)
             self.assertEqual(counts["success"], 0)
             self.assertFalse(duplicate.exists())
+            self.assertTrue((save_dir / ".duplicate_dropped" / "downloaded.png").exists())
 
     def test_run_group_uses_actual_save_root_for_duplicate_index(self):
         with tempfile.TemporaryDirectory() as tmp:

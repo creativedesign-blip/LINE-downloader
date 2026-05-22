@@ -805,56 +805,80 @@ class LineRpa:
         viewer_hwnd = self.wait_for_viewer_window(exclude_hwnds={media_hwnd})
         trace(f"viewer hwnd={viewer_hwnd}")
 
-        for _ in range(max_images):
-            if not win32gui.IsWindow(viewer_hwnd):
-                viewer_hwnd = self.wait_for_viewer_window(exclude_hwnds={media_hwnd})
-            if not viewer_hwnd or not win32gui.IsWindow(viewer_hwnd):
-                raise RuntimeError("image viewer window became invalid before download")
-            counts["attempted"] += 1
-            before = self.recent_download_candidates()
-            before_save_dir = self.snapshot_files(save_dir)
-            self.hover_window_ratio(viewer_hwnd, "viewer_download_button")
-            time.sleep(0.4)
-            self.click_window_ratio(viewer_hwnd, "viewer_download_button")
-            time.sleep(self.wait_seconds)
-            if self.handle_save_dialog(save_dir):
-                counts["save_dialog_seen"] += 1
-            moved = self.move_new_downloads(before, save_dir)
-            saved_direct = self.snapshot_files(save_dir) - before_save_dir
-            downloaded = moved + list(saved_direct)
+        # Buffer image_index writes; flushing on every new image was costing one
+        # full tmpfile+replace cycle per download. Final flush in the finally
+        # block bounds crash loss to fewer than INDEX_FLUSH_EVERY hashes.
+        INDEX_FLUSH_EVERY = 10
+        pending_index_writes = 0
+        duplicate_dir = save_dir / ".duplicate_dropped"
+        try:
+            for _ in range(max_images):
+                if not win32gui.IsWindow(viewer_hwnd):
+                    viewer_hwnd = self.wait_for_viewer_window(exclude_hwnds={media_hwnd})
+                if not viewer_hwnd or not win32gui.IsWindow(viewer_hwnd):
+                    raise RuntimeError("image viewer window became invalid before download")
+                counts["attempted"] += 1
+                before = self.recent_download_candidates()
+                before_save_dir = self.snapshot_files(save_dir)
+                self.hover_window_ratio(viewer_hwnd, "viewer_download_button")
+                time.sleep(0.4)
+                self.click_window_ratio(viewer_hwnd, "viewer_download_button")
+                time.sleep(self.wait_seconds)
+                if self.handle_save_dialog(save_dir):
+                    counts["save_dialog_seen"] += 1
+                moved = self.move_new_downloads(before, save_dir)
+                saved_direct = self.snapshot_files(save_dir) - before_save_dir
+                downloaded = moved + list(saved_direct)
 
-            if downloaded:
-                unique_count, duplicate_found, duplicate_paths, seen_log_changed = self.register_unique_images(
-                    downloaded,
-                    seen_image_hashes,
-                    seen_image_names,
-                    image_seen_log=image_seen_log,
-                    target_id=group_name,
-                )
-                for duplicate_path in duplicate_paths:
-                    try:
-                        duplicate_path.unlink()
-                    except OSError:
-                        pass
-                counts["success"] += unique_count
-                counts["duplicate"] += len(duplicate_paths)
-                no_new_rounds = 0
-                if image_index is not None and index_path is not None and group_name is not None and unique_count:
-                    image_index[group_name] = sorted(seen_image_hashes)
-                    save_image_index(index_path, image_index)
-                if image_seen_log is not None and seen_log_path is not None and seen_log_changed:
-                    save_image_seen_log(image_seen_log, seen_log_path)
-                if duplicate_found:
+                if downloaded:
+                    unique_count, duplicate_found, duplicate_paths, seen_log_changed = self.register_unique_images(
+                        downloaded,
+                        seen_image_hashes,
+                        seen_image_names,
+                        image_seen_log=image_seen_log,
+                        target_id=group_name,
+                    )
+                    if duplicate_paths:
+                        duplicate_dir.mkdir(exist_ok=True)
+                    for duplicate_path in duplicate_paths:
+                        # Move duplicates to .duplicate_dropped/ instead of deleting,
+                        # so review of "why was this rejected" stays possible.
+                        try:
+                            target = duplicate_dir / duplicate_path.name
+                            if target.exists():
+                                stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                                target = duplicate_dir / f"{stamp}_{duplicate_path.name}"
+                            shutil.move(str(duplicate_path), str(target))
+                        except OSError:
+                            try:
+                                duplicate_path.unlink()
+                            except OSError:
+                                pass
+                    counts["success"] += unique_count
+                    counts["duplicate"] += len(duplicate_paths)
+                    no_new_rounds = 0
+                    if image_index is not None and index_path is not None and group_name is not None and unique_count:
+                        image_index[group_name] = sorted(seen_image_hashes)
+                        pending_index_writes += unique_count
+                        if pending_index_writes >= INDEX_FLUSH_EVERY:
+                            save_image_index(index_path, image_index)
+                            pending_index_writes = 0
+                    if image_seen_log is not None and seen_log_path is not None and seen_log_changed:
+                        save_image_seen_log(image_seen_log, seen_log_path)
+                    if duplicate_found:
+                        break
+                else:
+                    counts["skipped"] += 1
+                    no_new_rounds += 1
+
+                if no_new_rounds >= int(self.config.get("max_no_new_download_rounds", 8)):
                     break
-            else:
-                counts["skipped"] += 1
-                no_new_rounds += 1
-
-            if no_new_rounds >= int(self.config.get("max_no_new_download_rounds", 8)):
-                break
-            self.hover_window_ratio(viewer_hwnd, "viewer_next_button")
-            self.click_window_ratio(viewer_hwnd, "viewer_next_button")
-            time.sleep(next_image_wait)
+                self.hover_window_ratio(viewer_hwnd, "viewer_next_button")
+                self.click_window_ratio(viewer_hwnd, "viewer_next_button")
+                time.sleep(next_image_wait)
+        finally:
+            if pending_index_writes and image_index is not None and index_path is not None and group_name is not None:
+                save_image_index(index_path, image_index)
         return counts
 
     @staticmethod
@@ -1088,13 +1112,30 @@ class LineRpa:
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, x, y, 0, 0)
 
     def type_clipboard(self, text: str) -> None:
+        saved_text: str | None = None
         win32clipboard.OpenClipboard()
         try:
+            try:
+                saved_text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+            except (TypeError, OSError):
+                # Non-text clipboard formats (image, file list) are not restored.
+                saved_text = None
             win32clipboard.EmptyClipboard()
             win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
         finally:
             win32clipboard.CloseClipboard()
         self.hotkey(win32con.VK_CONTROL, ord("V"))
+        if saved_text is not None:
+            time.sleep(0.1)  # let paste finish reading before we overwrite
+            try:
+                win32clipboard.OpenClipboard()
+                try:
+                    win32clipboard.EmptyClipboard()
+                    win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, saved_text)
+                finally:
+                    win32clipboard.CloseClipboard()
+            except Exception:
+                pass
 
     def hotkey(self, modifier: int, key: int) -> None:
         win32api.keybd_event(modifier, 0, 0, 0)
@@ -1160,6 +1201,9 @@ def run(
         write_log(save_root / "line_download_log.xlsx", records)
     else:
         rpa = LineRpa(config)
+        # Flush log after each group so a mid-loop crash (LINE freeze, OS kill)
+        # still leaves a record of the groups that completed.
+        log_path = save_root / "line_download_log.xlsx"
         for group in groups:
             if navigate_only:
                 save_dir = group_download_dir(save_root, group)
@@ -1192,9 +1236,11 @@ def run(
                     records.append(
                         GroupResult(group, "failed", "UNKNOWN", 0, 0, 0, 0, 1, str(save_dir), str(exc), started)
                     )
+                write_log(log_path, records)
             else:
                 record = rpa.run_group(group, group_download_dir(save_root, group))
                 records.append(record)
+                write_log(log_path, records)
                 if config.get("stop_on_group_failure", True) and record.status == "failed":
                     print(
                         f"stopped: {group} failed before pipeline; remaining groups were not processed. "
@@ -1202,8 +1248,6 @@ def run(
                     )
                     break
 
-        log_path = save_root / "line_download_log.xlsx"
-        write_log(log_path, records)
         print(f"download-log-written: {log_path}")
 
         if not navigate_only and should_run_pipeline(config, run_pipeline):
