@@ -15,6 +15,18 @@ export function sourceLabel(source) {
   return source || "未知來源";
 }
 
+// Keep in sync with travel-agent-interface/openclaw_web.py:
+//   MAX_UPLOAD_FILE_BYTES / MAX_UPLOAD_TOTAL_BYTES / MAX_UPLOAD_FILE_COUNT
+//   MIN_UPLOAD_IMAGE_EDGE_PX           (server: 50)
+//   _minimum_brandable_width(...)      (server: dynamic, falls back to 620)
+//
+// minImageWidth here is a SNAPSHOT of the value the server currently
+// computes from config/branding.json:
+//   ceil(brand.png_width * logoScaleMin / logoWidthRatio) with padding adj
+//   = ceil(2480 * 0.25 / 1.0) = 620
+// If config/branding.json or config/brand.png is changed, recompute and
+// update this constant — otherwise the client lets through (or rejects)
+// images that the server then rejects (or accepts) with no UI hint.
 export const UPLOAD_LIMITS = {
   formats: ["JPG", "JPEG", "PNG", "WEBP"],
   extensions: [".jpg", ".jpeg", ".png", ".webp"],
