@@ -765,7 +765,7 @@ class LineRpa:
                 return
             if any(kind in class_name for kind in ("Popup", "ToolTip")):
                 return
-            if title != "LINE" and "大都會" not in title:
+            if title != "LINE":
                 return
             left, top, right, bottom = win32gui.GetWindowRect(hwnd)
             area = max(0, right - left) * max(0, bottom - top)
@@ -991,11 +991,34 @@ class LineRpa:
                 continue
         return files
 
+    @staticmethod
+    def _wait_file_stable(path: Path, *, settle_seconds: float = 0.3) -> bool:
+        """Return True if path's size and mtime are unchanged across settle_seconds.
+
+        Mirrors filter.py:wait_stable so a download that's still flushing
+        doesn't get copied half-written.
+        """
+        try:
+            st1 = path.stat()
+        except FileNotFoundError:
+            return False
+        if st1.st_size == 0:
+            return False
+        time.sleep(settle_seconds)
+        try:
+            st2 = path.stat()
+        except FileNotFoundError:
+            return False
+        return st2.st_size == st1.st_size and st2.st_mtime == st1.st_mtime
+
     def move_new_downloads(self, before: set[Path], save_dir: Path) -> list[Path]:
         save_dir.mkdir(parents=True, exist_ok=True)
         after = self.recent_download_candidates()
         moved: list[Path] = []
         for source in sorted(after - before, key=lambda p: p.stat().st_mtime):
+            if not self._wait_file_stable(source):
+                trace(f"skip unstable download (still being written?): {source.name}")
+                continue
             target = save_dir / source.name
             if target.exists():
                 moved.append(target)

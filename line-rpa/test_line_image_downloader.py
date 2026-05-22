@@ -293,6 +293,30 @@ class LineImageDownloaderTests(unittest.TestCase):
         with self._patch_windows(windows), patch.object(rpa, "_line_process_ids", return_value={10}):
             self.assertIsNone(rpa.find_line_window())
 
+    def test_find_media_window_accepts_only_line_title(self):
+        rpa = app.LineRpa({"wait_seconds": 0, "coordinates": app.DEFAULT_CONFIG["coordinates"]})
+        rpa.hwnd = 100
+        windows = {
+            100: {"visible": True, "title": "LINE", "class": "Qt653QWindowIcon", "rect": (0, 0, 1200, 800), "pid": 10},
+            200: {"visible": True, "title": "Other Qt App", "class": "Qt653QWindowIcon", "rect": (0, 0, 1500, 900), "pid": 99},
+            300: {"visible": True, "title": "LINE", "class": "Qt653QWindowIcon", "rect": (0, 0, 900, 700), "pid": 10},
+        }
+
+        with self._patch_windows(windows), patch.object(rpa, "_line_process_ids", return_value={10}):
+            self.assertEqual(rpa.find_media_window(), 300)
+
+    def test_find_media_window_rejects_non_line_titles(self):
+        rpa = app.LineRpa({"wait_seconds": 0, "coordinates": app.DEFAULT_CONFIG["coordinates"]})
+        rpa.hwnd = 100
+        windows = {
+            100: {"visible": True, "title": "LINE", "class": "Qt653QWindowIcon", "rect": (0, 0, 1200, 800), "pid": 10},
+            200: {"visible": True, "title": "group-a", "class": "Qt653QWindowIcon", "rect": (0, 0, 1500, 900), "pid": 10},
+            300: {"visible": True, "title": "metro", "class": "Qt653QWindowIcon", "rect": (0, 0, 900, 700), "pid": 10},
+        }
+
+        with self._patch_windows(windows), patch.object(rpa, "_line_process_ids", return_value={10}):
+            self.assertEqual(rpa.find_media_window(), 100)
+
     def test_line_start_command_prefers_launcher_next_to_line_exe(self):
         with tempfile.TemporaryDirectory() as tmp:
             line_exe = Path(tmp) / "LINE.exe"
@@ -427,6 +451,30 @@ class LineImageDownloaderTests(unittest.TestCase):
             app.save_image_index(index_path, index)
 
             self.assertEqual(app.load_image_index(index_path), index)
+
+    def test_move_new_downloads_skips_unstable_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_dir = tmp_path / "downloads"
+            save_dir = tmp_path / "group-a"
+            source_dir.mkdir()
+            stable = source_dir / "stable.png"
+            unstable = source_dir / "unstable.png"
+            stable.write_bytes(b"stable")
+            unstable.write_bytes(b"unstable")
+            rpa = app.LineRpa({"wait_seconds": 0, "coordinates": app.DEFAULT_CONFIG["coordinates"]})
+            rpa.recent_download_candidates = lambda: {stable, unstable}
+
+            def fake_wait_file_stable(path, *, settle_seconds=0.3):
+                return path == stable
+
+            with patch.object(app.LineRpa, "_wait_file_stable", side_effect=fake_wait_file_stable):
+                moved = rpa.move_new_downloads(set(), save_dir)
+
+            self.assertEqual(moved, [save_dir / "stable.png"])
+            self.assertTrue((save_dir / "stable.png").exists())
+            self.assertTrue(unstable.exists())
+            self.assertFalse((save_dir / "unstable.png").exists())
 
     def test_download_stops_and_moves_duplicate_when_hash_exists_in_index(self):
         with tempfile.TemporaryDirectory() as tmp:
