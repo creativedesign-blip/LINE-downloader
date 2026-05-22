@@ -9,7 +9,9 @@ import {
   formatBytes,
   imageFlowStatus,
   imageTagValues,
+  uploadImageSizeText,
   uploadLimitText,
+  validateUploadImageDimensions,
   validateUploadFiles,
 } from "./tagUtils.js";
 
@@ -432,17 +434,74 @@ function UploadTargetModal({ folders, initialFolder, onClose, onNext }) {
   );
 }
 
+function uploadFileKey(file) {
+  return `${file?.name || ""}-${file?.size || 0}-${file?.lastModified || 0}`;
+}
+
+function readUploadImageDimensions(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve({ width: image.naturalWidth || image.width || 0, height: image.naturalHeight || image.height || 0 });
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve({ error: "圖片無法讀取或格式損壞" });
+    };
+    image.src = url;
+  });
+}
+
 function UploadFilesModal({ target, uploading, error, onBack, onClose, onSubmit }) {
   const [files, setFiles] = useState(null);
+  const [fileDimensions, setFileDimensions] = useState({});
+  const [checkingDimensions, setCheckingDimensions] = useState(false);
   const [localError, setLocalError] = useState("");
   const fileList = Array.from(files || []);
   const totalBytes = fileList.reduce((sum, file) => sum + Number(file.size || 0), 0);
   const fileMessage = files ? validateUploadFiles(files) : "";
-  const canSubmit = fileList.length > 0 && !fileMessage && !uploading;
+  const dimensionIssues = fileList
+    .map((file) => ({ file, result: fileDimensions[uploadFileKey(file)] }))
+    .filter((item) => item.result?.error || item.result?.message);
+  const dimensionMessage = dimensionIssues[0]
+    ? `${dimensionIssues[0].file.name}: ${dimensionIssues[0].result.error || dimensionIssues[0].result.message}`
+    : "";
+  const canSubmit = fileList.length > 0 && !fileMessage && !dimensionMessage && !checkingDimensions && !uploading;
+
+  useEffect(() => {
+    const currentFiles = Array.from(files || []);
+    let cancelled = false;
+    setFileDimensions({});
+    if (currentFiles.length === 0 || validateUploadFiles(files)) {
+      setCheckingDimensions(false);
+      return undefined;
+    }
+    setCheckingDimensions(true);
+    Promise.all(
+      currentFiles.map(async (file) => {
+        const key = uploadFileKey(file);
+        const dimensions = await readUploadImageDimensions(file);
+        if (dimensions.error) return [key, dimensions];
+        const message = validateUploadImageDimensions(dimensions.width, dimensions.height);
+        return [key, { ...dimensions, message }];
+      })
+    ).then((entries) => {
+      if (cancelled) return;
+      setFileDimensions(Object.fromEntries(entries));
+      setCheckingDimensions(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [files]);
 
   const submit = async () => {
     const message = validateUploadFiles(files);
     if (message) return setLocalError(message);
+    if (checkingDimensions) return setLocalError("正在檢查圖片尺寸，請稍候。");
+    if (dimensionMessage) return setLocalError(dimensionMessage);
     setLocalError("");
     try {
       await onSubmit({ files });
@@ -485,15 +544,24 @@ function UploadFilesModal({ target, uploading, error, onBack, onClose, onSubmit 
           </div>
           {fileList.length > 0 && (
             <div className="max-h-44 overflow-y-auto scrollbar-thin rounded-md border" style={{ borderColor: "#E1F5EE" }}>
-              {fileList.map((file) => (
-                <div key={`${file.name}-${file.size}`} className="flex items-center justify-between gap-3 px-3 py-2 text-xs" style={{ borderTop: "1px solid #E1F5EE" }}>
-                  <span className="truncate">{file.name}</span>
-                  <span className="text-stone-500 flex-shrink-0">{formatBytes(file.size)}</span>
-                </div>
-              ))}
+              {fileList.map((file) => {
+                const result = fileDimensions[uploadFileKey(file)];
+                const issue = result?.error || result?.message || "";
+                const dimensions = result?.width && result?.height ? `${result.width}x${result.height}px` : checkingDimensions ? "檢查中" : "";
+                return (
+                  <div key={uploadFileKey(file)} className="px-3 py-2 text-xs" style={{ borderTop: "1px solid #E1F5EE" }}>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="truncate">{file.name}</span>
+                      <span className="text-stone-500 flex-shrink-0">{[dimensions, formatBytes(file.size)].filter(Boolean).join(" · ")}</span>
+                    </div>
+                    {issue && <div className="mt-1 text-[11px] text-red-700">{issue}</div>}
+                  </div>
+                );
+              })}
             </div>
           )}
-          {(localError || fileMessage || error) && <div className="text-xs text-red-700">{localError || fileMessage || error}</div>}
+          {checkingDimensions && <div className="text-xs text-stone-500">正在檢查圖片尺寸，最低需求：{uploadImageSizeText()}。</div>}
+          {(localError || fileMessage || dimensionMessage || error) && <div className="text-xs text-red-700">{localError || fileMessage || dimensionMessage || error}</div>}
         </div>
         <div className="px-5 py-4 border-t flex items-center justify-between gap-3" style={{ borderColor: "#E1F5EE", backgroundColor: "#E1F5EE" }}>
           <button type="button" onClick={onBack} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: "#E1F5EE" }}>上一步</button>

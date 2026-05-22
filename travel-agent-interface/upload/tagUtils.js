@@ -21,6 +21,8 @@ export const UPLOAD_LIMITS = {
   maxFileBytes: 15 * 1024 * 1024,
   maxTotalBytes: 200 * 1024 * 1024,
   maxFiles: 50,
+  minImageWidth: 620,
+  minImageEdge: 50,
 };
 
 export function formatBytes(bytes) {
@@ -32,6 +34,19 @@ export function formatBytes(bytes) {
 
 export function uploadLimitText() {
   return `支援 ${UPLOAD_LIMITS.formats.join(" / ")}，單檔 ${formatBytes(UPLOAD_LIMITS.maxFileBytes)}，最多 ${UPLOAD_LIMITS.maxFiles} 張 / ${formatBytes(UPLOAD_LIMITS.maxTotalBytes)}`;
+}
+
+export function uploadImageSizeText() {
+  return `寬度至少 ${UPLOAD_LIMITS.minImageWidth}px，且寬、高都至少 ${UPLOAD_LIMITS.minImageEdge}px`;
+}
+
+export function validateUploadImageDimensions(width, height) {
+  const w = Number(width || 0);
+  const h = Number(height || 0);
+  if (w < UPLOAD_LIMITS.minImageEdge || h < UPLOAD_LIMITS.minImageEdge || w < UPLOAD_LIMITS.minImageWidth) {
+    return `圖片太小：${w}x${h}px。需要${uploadImageSizeText()}。請上傳 LINE 原圖或較高解析度圖片。`;
+  }
+  return "";
 }
 
 export function validateUploadFiles(files) {
