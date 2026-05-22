@@ -335,12 +335,12 @@ class TestQueryDedupesByImageHash(unittest.TestCase):
             ))
             self.assertEqual(len(idx.query(countries=["日本"], limit=10)), 2)
 
-    def test_query_keeps_legacy_null_hash_rows_separate(self):
+    def test_query_keeps_pre_schema_v5_null_hash_rows_separate(self):
         # Pre-schema-v5 rows have NULL image_sha256; they must NOT collapse
         # into one bucket — fall back to per-sidecar grouping via COALESCE.
         with make_index() as idx:
-            idx.upsert(**base_row(sidecar_path="downloads/metro/travel/legacy1.jpg.json"))
-            idx.upsert(**base_row(sidecar_path="downloads/metro/travel/legacy2.jpg.json"))
+            idx.upsert(**base_row(sidecar_path="downloads/metro/travel/pre_schema_v5_1.jpg.json"))
+            idx.upsert(**base_row(sidecar_path="downloads/metro/travel/pre_schema_v5_2.jpg.json"))
             self.assertEqual(len(idx.query(countries=["日本"], limit=10)), 2)
 
 

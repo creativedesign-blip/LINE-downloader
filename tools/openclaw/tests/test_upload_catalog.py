@@ -300,7 +300,7 @@ class UploadCatalogTests(unittest.TestCase):
                 )
                 conn.commit()
 
-            folder = upload_catalog.create_folder("Legacy", folder_slug="upload_test_legacy", db_path=db_path)
+            folder = upload_catalog.create_folder("Pre-schema folder", folder_slug="upload_test_pre_schema", db_path=db_path)
 
             self.assertIn("archived_at", folder)
             self.assertIsNone(folder["archived_at"])

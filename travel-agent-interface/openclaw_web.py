@@ -677,7 +677,7 @@ def _humanize_source(item: dict) -> tuple[str, str]:
             return (rest[3], "upload")
         return (slug, "upload")
 
-    # Legacy / pre-batch LINE: target_id IS the group name
+    # Pre-batch LINE records: target_id IS the group name
     if group_name:
         return (group_name, "line")
     if target_id:

@@ -12,7 +12,7 @@ DEFAULT_MODEL_DIR = PROJECT_ROOT / ".cache" / "rapidocr-models"
 
 
 def load_rapidocr_class():
-    """Return RapidOCR from either the legacy or current package."""
+    """Return RapidOCR from either the classic or current package."""
     try:
         from rapidocr_onnxruntime import RapidOCR  # type: ignore
 
@@ -35,7 +35,7 @@ def create_rapidocr():
 
 
 def rapidocr_lines(output: Any) -> list[str]:
-    """Normalize legacy tuple output and modern RapidOCROutput to text lines."""
+    """Normalize tuple output and modern RapidOCROutput to text lines."""
     if output is None:
         return []
 

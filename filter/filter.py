@@ -186,15 +186,15 @@ def keyword_hits(keywords, raw_text: str, compact_text: str):
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description='RapidOCR travel-image classifier')
     parser.add_argument('--input-dir', type=Path, default=None,
-                        help='Single-target legacy mode: source folder (defaults to project root).')
+                        help='Single-folder compatibility mode: source folder (defaults to project root).')
     parser.add_argument('--travel-dir', type=Path, default=None,
-                        help='Single-target legacy mode: travel destination.')
+                        help='Single-folder compatibility mode: travel destination.')
     parser.add_argument('--other-dir', type=Path, default=None,
-                        help='Single-target legacy mode: other destination.')
+                        help='Single-folder compatibility mode: other destination.')
     parser.add_argument('--review-dir', type=Path, default=None,
-                        help='Single-target legacy mode: review destination (uncertain hits).')
+                        help='Single-folder compatibility mode: review destination (uncertain hits).')
     parser.add_argument('--error-dir', type=Path, default=None,
-                        help='Single-target legacy mode: error destination.')
+                        help='Single-folder compatibility mode: error destination.')
     parser.add_argument('--target', action='append', default=None, metavar='ID',
                         help='Repeatable target id under line-rpa/download/<ID>/. '
                              'Mutually exclusive with --input-dir/--travel-dir/etc. '
@@ -465,13 +465,13 @@ def resolve_target_specs(args):
     routes outputs to <id>/{travel,other,review,error}. inbox/ entry only
     emitted when it exists.
 
-    Legacy mode: a single spec from --input-dir/--travel-dir/etc. with the
-    same defaults the script has used since v1.
+    Single-folder compatibility mode: one spec from --input-dir/--travel-dir/etc.
+    with the same defaults the script has used since v1.
     """
-    legacy_dirs_provided = any([
+    compatibility_dirs_provided = any([
         args.input_dir, args.travel_dir, args.other_dir, args.review_dir, args.error_dir,
     ])
-    if args.target and legacy_dirs_provided:
+    if args.target and compatibility_dirs_provided:
         raise SystemExit(
             '--target cannot be combined with --input-dir/--travel-dir/'
             '--other-dir/--review-dir/--error-dir; pick one mode.'

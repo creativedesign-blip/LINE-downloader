@@ -466,7 +466,7 @@ class TravelIndex:
         # mid-history, image_index.json corruption, manual file moves all
         # bypass it), so the same image content can land in multiple rows.
         # Keep the most recently indexed row per hash; rows with NULL hash
-        # (legacy, pre-schema-v5) fall back to per-sidecar grouping so they
+        # (pre-schema-v5) fall back to per-sidecar grouping so they
         # don't all collapse into one bucket.
         sql = (
             f"SELECT * FROM ("
