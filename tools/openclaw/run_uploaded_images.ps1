@@ -217,6 +217,7 @@ try {
         & $RpaPython "-X" "utf8" ".\tools\pipeline\process_downloads.py" `
             --python $PipelinePython `
             --target $Target `
+            --assume-travel `
             --skip-branding `
             --skip-ocr-enrich `
             --skip-index `

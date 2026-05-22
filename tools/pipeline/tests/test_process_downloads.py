@@ -35,6 +35,7 @@ def make_args(**overrides):
         "second_pass_ocr": False,
         "second_pass_limit": 0,
         "force_branding": False,
+        "assume_travel": False,
         "target": None,
     }
     defaults.update(overrides)
@@ -81,6 +82,22 @@ class TestPipelineTargetDiscovery(unittest.TestCase):
         self.assertIn("ocr:all", names)
         self.assertIn("branding:all", names)
         self.assertIn("index:all", names)
+
+    def test_build_commands_forwards_assume_travel_to_filter(self):
+        (self.inbox_dir / "sample.jpg").write_bytes(b"not-a-real-image")
+        commands = build_commands(make_args(assume_travel=True), [TEST_TARGET])
+        ocr_commands = [command for name, command in commands if name == "ocr:all"]
+
+        self.assertEqual(len(ocr_commands), 1)
+        self.assertIn("--assume-travel", ocr_commands[0])
+
+    def test_build_commands_does_not_forward_assume_travel_by_default(self):
+        (self.inbox_dir / "sample.jpg").write_bytes(b"not-a-real-image")
+        commands = build_commands(make_args(), [TEST_TARGET])
+        ocr_commands = [command for name, command in commands if name == "ocr:all"]
+
+        self.assertEqual(len(ocr_commands), 1)
+        self.assertNotIn("--assume-travel", ocr_commands[0])
 
     def test_skip_ocr_still_brands_and_indexes(self):
         commands = build_commands(make_args(skip_ocr=True), [TEST_TARGET])

@@ -32,6 +32,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tools.branding.io_utils import sidecar_of, load_sidecar, save_sidecar
 from tools.common.rapidocr_adapter import create_rapidocr, rapidocr_lines
 from tools.domains.travel.policy import apply_sidecar_metadata
+from tools.openclaw.learning_candidates import (
+    load_approved_rule_texts,
+    record_assume_travel_candidates,
+)
 
 
 def move_with_sidecar(src: Path, dest: Path) -> None:
@@ -131,6 +135,7 @@ def load_keywords(path: Path):
 
 
 STRONG_KEYWORDS, WEAK_KEYWORDS = load_keywords(KEYWORDS_FILE)
+LEARNED_TRAVEL_RULES = load_approved_rule_texts()
 MONEY_RE = re.compile(
     r'(NT\$|NTD|TWD|USD|JPY|¥|\$|元|萬)\s*[\d,]+'
     r'|[\d,]+\s*(元|萬|起|起售)'
@@ -194,6 +199,8 @@ def parse_args(argv=None):
                         help='Repeatable target id under line-rpa/download/<ID>/. '
                              'Mutually exclusive with --input-dir/--travel-dir/etc. '
                              'Multi-target mode shares one OCR engine load.')
+    parser.add_argument('--assume-travel', action='store_true',
+                        help='Treat successfully OCR-read review/other images as travel.')
     parser.add_argument('--min-weak-hits', type=int, default=DEFAULT_MIN_WEAK_HITS)
     parser.add_argument('--watch', action='store_true',
                         help='Watch mode polls a single input dir; not allowed with --target.')
@@ -259,6 +266,7 @@ def classify_text(text: str):
         return 'other', 'empty', ''
     raw_text = unicodedata.normalize('NFKC', text)
     compact_text = normalize_ocr_text(raw_text)
+    learned = keyword_hits(LEARNED_TRAVEL_RULES, raw_text, compact_text)
     strong = keyword_hits(STRONG_KEYWORDS, raw_text, compact_text)
     weak = keyword_hits(WEAK_KEYWORDS, raw_text, compact_text)
     bonus = []
@@ -268,30 +276,47 @@ def classify_text(text: str):
         bonus.append('<日期>')
 
     weight = len(weak) + len(bonus)
-    if strong:
+    if learned:
+        reason = f"learned×{len(learned)}"
+    elif strong:
         reason = f"強×{len(strong)}"
     else:
         reason = f"弱×{len(weak)}+{len(bonus)}"
 
-    if strong or weight >= MIN_WEAK_HITS:
+    if learned or strong or weight >= MIN_WEAK_HITS:
         classification = 'travel'
     elif weight >= 1:
         classification = 'review'
     else:
         classification = 'other'
 
-    all_hits = strong + weak + bonus
+    all_hits = learned + strong + weak + bonus
     hits_display = ','.join(all_hits[:5]) + (' …' if len(all_hits) > 5 else '')
     return classification, reason, hits_display
 
 
+def apply_assume_travel(classification: str, reason: str, *, assume_travel: bool) -> tuple[str, str]:
+    if assume_travel and classification in {'review', 'other'}:
+        return 'travel', f"assume-travel:{classification}"
+    return classification, reason
+
+
 def update_sidecar_with_ocr(img_path: Path, *, classification: str, text: str = '',
                             reason: str = '', hits: str = '', error: str = '',
-                            image_sha256: str = '') -> None:
+                            image_sha256: str = '',
+                            original_classification: str = '',
+                            original_reason: str = '',
+                            assume_travel_applied: bool = False) -> None:
     side = load_sidecar(img_path)
     ocr_block = side.get('ocr') or {}
     ocr_block['classifiedAt'] = utc_now_iso()
     ocr_block['classification'] = classification
+    if original_classification:
+        ocr_block['originalClassification'] = original_classification
+    if original_reason:
+        ocr_block['originalReason'] = original_reason
+    if assume_travel_applied:
+        ocr_block['assumeTravelApplied'] = True
     if text:
         ocr_block['text'] = text
         # Stamp engine + image hash so ocr_enrich's cache check
@@ -314,7 +339,7 @@ def update_sidecar_with_ocr(img_path: Path, *, classification: str, text: str = 
         print(f"  [警告] sidecar 寫入失敗 {img_path.name}: {save_err}")
 
 
-def process_one(ocr, img_path: Path, *, routes: Routes):
+def process_one(ocr, img_path: Path, *, routes: Routes, assume_travel: bool = False):
     # 先檢查檔案是否還在——另一個 classifier 行程（例如 UI server 內部的）可能已經搬走
     if not img_path.exists():
         return 'skip'
@@ -351,6 +376,18 @@ def process_one(ocr, img_path: Path, *, routes: Routes):
         return 'err'
 
     classification, reason, hits_display = classify_text(text)
+    original_classification = classification
+    original_reason = reason
+    classification, reason = apply_assume_travel(
+        classification,
+        reason,
+        assume_travel=assume_travel,
+    )
+    assume_travel_applied = (
+        assume_travel
+        and original_classification in {'review', 'other'}
+        and classification == 'travel'
+    )
     dest = getattr(routes, classification)
     if not img_path.exists():
         return 'skip'
@@ -361,6 +398,9 @@ def process_one(ocr, img_path: Path, *, routes: Routes):
         reason=reason,
         hits=hits_display,
         image_sha256=img_hash,
+        original_classification=original_classification if assume_travel_applied else '',
+        original_reason=original_reason if assume_travel_applied else '',
+        assume_travel_applied=assume_travel_applied,
     )
     try:
         new_path = unique_path(dest, img_path.name)
@@ -374,6 +414,20 @@ def process_one(ocr, img_path: Path, *, routes: Routes):
         return 'err'
     flag_by_class = {'travel': '[旅遊]', 'review': '[待審]', 'other': '[  -  ]'}
     print(f"  {flag_by_class[classification]} {reason:<8} {img_path.name}  {hits_display}")
+
+    if assume_travel_applied:
+        try:
+            sidecar = load_sidecar(new_path)
+            rows = record_assume_travel_candidates(
+                new_path,
+                sidecar,
+                original_classification=original_classification,
+                original_reason=original_reason,
+            )
+            if rows:
+                print(f"    learning candidates: {len(rows)}")
+        except Exception as learning_err:
+            print(f"    [warning] learning candidate record failed: {learning_err}")
 
     # Only auto-brand + auto-index confirmed travel images. review/ images
     # wait for human confirmation; once moved into travel/, the next
@@ -484,11 +538,13 @@ def main(argv=None) -> int:
         print(f"  錯誤檔   → {routes.error.name}/")
     print(f"  關鍵字：強信號 {len(STRONG_KEYWORDS)} 個（任一即過）/ 弱信號 {len(WEAK_KEYWORDS)} 個（需 >={MIN_WEAK_HITS}，含金額/日期 bonus）")
     print(f"  待審區：strong=0 但有 1 個信號的圖（弱×1+0、弱×0+1）→ {DEFAULT_REVIEW_DIR.name}/")
+    if args.assume_travel:
+        print("  assume-travel: OCR-success review/other images route to travel/")
     print()
 
     if args.watch:
         in_dir, routes = specs[0]
-        return _watch_loop(in_dir, routes)
+        return _watch_loop(in_dir, routes, assume_travel=bool(args.assume_travel))
 
     stats = {'travel': 0, 'review': 0, 'other': 0, 'err': 0, 'skip': 0}
     any_files = False
@@ -503,7 +559,7 @@ def main(argv=None) -> int:
         print(f"[{in_dir}] 找到 {len(files)} 張，開始處理")
         for i, f in enumerate(files, 1):
             print(f"  [{i:3d}/{len(files)}]", end=' ')
-            stats[process_one(get_ocr(), f, routes=routes)] += 1
+            stats[process_one(get_ocr(), f, routes=routes, assume_travel=bool(args.assume_travel))] += 1
         print()
 
     if not any_files:
@@ -514,7 +570,7 @@ def main(argv=None) -> int:
     return 0
 
 
-def _watch_loop(input_dir: Path, routes: Routes) -> int:
+def _watch_loop(input_dir: Path, routes: Routes, *, assume_travel: bool = False) -> int:
     print("監看中：新進根目錄的圖片會自動分類")
     print("按 Ctrl+C 結束\n")
     processed = set()
@@ -526,7 +582,7 @@ def _watch_loop(input_dir: Path, routes: Routes) -> int:
                     continue
                 if not wait_stable(f):
                     continue
-                total[process_one(get_ocr(), f, routes=routes)] += 1
+                total[process_one(get_ocr(), f, routes=routes, assume_travel=assume_travel)] += 1
                 processed.add(f)
             processed = {p for p in processed if p.exists()}
             time.sleep(WATCH_POLL_SEC)

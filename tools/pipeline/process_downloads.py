@@ -256,6 +256,8 @@ def build_commands(args: argparse.Namespace, target_ids: list[str]) -> list[tupl
         pending_targets = targets_with_pending_images(target_ids)
         if pending_targets:
             cmd = [args.python, str(FILTER_SCRIPT)]
+            if getattr(args, "assume_travel", False):
+                cmd.append("--assume-travel")
             for target_id in pending_targets:
                 cmd.extend(["--target", target_id])
             commands.append(("ocr:all", cmd))
@@ -338,6 +340,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         help="maximum suspicious sidecars to refresh per run; default 0 processes all")
     parser.add_argument("--force-branding", action="store_true",
                         help="rebuild branded images even if unchanged")
+    parser.add_argument("--assume-travel", action="store_true",
+                        help="route successful OCR review/other classifications to travel")
     parser.add_argument("--dry-run", action="store_true",
                         help="print planned commands without running them")
     parser.add_argument("--json", action="store_true",
