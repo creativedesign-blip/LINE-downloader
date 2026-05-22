@@ -235,6 +235,30 @@ class UploadCatalogTests(unittest.TestCase):
             self.assertTrue(upload_catalog.archive_image(image["id"], db_path=db_path))
             self.assertEqual(upload_catalog.list_images(folder["id"], db_path=db_path), [])
 
+    def test_update_image_ocr_override_applies_to_same_sha_images(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "catalog.db"
+            folder = upload_catalog.create_folder("Same image", folder_slug="upload_test_ocr_same_sha", db_path=db_path)
+            first_path = Path(tmp) / "first.jpg"
+            second_path = Path(tmp) / "second.jpg"
+            first_path.write_bytes(b"same image bytes")
+            second_path.write_bytes(b"same image bytes")
+            first = upload_catalog.add_image(folder["id"], first_path, "first.jpg", db_path=db_path)
+            second = upload_catalog.add_image(folder["id"], second_path, "second.jpg", db_path=db_path)
+
+            upload_catalog.update_image_metadata(
+                first["id"],
+                display_name="Only first",
+                ocr_tags_override=["New Zealand", "Alps"],
+                db_path=db_path,
+            )
+
+            images = {image["id"]: image for image in upload_catalog.list_images(folder["id"], db_path=db_path)}
+            self.assertEqual(images[first["id"]]["ocr_tags_override"], ["New Zealand", "Alps"])
+            self.assertEqual(images[second["id"]]["ocr_tags_override"], ["New Zealand", "Alps"])
+            self.assertEqual(images[first["id"]]["display_name"], "Only first")
+            self.assertEqual(images[second["id"]]["display_name"], "")
+
     def test_archive_folder_hides_from_default_lists(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "catalog.db"

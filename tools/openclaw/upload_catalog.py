@@ -635,6 +635,7 @@ def update_image_metadata(
             for tag in ocr_tags_override
             if str(tag).strip()
         ]
+        now = utc_now_iso()
         conn.execute(
             """
             UPDATE uploaded_images
@@ -647,11 +648,28 @@ def update_image_metadata(
                 json.dumps(tags, ensure_ascii=False),
                 (reference_text if reference_text is not None else current["reference_text"]).strip(),
                 (manual_note if manual_note is not None else current["manual_note"]).strip(),
-                utc_now_iso(),
+                now,
                 updated_by.strip() or "web",
                 image_id,
             ),
         )
+        if ocr_tags_override is not None:
+            related_ids = [related_id for related_id in _same_sha_image_ids(conn, image_id) if related_id != image_id]
+            if related_ids:
+                placeholders = ",".join("?" for _ in related_ids)
+                conn.execute(
+                    f"""
+                    UPDATE uploaded_images
+                    SET ocr_tags_override = ?, updated_at = ?, updated_by = ?
+                    WHERE id IN ({placeholders})
+                    """,
+                    [
+                        json.dumps(tags, ensure_ascii=False),
+                        now,
+                        updated_by.strip() or "web",
+                        *related_ids,
+                    ],
+                )
         conn.commit()
         row = conn.execute("SELECT * FROM uploaded_images WHERE id = ?", (image_id,)).fetchone()
     return _image_from_row(row) if row else None

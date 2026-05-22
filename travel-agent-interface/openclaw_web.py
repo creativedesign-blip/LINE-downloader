@@ -1055,6 +1055,71 @@ def _system_tags_for_image(path: Path | None) -> list[dict[str, object]]:
         return []
     return _sidecar_system_tags(payload)
 
+
+def _merge_system_tags(tag_groups: list[list[dict[str, object]]]) -> list[dict[str, object]]:
+    merged: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for tags in tag_groups:
+        for tag in tags:
+            value = _normalize_ocr_tag_text(tag.get("tag") if isinstance(tag, dict) else tag)
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            item = dict(tag) if isinstance(tag, dict) else {"tag": value, "source": "ocr"}
+            item["tag"] = value
+            merged.append(item)
+    return merged
+
+
+def _merge_sidecar_query_fields(payloads: list[dict[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {
+        "countries": [],
+        "regions": [],
+        "months": [],
+        "duration_days": None,
+        "price_from": None,
+    }
+    for payload in payloads:
+        fields = _sidecar_query_fields(payload)
+        for key in ("countries", "regions", "months"):
+            merged = list(result[key])
+            for value in fields.get(key) or []:
+                if value not in merged:
+                    merged.append(value)
+            result[key] = merged
+        if result["duration_days"] is None and fields.get("duration_days") is not None:
+            result["duration_days"] = fields["duration_days"]
+        if result["price_from"] is None and fields.get("price_from") is not None:
+            result["price_from"] = fields["price_from"]
+    return result
+
+
+def _same_sha_sidecar_payloads(image_id: int, current_path: Path | None = None) -> list[dict[str, object]]:
+    payloads: list[dict[str, object]] = []
+    seen_paths: set[str] = set()
+    for related_image_id in same_sha_image_ids(image_id) or [image_id]:
+        path = current_path if related_image_id == image_id else None
+        record = _upload_image_record(related_image_id)
+        if record is not None:
+            image, folder = record
+            path = _find_current_image_path(image, folder)
+        if path is None:
+            continue
+        path_key = str(path.resolve())
+        if path_key in seen_paths:
+            continue
+        seen_paths.add(path_key)
+        payload = _sidecar_payload_for_image(path)
+        if payload:
+            payloads.append(payload)
+    return payloads
+
+
+def _system_tags_for_same_sha_image(image_id: int, current_path: Path | None = None) -> list[dict[str, object]]:
+    payloads = _same_sha_sidecar_payloads(image_id, current_path)
+    return _merge_system_tags([_sidecar_system_tags(payload) for payload in payloads])
+
+
 def _folder_pipeline_counts(folder: dict[str, object]) -> dict[str, int]:
     base = folder_target_path(folder)
     ocr_count = 0
@@ -1230,7 +1295,7 @@ def _folder_detail(
                 image_copy["branded_url"] = f"/media?path={branded_media_rel}"
                 image_copy["branded_thumbnail_url"] = f"/media/thumbnail?path={branded_media_rel}&w=360"
         image_copy["manual_tags"] = list_manual_tags(int(image["id"]))
-        image_copy["system_tags"] = _system_tags_for_image(current_path)
+        image_copy["system_tags"] = _system_tags_for_same_sha_image(int(image["id"]), current_path)
         image_copy["flow_label"] = _image_flow_label(image_copy, folder)
         images.append(image_copy)
     folder["downloadable_count"] = sum(1 for image in images if image.get("flow_label") == "執行完成" and image.get("branded_path"))
@@ -1425,9 +1490,9 @@ def _refresh_upload_search_index_for_image(image_id: int) -> None:
         return
 
     current_path = _find_current_image_path(image, folder)
-    sidecar_payload = _sidecar_payload_for_image(current_path)
-    fields = _sidecar_query_fields(sidecar_payload)
-    system_tags = _sidecar_system_tags(sidecar_payload) if sidecar_payload else []
+    sidecar_payloads = _same_sha_sidecar_payloads(image_id, current_path)
+    fields = _merge_sidecar_query_fields(sidecar_payloads)
+    system_tags = _merge_system_tags([_sidecar_system_tags(payload) for payload in sidecar_payloads])
     override_values = _normalize_ocr_tag_values(image.get("ocr_tags_override"))
     system_tags_overridden = bool(override_values)
     system_tag_values = [] if system_tags_overridden else [
@@ -1440,7 +1505,11 @@ def _refresh_upload_search_index_for_image(image_id: int) -> None:
     ]
     manual_tags = _manual_tags_for_images([image_id]).get(image_id, [])
     manual_tag_values = [str(tag.get("tag") or "") for tag in manual_tags if isinstance(tag, dict)]
-    sidecar_text = _sidecar_text_values(sidecar_payload)
+    sidecar_text = []
+    for payload in sidecar_payloads:
+        for value in _sidecar_text_values(payload):
+            if value not in sidecar_text:
+                sidecar_text.append(value)
     branded_path = ""
     if current_path is not None:
         current_rel = current_path.relative_to(PROJECT_ROOT).as_posix()
@@ -2229,7 +2298,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if not image:
                     self._json({"ok": False, "error": "image not found"}, HTTPStatus.NOT_FOUND)
                     return
-                _refresh_upload_search_index_for_image(int(match.group(1)))
+                _refresh_upload_search_index_for_same_sha_images(int(match.group(1)))
                 self._json({"ok": True, "image": image})
                 return
 
