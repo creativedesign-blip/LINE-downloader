@@ -456,15 +456,20 @@ class LineRpa:
         except Exception as exc:
             # download_all_visible_images may have already moved files into
             # save_dir and flushed hashes before the exception. Surface that
-            # partial progress so log and image_index stay consistent.
+            # partial progress in the counts so the log and image_index agree
+            # on what landed on disk — but keep status="failed" so the three
+            # downstream signals (stop_on_group_failure, classify_failure,
+            # exit_code_for_records) all still fire on a crash. The legitimate
+            # status="partial" path is the non-crash branch above where some
+            # in-loop failures occurred but the function returned normally.
             partial = getattr(self, "_last_counts", None) or {}
             result.expected_count = partial.get("attempted", 0)
             result.success_count = partial.get("success", 0)
             result.skipped_count = partial.get("skipped", 0)
             result.duplicate_count = partial.get("duplicate", 0)
-            result.failed_count += 1
+            result.failed_count = partial.get("failed", 0) + 1
             result.failure_reason = str(exc)
-            result.status = "partial" if partial.get("success", 0) > 0 else "failed"
+            result.status = "failed"
         finally:
             self.try_close_viewer()
             self.close_extra_line_windows()
@@ -740,6 +745,11 @@ class LineRpa:
         if media_hwnd and media_hwnd != self.hwnd:
             self.apply_window_layout(media_hwnd, "media_window", DEFAULT_CONFIG["media_window"])
             trace(f"photos/videos hwnd={media_hwnd}")
+        else:
+            # find_media_window's no-candidate fallback returns self.hwnd.
+            # download_all_visible_images will raise on this, but logging here
+            # gives operators a one-step-earlier hint pointing at root cause.
+            trace("warning: find_media_window returned main LINE hwnd; sub-window likely not opened")
 
     def find_chat_menu_popup(self) -> int | None:
         if not self.hwnd:
@@ -872,7 +882,15 @@ class LineRpa:
                             if target.exists():
                                 stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                                 target = duplicate_dir / f"{stamp}_{duplicate_path.name}"
-                            if not self._safe_move(duplicate_path, target):
+                            if self._safe_move(duplicate_path, target):
+                                # Restamp mtime to now so retention sees the
+                                # drop time, not the original LINE save time
+                                # (shutil.move preserves the source mtime).
+                                try:
+                                    os.utime(target, None)
+                                except OSError:
+                                    pass
+                            else:
                                 try: duplicate_path.unlink()
                                 except OSError: pass
                         except OSError:
@@ -901,13 +919,21 @@ class LineRpa:
                 self.click_window_ratio(viewer_hwnd, "viewer_next_button")
                 time.sleep(next_image_wait)
         finally:
+            # Snapshot whether finally was entered via an in-flight exception
+            # BEFORE the inner try, because inside the except clause below
+            # sys.exc_info() will reflect flush_exc, not the outer exception.
+            outer_exc_in_flight = sys.exc_info()[0] is not None
             if pending_index_writes and image_index is not None and index_path is not None and group_name is not None:
                 try:
                     save_image_index(index_path, image_index)
                 except Exception as flush_exc:
-                    # Swallow so a failing flush in the cleanup path doesn't
-                    # replace the original exception that put us here.
                     trace(f"final image_index flush failed: {flush_exc}")
+                    # If we got here via natural exit (no upstream exception),
+                    # surface the disk error so the operator sees it. If an
+                    # upstream exception is already in flight, swallow so we
+                    # don't replace the original cause with a cleanup error.
+                    if not outer_exc_in_flight:
+                        raise
         return counts
 
     @staticmethod
@@ -954,7 +980,9 @@ class LineRpa:
             return
         cutoff = time.time() - retention_days * 24 * 60 * 60
         try:
-            candidates = list(duplicate_dir.iterdir())
+            # rglob (not iterdir) so subdirectories created by older code
+            # versions or operator triage also get retention-cleaned.
+            candidates = list(duplicate_dir.rglob("*"))
         except OSError:
             return
         for path in candidates:
@@ -1077,21 +1105,43 @@ class LineRpa:
             try:
                 shutil.move(str(src), str(dst))
                 return True
-            except PermissionError:
+            except FileNotFoundError:
+                return False
+            except OSError:
+                # Catches PermissionError (same-drive os.rename sharing
+                # violation) AND the bare OSError that surfaces from cross-
+                # drive copy2+unlink paths when LINE/AV holds the handle.
                 if i == attempts - 1:
                     return False
                 time.sleep(backoff * (i + 1))
-            except FileNotFoundError:
-                return False
         return False
+
+    PENDING_UNSTABLE_TTL_SECONDS = 30.0
 
     def move_new_downloads(self, before: set[Path], save_dir: Path) -> list[Path]:
         save_dir.mkdir(parents=True, exist_ok=True)
         after = self.recent_download_candidates()
+        now = time.monotonic()
+        # Files that were unstable / locked in a previous iteration. Re-subtract
+        # them from `before` so they reappear as candidates here; drop entries
+        # older than the TTL so a permanently stuck file doesn't keep eating
+        # 3-second polls forever.
+        prior_pending: dict[Path, float] = getattr(self, "_pending_unstable", {}) or {}
+        pending: dict[Path, float] = {
+            p: t for p, t in prior_pending.items() if now - t < self.PENDING_UNSTABLE_TTL_SECONDS
+        }
+        for stale_path, first_seen in prior_pending.items():
+            if stale_path not in pending:
+                trace(f"giving up on {stale_path.name} after {now - first_seen:.1f}s stuck")
+        before_adj = before - pending.keys()
         moved: list[Path] = []
-        for source in sorted(after - before, key=lambda p: p.stat().st_mtime):
+        new_pending: dict[Path, float] = {}
+        for source in sorted(after - before_adj, key=lambda p: p.stat().st_mtime if p.exists() else 0):
+            if not source.exists():
+                continue
             if not self._wait_file_stable(source):
-                trace(f"skip unstable download (still being written?): {source.name}")
+                new_pending[source] = pending.get(source, now)
+                trace(f"download not yet stable: {source.name}; will retry next iteration")
                 continue
             target = save_dir / source.name
             if target.exists():
@@ -1102,9 +1152,11 @@ class LineRpa:
                     pass
                 continue
             if not self._safe_move(source, target):
+                new_pending[source] = pending.get(source, now)
                 trace(f"could not move {source.name} (file locked?); will retry next iteration")
                 continue
             moved.append(target)
+        self._pending_unstable = new_pending
         return moved
 
     def handle_save_dialog(self, save_dir: Path) -> bool:
@@ -1229,6 +1281,12 @@ class LineRpa:
 
     def type_clipboard(self, text: str) -> None:
         saved_text: str | None = None
+        # Snapshot seq INSIDE the clipboard lock, immediately after our
+        # SetClipboardData, before CloseClipboard. Captured after the lock
+        # is released, a clipboard manager (Win+V history, Phone Link)
+        # could bump the seq in the gap and inflate our baseline, defeating
+        # the H3 race-guard exactly when it's most needed.
+        seq_after_our_write: int | None = None
         self._open_clipboard_retry()
         try:
             try:
@@ -1240,15 +1298,12 @@ class LineRpa:
                 saved_text = None
             win32clipboard.EmptyClipboard()
             win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
+            try:
+                seq_after_our_write = win32clipboard.GetClipboardSequenceNumber()
+            except Exception:
+                seq_after_our_write = None
         finally:
             win32clipboard.CloseClipboard()
-        # Snapshot seq AFTER our write. If it advances during the paste
-        # window, someone else (user copying, Phone Link sync) modified
-        # the clipboard and we must not stomp their fresh content.
-        try:
-            seq_after_our_write: int | None = win32clipboard.GetClipboardSequenceNumber()
-        except Exception:
-            seq_after_our_write = None
         self.hotkey(win32con.VK_CONTROL, ord("V"))
         if saved_text is not None:
             # 250ms gives LINE's WM_PASTE a chance to read CF_UNICODETEXT
@@ -1375,11 +1430,19 @@ def run(
                     records.append(
                         GroupResult(group, "failed", "UNKNOWN", 0, 0, 0, 0, 1, str(save_dir), str(exc), started)
                     )
-                write_log(log_path, records)
+                try:
+                    write_log(log_path, records)
+                except Exception as log_exc:
+                    # Don't kill the whole batch if an operator has the log
+                    # open in Excel — the next group's flush will retry.
+                    print(f"warning: write_log failed mid-loop ({log_exc}); continuing")
             else:
                 record = rpa.run_group(group, group_download_dir(save_root, group))
                 records.append(record)
-                write_log(log_path, records)
+                try:
+                    write_log(log_path, records)
+                except Exception as log_exc:
+                    print(f"warning: write_log failed mid-loop ({log_exc}); continuing")
                 if config.get("stop_on_group_failure", True) and record.status == "failed":
                     print(
                         f"stopped: {group} failed before pipeline; remaining groups were not processed. "
