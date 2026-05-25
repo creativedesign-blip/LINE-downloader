@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, Download, FolderOpen, FolderPlus, Loader2, MoreHorizontal, Trash2, Upload, X } from "lucide-react";
+import { AlertTriangle, ChevronLeft, Download, FolderOpen, FolderPlus, Loader2, MoreHorizontal, RotateCcw, Trash2, Upload, X } from "lucide-react";
 import CleanImageDetailDrawer from "./CleanImageDetailDrawer.jsx";
 import TagBadgeList from "./TagBadgeList.jsx";
 import {
@@ -17,6 +17,28 @@ import {
 
 const COMPLETED_FLOW_LABEL = "執行完成";
 const TAIPEI_UTC_OFFSET = "+08:00";
+
+function recoveryState(folder) {
+  return folder?.recovery && typeof folder.recovery === "object" ? folder.recovery : {};
+}
+
+function canArchiveFolder(folder) {
+  const recovery = recoveryState(folder);
+  return Number(folder?.image_count || 0) === 0 || ["success", "failed", "stale"].includes(folder?.status) || Boolean(recovery.can_archive);
+}
+
+function canRetryFolder(folder) {
+  return Boolean(recoveryState(folder).can_retry);
+}
+
+function canMarkFolderFailed(folder) {
+  return Boolean(recoveryState(folder).can_mark_failed);
+}
+
+function canArchiveImage(folder) {
+  const recovery = recoveryState(folder);
+  return ["pending", "success", "failed", "stale"].includes(folder?.status) || Boolean(recovery.can_delete_images);
+}
 
 function taipeiDateToUtcIso(date, endOfDay = false) {
   if (!date) return "";
@@ -56,6 +78,8 @@ export default function UploadWorkspace({
   onUpdateImage,
   onArchiveImage,
   onArchiveFolder,
+  onRetryFolder,
+  onMarkFolderFailed,
   onDownloadFolder,
   onToast,
 }) {
@@ -144,6 +168,8 @@ export default function UploadWorkspace({
             onUpdateImage={onUpdateImage}
             onArchiveImage={onArchiveImage}
             onArchiveFolder={onArchiveFolder}
+            onRetryFolder={onRetryFolder}
+            onMarkFolderFailed={onMarkFolderFailed}
             onDownloadFolder={onDownloadFolder}
             onToast={onToast}
           />
@@ -155,6 +181,8 @@ export default function UploadWorkspace({
             onOpen={openFolder}
             onRefresh={onRefresh}
             onArchiveFolder={onArchiveFolder}
+            onRetryFolder={onRetryFolder}
+            onMarkFolderFailed={onMarkFolderFailed}
             onToast={onToast}
           />
         )}
@@ -185,7 +213,7 @@ export default function UploadWorkspace({
   );
 }
 
-function FolderList({ folders, selectedId, recentFolderId, onOpen, onRefresh, onArchiveFolder, onToast }) {
+function FolderList({ folders, selectedId, recentFolderId, onOpen, onRefresh, onArchiveFolder, onRetryFolder, onMarkFolderFailed, onToast }) {
   const [openMenuId, setOpenMenuId] = useState(null);
 
   const archiveFolder = (event, folder, canArchive) => {
@@ -197,6 +225,22 @@ function FolderList({ folders, selectedId, recentFolderId, onOpen, onRefresh, on
     }
     if (window.confirm("此操作會將整個資料夾移至封存，30 天內不會出現在列表、查詢或下載。確定移至封存？")) {
       onArchiveFolder?.(folder.id);
+    }
+  };
+
+  const retryFolder = (event, folder) => {
+    event.stopPropagation();
+    setOpenMenuId(null);
+    if (!canRetryFolder(folder)) return;
+    onRetryFolder?.(folder.id);
+  };
+
+  const markFolderFailed = (event, folder) => {
+    event.stopPropagation();
+    setOpenMenuId(null);
+    if (!canMarkFolderFailed(folder)) return;
+    if (window.confirm("這會將資料夾標記為失敗，之後可刪除或重新上傳。確定標記失敗？")) {
+      onMarkFolderFailed?.(folder.id);
     }
   };
 
@@ -226,7 +270,8 @@ function FolderList({ folders, selectedId, recentFolderId, onOpen, onRefresh, on
             {(folders || []).map((folder) => {
               const progress = folderProgress(folder);
               const active = selectedId === folder.id || recentFolderId === folder.id;
-              const canArchive = Number(folder.image_count || 0) === 0 || ["success", "failed"].includes(folder.status);
+              const recovery = recoveryState(folder);
+              const canArchive = canArchiveFolder(folder);
               return (
                 <tr
                   key={folder.id}
@@ -244,6 +289,11 @@ function FolderList({ folders, selectedId, recentFolderId, onOpen, onRefresh, on
                     <span className="rounded px-2 py-1 text-[10px]" style={{ backgroundColor: "#E1F5EE", color: "#0F6E56" }}>
                       {folderStatusLabel(folder)}
                     </span>
+                    {recovery.stale && (
+                      <span className="ml-1 rounded px-2 py-1 text-[10px]" style={{ backgroundColor: "#FEF3C7", color: "#92400E" }}>
+                        需處理
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap tabular-nums text-left">{progress.done}/{progress.total}</td>
                   <td className="px-4 py-3 whitespace-nowrap text-stone-500 text-left">{new Date(folder.updated_at || folder.created_at).toLocaleString("zh-TW")}</td>
@@ -264,6 +314,24 @@ function FolderList({ folders, selectedId, recentFolderId, onOpen, onRefresh, on
                         </button>
                         {openMenuId === folder.id && (
                           <div className="absolute right-0 z-20 mt-2 w-44 overflow-hidden rounded-md border bg-white py-1 shadow-lg" style={{ borderColor: "#E1F5EE" }}>
+                            <button
+                              type="button"
+                              disabled={!canRetryFolder(folder)}
+                              onClick={(event) => retryFolder(event, folder)}
+                              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-stone-700 hover:bg-[#E1F5EE] disabled:cursor-not-allowed disabled:text-stone-400 disabled:hover:bg-white"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                              重新處理
+                            </button>
+                            <button
+                              type="button"
+                              disabled={!canMarkFolderFailed(folder)}
+                              onClick={(event) => markFolderFailed(event, folder)}
+                              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:text-stone-400 disabled:hover:bg-white"
+                            >
+                              <AlertTriangle className="w-3.5 h-3.5" />
+                              標記失敗
+                            </button>
                             <button
                               type="button"
                               disabled={!canArchive}
@@ -623,6 +691,8 @@ function UploadFolderDetail({
   onUpdateImage,
   onArchiveImage,
   onArchiveFolder,
+  onRetryFolder,
+  onMarkFolderFailed,
   onDownloadFolder,
   onToast,
 }) {
@@ -650,6 +720,11 @@ function UploadFolderDetail({
   );
   const selectedDownloadableIds = selectedIds.filter((id) => downloadableIds.includes(id));
   const allDownloadableSelected = downloadableIds.length > 0 && selectedDownloadableIds.length === downloadableIds.length;
+  const recovery = recoveryState(folder);
+  const folderCanArchive = canArchiveFolder(folder);
+  const folderCanRetry = canRetryFolder(folder);
+  const folderCanMarkFailed = canMarkFolderFailed(folder);
+  const imageCanArchive = canArchiveImage(folder);
 
   useEffect(() => {
     setSelectedIds([]);
@@ -706,8 +781,7 @@ function UploadFolderDetail({
 
   const archiveCurrentFolder = async () => {
     setFolderMenuOpen(false);
-    const canArchive = Number(folder.image_count || 0) === 0 || ["success", "failed"].includes(folder.status);
-    if (!canArchive) {
+    if (!folderCanArchive) {
       onToast?.({ type: "error", message: "資料夾仍在處理中，完成或失敗後才能移至封存。" });
       return;
     }
@@ -715,6 +789,32 @@ function UploadFolderDetail({
     await onArchiveFolder?.(folder.id);
     onBack();
     onToast?.({ type: "success", message: "資料夾已移至封存，30 天後永久清理。" });
+  };
+
+  const retryCurrentFolder = async () => {
+    setFolderMenuOpen(false);
+    if (!folderCanRetry) return;
+    await onRetryFolder?.(folder.id);
+    onToast?.({ type: "success", message: "已重新送出處理流程。" });
+  };
+
+  const markCurrentFolderFailed = async () => {
+    setFolderMenuOpen(false);
+    if (!folderCanMarkFailed) return;
+    if (!window.confirm("這會將資料夾標記為失敗，之後可刪除或重新上傳。確定標記失敗？")) return;
+    await onMarkFolderFailed?.(folder.id);
+    onToast?.({ type: "success", message: "資料夾已標記失敗。" });
+  };
+
+  const archiveImage = async (event, image) => {
+    event.stopPropagation();
+    if (!imageCanArchive) {
+      onToast?.({ type: "error", message: "資料夾仍在正常處理中，暫時不能移除單張圖片。" });
+      return;
+    }
+    if (!window.confirm("這會將此圖片移至封存，並從搜尋與下載結果移除。確定移除？")) return;
+    await onArchiveImage?.(image.id, currentUploadFilters);
+    onToast?.({ type: "success", message: "圖片已移至封存。" });
   };
 
   const renderQuickTagInput = (image, type) => {
@@ -767,8 +867,27 @@ function UploadFolderDetail({
                 <div className="absolute left-0 z-20 mt-2 w-44 overflow-hidden rounded-md border bg-white py-1 shadow-lg" style={{ borderColor: "#E1F5EE" }}>
                   <button
                     type="button"
+                    disabled={!folderCanRetry}
+                    onClick={retryCurrentFolder}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-stone-700 hover:bg-[#E1F5EE] disabled:cursor-not-allowed disabled:text-stone-400 disabled:hover:bg-white"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    重新處理
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!folderCanMarkFailed}
+                    onClick={markCurrentFolderFailed}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:text-stone-400 disabled:hover:bg-white"
+                  >
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    標記失敗
+                  </button>
+                  <button
+                    type="button"
                     onClick={archiveCurrentFolder}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-red-700 hover:bg-red-50"
+                    disabled={!folderCanArchive}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:text-stone-400 disabled:hover:bg-white"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                     封存資料夾
@@ -779,6 +898,12 @@ function UploadFolderDetail({
           </div>
           {Array.isArray(folder.line_groups) && folder.line_groups.length > 0 && (
             <div className="text-[10px] text-stone-500 mt-1">LINE 群組：{folder.line_groups.join("、")}</div>
+          )}
+          {recovery.stale && (
+            <div className="mt-2 flex max-w-2xl items-start gap-2 rounded-md border px-3 py-2 text-xs" style={{ borderColor: "#FCD34D", backgroundColor: "#FFFBEB", color: "#92400E" }}>
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+              <span>流程可能已中斷：{recovery.reason || "沒有偵測到有效處理程序"}。可重新處理、標記失敗，或移除卡住圖片。</span>
+            </div>
           )}
         </div>
         <div className="flex w-full flex-col gap-2 xl:w-auto xl:items-end">
@@ -954,17 +1079,29 @@ function UploadFolderDetail({
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap text-stone-500 text-left align-middle">{new Date(image.uploaded_at).toLocaleString("zh-TW")}</td>
                   <td className="px-3 py-2 text-left whitespace-nowrap align-middle">
-                    <button
-                      type="button"
-                      disabled={!canOpenDetail}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (canOpenDetail) setSelectedImage(image);
-                      }}
-                      className="text-xs text-stone-700 hover:text-stone-950 disabled:cursor-not-allowed disabled:text-stone-400"
-                    >
-                      {canOpenDetail ? "查看 / 編輯" : "尚未完成"}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={!canOpenDetail}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (canOpenDetail) setSelectedImage(image);
+                        }}
+                        className="text-xs text-stone-700 hover:text-stone-950 disabled:cursor-not-allowed disabled:text-stone-400"
+                      >
+                        {canOpenDetail ? "查看 / 編輯" : "尚未完成"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!imageCanArchive}
+                        onClick={(event) => archiveImage(event, image)}
+                        className="inline-flex items-center gap-1 text-xs text-red-700 hover:text-red-900 disabled:cursor-not-allowed disabled:text-stone-400"
+                        title={imageCanArchive ? "移除此圖片" : "正常處理中不能移除圖片"}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        移除
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );

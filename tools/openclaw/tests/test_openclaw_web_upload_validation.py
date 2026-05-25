@@ -58,5 +58,67 @@ class UploadImageDimensionValidationTests(unittest.TestCase):
         self.assertEqual(error, "圖片無法讀取或格式損壞")
 
 
+class UploadRecoveryStateTests(unittest.TestCase):
+    def test_running_folder_without_lock_is_recoverable(self):
+        folder = {
+            "id": 10,
+            "status": "running",
+            "current_step": "ocr",
+            "step_statuses": {"ocr": "running"},
+            "updated_at": "2000-01-01T00:00:00Z",
+        }
+
+        with patch.object(openclaw_web, "_is_recent_run_lock", return_value=False):
+            recovery = openclaw_web._folder_recovery_state(folder)
+
+        self.assertTrue(recovery["stale"])
+        self.assertTrue(recovery["can_retry"])
+        self.assertTrue(recovery["can_archive"])
+        self.assertTrue(recovery["can_delete_images"])
+        self.assertEqual(recovery["stuck_step"], "ocr")
+
+    def test_running_folder_with_lock_is_not_recoverable(self):
+        folder = {
+            "id": 10,
+            "status": "running",
+            "current_step": "ocr",
+            "step_statuses": {"ocr": "running"},
+            "updated_at": openclaw_web._utc_now_iso(),
+        }
+
+        with patch.object(openclaw_web, "_is_recent_run_lock", return_value=True):
+            recovery = openclaw_web._folder_recovery_state(folder)
+
+        self.assertFalse(recovery["stale"])
+        self.assertFalse(recovery["can_retry"])
+        self.assertFalse(recovery["can_archive"])
+        self.assertFalse(recovery["can_delete_images"])
+
+    def test_stale_folder_can_be_archived(self):
+        folder = {
+            "id": 10,
+            "status": "running",
+            "current_step": "compose",
+            "image_count": 2,
+            "recovery": {"can_archive": True},
+        }
+
+        allowed, reason = openclaw_web._folder_can_be_archived(folder)
+
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "")
+
+    def test_normal_running_folder_blocks_image_archive(self):
+        with patch.object(
+            openclaw_web,
+            "_folder_with_runtime_status",
+            return_value={"status": "running", "recovery": {"stale": False}},
+        ):
+            allowed, reason = openclaw_web._image_can_be_archived({"id": 10})
+
+        self.assertFalse(allowed)
+        self.assertIn("正常處理中", reason)
+
+
 if __name__ == "__main__":
     unittest.main()

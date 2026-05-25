@@ -86,6 +86,7 @@ export function folderProgress(folder) {
 export function folderStatusLabel(folder) {
   if (folder?.status === "success") return "完成";
   if (folder?.status === "failed") return "失敗";
+  if (folder?.status === "stale" || folder?.recovery?.stale) return "中斷";
   if (folder?.status === "running") return "處理中";
   return stepLabel(folder?.current_step ? folder?.step_statuses?.[folder.current_step] : "");
 }
@@ -99,6 +100,7 @@ export function imageFlowStatus(image, folder) {
   const hasComposed = image?.compose_status === "success" || Boolean(image?.branded_thumbnail_url || image?.branded_url);
 
   if (hasComposed || folderStatus === "success") return "執行完成";
+  if (folder?.recovery?.stale) return hasOcr ? "組合中斷" : "辨識中斷";
   if (hasOcr || currentStep === "compose" || image?.compose_status === "running") return "組合中";
   return "辨識中";
 }

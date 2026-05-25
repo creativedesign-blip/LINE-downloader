@@ -102,6 +102,16 @@ export const uploadApi = {
     return readJson(response, "archive folder failed");
   },
 
+  async retryFolder(folderId) {
+    const response = await fetch(`/api/uploads/folders/${folderId}/retry`, { method: "POST" });
+    return readJson(response, "retry folder failed");
+  },
+
+  async markFolderFailed(folderId) {
+    const response = await fetch(`/api/uploads/folders/${folderId}/mark-failed`, { method: "POST" });
+    return readJson(response, "mark folder failed");
+  },
+
   async downloadFolder(folderId, filters = {}) {
     const response = await fetch(`/api/uploads/folders/${folderId}/download`, {
       method: "POST",

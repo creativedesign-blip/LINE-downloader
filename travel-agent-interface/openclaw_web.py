@@ -754,6 +754,8 @@ MAX_UPLOAD_TOTAL_BYTES = 200 * 1024 * 1024
 MAX_UPLOAD_FILE_COUNT = 50
 MIN_UPLOAD_IMAGE_EDGE_PX = 50
 FALLBACK_MIN_UPLOAD_IMAGE_WIDTH_PX = 620
+UPLOAD_FOLDER_STALE_AFTER_SECONDS = 60 * 60
+UPLOAD_FOLDER_LOCK_GRACE_SECONDS = 5 * 60
 BRANDING_CONFIG_PATH = PROJECT_ROOT / "config" / "branding.json"
 
 
@@ -1201,6 +1203,7 @@ def _folder_with_file_progress(folder: dict[str, object]) -> dict[str, object]:
     composed_count = int(copy.get("composed_count") or 0)
     ocr_count = int(copy.get("ocr_count") or 0)
     step_statuses = dict(copy.get("step_statuses") or {})
+    status = str(copy.get("status") or "")
 
     if image_count > 0 and composed_count >= image_count:
         copy["status"] = "success"
@@ -1212,7 +1215,7 @@ def _folder_with_file_progress(folder: dict[str, object]) -> dict[str, object]:
             "compose": "success",
             "index": "success",
         }
-    elif image_count > 0 and ocr_count >= image_count:
+    elif image_count > 0 and ocr_count >= image_count and status not in {"failed", "stale"}:
         copy["status"] = "running"
         copy["current_step"] = "compose"
         copy["step_statuses"] = {
@@ -1222,6 +1225,63 @@ def _folder_with_file_progress(folder: dict[str, object]) -> dict[str, object]:
             "compose": step_statuses.get("compose") or "pending",
         }
     return copy
+
+
+def _parse_utc_epoch(value: object) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        normalized = text.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized).timestamp()
+    except ValueError:
+        return None
+
+
+def _folder_recovery_state(folder: dict[str, object]) -> dict[str, object]:
+    status = str(folder.get("status") or "")
+    current_step = str(folder.get("current_step") or "")
+    step_statuses = dict(folder.get("step_statuses") or {})
+    active_steps = {"ocr", "compose", "index"}
+    reasons: list[str] = []
+
+    latest = folder.get("job") if isinstance(folder.get("job"), dict) else None
+    if latest and latest.get("status") in {"stale", "failed"}:
+        reasons.append(str(latest.get("last_error") or latest.get("status") or "latest job is not active"))
+
+    if status == "stale":
+        reasons.append("job status is stale")
+    updated_epoch = _parse_utc_epoch(folder.get("updated_at"))
+    age_seconds = time.time() - updated_epoch if updated_epoch is not None else None
+    if (
+        status == "running"
+        and current_step in active_steps
+        and not _is_recent_run_lock()
+        and (age_seconds is None or age_seconds >= UPLOAD_FOLDER_LOCK_GRACE_SECONDS)
+    ):
+        reasons.append("job lock is not active")
+
+    if status == "running" and current_step in active_steps and updated_epoch is not None:
+        if age_seconds is not None and age_seconds >= UPLOAD_FOLDER_STALE_AFTER_SECONDS:
+            reasons.append("no folder progress for more than 60 minutes")
+
+    stuck_step = current_step if current_step in active_steps else ""
+    if not stuck_step:
+        for name in ("ocr", "compose", "index"):
+            if step_statuses.get(name) == "running":
+                stuck_step = name
+                break
+
+    stale = bool(reasons)
+    return {
+        "stale": stale,
+        "reason": "; ".join(dict.fromkeys(reasons)),
+        "stuck_step": stuck_step,
+        "can_retry": stale,
+        "can_archive": stale,
+        "can_mark_failed": stale,
+        "can_delete_images": stale or status in {"pending", "failed", "success", "stale"},
+    }
 
 
 def _branded_images_by_source(folder: dict[str, object]) -> dict[str, Path]:
@@ -1243,7 +1303,9 @@ def _folder_with_runtime_status(folder: dict[str, object]) -> dict[str, object]:
             },
         }
         copy["job"] = latest
-    return _folder_with_file_progress(copy)
+    copy = _folder_with_file_progress(copy)
+    copy["recovery"] = _folder_recovery_state(copy)
+    return copy
 
 
 def _image_flow_label(image: dict[str, object], folder: dict[str, object]) -> str:
@@ -1309,11 +1371,21 @@ def _folder_summary(folder: dict[str, object]) -> dict[str, object]:
 def _folder_can_be_archived(folder: dict[str, object]) -> tuple[bool, str]:
     status = str(folder.get("status") or "")
     image_count = int(folder.get("image_count") or 0)
+    recovery = folder.get("recovery") if isinstance(folder.get("recovery"), dict) else _folder_recovery_state(folder)
     if image_count == 0:
         return True, ""
-    if status in {"success", "failed"}:
+    if status in {"success", "failed", "stale"} or recovery.get("can_archive"):
         return True, ""
     return False, "資料夾仍在 OCR / 組圖流程中，完成或失敗後才能刪除。"
+
+
+def _image_can_be_archived(folder: dict[str, object]) -> tuple[bool, str]:
+    folder = _folder_with_runtime_status(folder)
+    status = str(folder.get("status") or "")
+    recovery = folder.get("recovery") if isinstance(folder.get("recovery"), dict) else {}
+    if status == "running" and not recovery.get("stale"):
+        return False, "資料夾仍在正常處理中，請等完成、失敗或中斷後再移除單張圖片。"
+    return True, ""
 
 
 def _folder_download_files(
@@ -2143,6 +2215,55 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"ok": True, "folder": folder})
                 return
 
+            match = re.fullmatch(r"/api/uploads/folders/(\d+)/retry", path)
+            if match:
+                folder = get_folder(int(match.group(1)))
+                if not folder:
+                    self._json({"ok": False, "error": "folder not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                folder = _folder_with_runtime_status(folder)
+                recovery = folder.get("recovery") if isinstance(folder.get("recovery"), dict) else {}
+                if folder.get("archived_at"):
+                    self._json({"ok": False, "error": "archived folder cannot be retried"}, HTTPStatus.CONFLICT)
+                    return
+                if int(folder.get("image_count") or 0) <= 0:
+                    self._json({"ok": False, "error": "資料夾沒有可重新處理的圖片"}, HTTPStatus.BAD_REQUEST)
+                    return
+                if folder.get("status") == "running" and not recovery.get("stale"):
+                    self._json({"ok": False, "error": "資料夾仍在正常處理中，請等待或重新整理。"}, HTTPStatus.CONFLICT)
+                    return
+                pipeline = self._start_upload_pipeline(folder, trigger_source="upload")
+                refreshed = get_folder(int(folder["id"])) or folder
+                self._json({"ok": bool(pipeline.get("ok")), "folder": _folder_summary(refreshed), "pipeline": pipeline})
+                return
+
+            match = re.fullmatch(r"/api/uploads/folders/(\d+)/mark-failed", path)
+            if match:
+                folder = get_folder(int(match.group(1)))
+                if not folder:
+                    self._json({"ok": False, "error": "folder not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                folder = _folder_with_runtime_status(folder)
+                recovery = folder.get("recovery") if isinstance(folder.get("recovery"), dict) else {}
+                if folder.get("status") == "success":
+                    self._json({"ok": False, "error": "completed folder cannot be marked failed"}, HTTPStatus.CONFLICT)
+                    return
+                if folder.get("status") == "running" and not recovery.get("stale"):
+                    self._json({"ok": False, "error": "資料夾仍在正常處理中，請等待或重新整理。"}, HTTPStatus.CONFLICT)
+                    return
+                stuck_step = str(recovery.get("stuck_step") or folder.get("current_step") or "ocr")
+                steps = dict(folder.get("step_statuses") or {})
+                if stuck_step in {"ocr", "compose", "index"}:
+                    steps[stuck_step] = "failed"
+                failed = update_folder_status(
+                    int(folder["id"]),
+                    status="failed",
+                    current_step="failed",
+                    step_statuses=steps,
+                )
+                self._json({"ok": bool(failed), "folder": _folder_summary(failed) if failed else None})
+                return
+
             match = re.fullmatch(r"/api/uploads/folders/(\d+)/images", path)
             if match:
                 folder = get_folder(int(match.group(1)))
@@ -2262,9 +2383,22 @@ class Handler(SimpleHTTPRequestHandler):
 
             match = re.fullmatch(r"/api/uploads/images/(\d+)", path)
             if match:
-                ok = archive_image(int(match.group(1)), updated_by="web")
+                image_id = int(match.group(1))
+                record = _upload_image_record(image_id)
+                if not record:
+                    self._json({"ok": False, "error": "image not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                image, folder = record
+                if image.get("archived_at"):
+                    self._json({"ok": False, "error": "image already archived"}, HTTPStatus.CONFLICT)
+                    return
+                ok_to_archive, reason = _image_can_be_archived(folder)
+                if not ok_to_archive:
+                    self._json({"ok": False, "error": reason}, HTTPStatus.CONFLICT)
+                    return
+                ok = archive_image(image_id, updated_by="web")
                 if ok:
-                    delete_image_search_index(int(match.group(1)))
+                    delete_image_search_index(image_id)
                 self._json({"ok": ok, "archived": ok})
                 return
 

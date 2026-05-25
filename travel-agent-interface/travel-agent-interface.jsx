@@ -789,6 +789,18 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
     await refreshUploadFolders();
   };
 
+  const handleRetryFolder = async (folderId) => {
+    await uploadApi.retryFolder(folderId);
+    await refreshUploadFolders();
+    await refreshUploadDetail(folderId);
+  };
+
+  const handleMarkFolderFailed = async (folderId) => {
+    await uploadApi.markFolderFailed(folderId);
+    await refreshUploadFolders();
+    await refreshUploadDetail(folderId);
+  };
+
   const handleDownloadFolder = async (folderId, filters = {}) => {
     await uploadApi.downloadFolder(folderId, filters);
   };
@@ -1391,6 +1403,8 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                     }}
                     onArchiveImage={(imageId, filters) => handleArchiveImage(imageId, filters).catch((error) => setUploadError(error.message))}
                     onArchiveFolder={(folderId) => handleArchiveFolder(folderId).catch((error) => setUploadError(error.message))}
+                    onRetryFolder={(folderId) => handleRetryFolder(folderId).catch((error) => setUploadError(error.message))}
+                    onMarkFolderFailed={(folderId) => handleMarkFolderFailed(folderId).catch((error) => setUploadError(error.message))}
                     onDownloadFolder={(folderId, filters) => handleDownloadFolder(folderId, filters).catch((error) => setUploadError(error.message))}
                     onToast={setToast}
                   />
