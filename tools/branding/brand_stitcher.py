@@ -22,6 +22,7 @@ import argparse
 import hashlib
 import json
 import logging
+import re
 import sys
 import time
 from collections import defaultdict
@@ -238,6 +239,115 @@ def detect_old_cta_cut_y(base: np.ndarray, ocr_text: str, cfg: dict) -> Optional
 
 
 # ---------------------------------------------------------------------------
+# Foreign company footer detection (OCR bounding-box based)
+# ---------------------------------------------------------------------------
+
+FOREIGN_FOOTER_PATTERNS = [
+    re.compile(r"(?:TEL|FAX|電話|傳真)", re.IGNORECASE),
+    re.compile(r"\(?\d{2,3}\)?[\s\-]?\d{3,4}[\s\-]?\d{4}"),
+    re.compile(r"https?://", re.IGNORECASE),
+    re.compile(r"旅行社"),
+    re.compile(r"品保|交觀"),
+]
+
+_FOOTER_OCR_ENGINE = None
+_FOOTER_OCR_UNAVAILABLE = False
+
+
+def _get_footer_ocr_engine():
+    global _FOOTER_OCR_ENGINE, _FOOTER_OCR_UNAVAILABLE
+    if _FOOTER_OCR_UNAVAILABLE:
+        return None
+    if _FOOTER_OCR_ENGINE is None:
+        try:
+            from tools.common.rapidocr_adapter import create_rapidocr
+            _FOOTER_OCR_ENGINE = create_rapidocr()
+        except (ImportError, FileNotFoundError, ValueError, RuntimeError, OSError) as e:
+            _FOOTER_OCR_UNAVAILABLE = True
+            logger.debug("RapidOCR not available, foreign footer OCR disabled: %s", e)
+            return None
+    return _FOOTER_OCR_ENGINE
+
+
+def _has_foreign_footer_text(ocr_text: str) -> bool:
+    """Quick pre-check: does the full OCR text contain >=2 footer-like patterns?"""
+    text = str(ocr_text or "")
+    hits = sum(1 for p in FOREIGN_FOOTER_PATTERNS if p.search(text))
+    return hits >= 2
+
+
+def detect_foreign_footer_cut_y(
+    base: np.ndarray,
+    ocr_text: str,
+    cfg: dict,
+) -> Optional[int]:
+    """Detect a foreign company footer via OCR bounding boxes + pattern matching.
+
+    Only runs when the sidecar OCR text already contains footer-like patterns
+    (TEL, FAX, 旅行社, URL, etc.).  Re-runs RapidOCR on the bottom 25% of the
+    image to obtain bounding boxes, then uses the topmost matching box as the
+    cut point.
+    """
+    if not cfg.get("detectForeignFooter", False):
+        return None
+
+    if not _has_foreign_footer_text(ocr_text):
+        return None
+
+    H, W = base.shape[:2]
+    if H < 200 or W < 200:
+        return None
+
+    engine = _get_footer_ocr_engine()
+    if engine is None:
+        return None
+
+    from tools.common.rapidocr_adapter import rapidocr_with_boxes
+
+    crop_top = int(H * 0.75)
+    bottom_crop = base[crop_top:, :, :]
+
+    try:
+        raw_output = engine(bottom_crop)
+    except Exception as e:
+        logger.debug("footer OCR failed: %s", e)
+        return None
+
+    items = rapidocr_with_boxes(raw_output)
+    if not items:
+        return None
+
+    footer_boxes: list[tuple[float, float, str]] = []
+    for box, text, _conf in items:
+        if any(p.search(text) for p in FOREIGN_FOOTER_PATTERNS):
+            try:
+                min_y = min(pt[1] for pt in box) + crop_top
+                max_y = max(pt[1] for pt in box) + crop_top
+            except (TypeError, IndexError, ValueError):
+                continue
+            footer_boxes.append((min_y, max_y, text))
+
+    if not footer_boxes:
+        return None
+
+    all_footer_text = " ".join(t for _, _, t in footer_boxes)
+    distinct_hits = sum(1 for p in FOREIGN_FOOTER_PATTERNS if p.search(all_footer_text))
+    if distinct_hits < 2:
+        return None
+
+    cut_y = int(min(b[0] for b in footer_boxes))
+
+    crop_margin = max(5, min(15, int(round(H * 0.005))))
+    cut_y = max(1, cut_y - crop_margin)
+
+    removed = H - cut_y
+    if removed < int(H * 0.03) or removed > int(H * 0.25):
+        return None
+
+    return cut_y
+
+
+# ---------------------------------------------------------------------------
 # Per-image pipeline
 # ---------------------------------------------------------------------------
 
@@ -302,20 +412,36 @@ def stitch_one(sidecar_path: Path, ctx: StitchContext) -> Result:
         logger.warning("base image too small (%dx%d): %s", W, H, orig_img.name)
         return "skipped"
 
-    old_cta_cut_y = detect_old_cta_cut_y(
-        base,
-        (sidecar.get("ocr") or {}).get("text", ""),
-        ctx.cfg,
-    )
+    ocr_text = (sidecar.get("ocr") or {}).get("text", "")
+
+    old_cta_cut_y = detect_old_cta_cut_y(base, ocr_text, ctx.cfg)
+    foreign_footer_cut_y = detect_foreign_footer_cut_y(base, ocr_text, ctx.cfg)
+
+    cut_y: Optional[int] = None
+    cut_reason = ""
+    if old_cta_cut_y is not None and foreign_footer_cut_y is not None:
+        # Take the more conservative (closer to bottom) cut to avoid
+        # amplifying a false positive from either detector.
+        cut_y = max(old_cta_cut_y, foreign_footer_cut_y)
+        cut_reason = "CTA+foreign footer"
+    elif old_cta_cut_y is not None:
+        cut_y = old_cta_cut_y
+        cut_reason = "old CTA footer"
+    elif foreign_footer_cut_y is not None:
+        cut_y = foreign_footer_cut_y
+        cut_reason = "foreign footer"
+
     original_h_for_meta = H
-    if old_cta_cut_y is not None:
+    original_w_for_meta = W
+    if cut_y is not None:
         logger.info(
-            "crop old CTA footer: %s y=%d removed=%dpx",
+            "crop %s: %s y=%d removed=%dpx",
+            cut_reason,
             orig_img.name,
-            old_cta_cut_y,
-            H - old_cta_cut_y,
+            cut_y,
+            H - cut_y,
         )
-        base = base[:old_cta_cut_y, :, :].copy()
+        base = base[:cut_y, :, :].copy()
         H, W = base.shape[:2]
 
     # Cap output resolution at outputMaxWidth (if set). Source LINE images
@@ -366,10 +492,11 @@ def stitch_one(sidecar_path: Path, ctx: StitchContext) -> Result:
         "output": {
             "path": relpath_from_root(branded_img_path),
             "dimensions": {"w": int(out.shape[1]), "h": int(out.shape[0])},
-            "originalDimensions": {"w": int(W), "h": int(original_h_for_meta)},
+            "originalDimensions": {"w": int(original_w_for_meta), "h": int(original_h_for_meta)},
             "compositeBaseDimensions": {"w": int(W), "h": int(H)},
-            "oldCtaCropY": int(old_cta_cut_y) if old_cta_cut_y is not None else None,
-            "oldCtaRemovedPx": int(original_h_for_meta - old_cta_cut_y) if old_cta_cut_y is not None else 0,
+            "footerCropY": int(cut_y) if cut_y is not None else None,
+            "footerCropReason": cut_reason or None,
+            "footerRemovedPx": int(original_h_for_meta - cut_y) if cut_y is not None else 0,
             "bandHeightPx": int(band_h),
         },
         "configHash": ctx.config_hash,
@@ -443,8 +570,8 @@ def stitch_one_auto(sidecar_path: Path) -> Result:
 
     try:
         return stitch_one(Path(sidecar_path), _AUTO_CTX)
-    except OSError as e:
-        logger.error("stitch_one I/O error for %s: %s", sidecar_path, e)
+    except Exception as e:
+        logger.error("stitch_one error for %s: %s", sidecar_path, e)
         return "error"
 
 

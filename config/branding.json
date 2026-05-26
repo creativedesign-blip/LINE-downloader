@@ -17,6 +17,7 @@
   "outputQuality": 92,
   "outputMaxWidth": 1200,
   "detectExistingBottomBand": true,
+  "detectForeignFooter": true,
   "whiteThreshold": 240,
   "whiteMinCoverageRatio": 0.96
 }

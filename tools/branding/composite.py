@@ -91,6 +91,8 @@ def composite(
     canvas[0:H, 0:W] = base
 
     band_top = H - existing_band_h
+    if existing_band_h > 0:
+        canvas[band_top:H, :] = np.array(cfg["bandColor"], dtype=np.uint8)
 
     if (new_h, new_w) != (h0, w0):
         interp = cv2.INTER_CUBIC if scale > 1.0 else cv2.INTER_AREA

@@ -272,6 +272,53 @@ class TestBasePreservation(unittest.TestCase):
         self.assertTrue(np.all(out[:500, :, :] == 100))
 
 
+class TestExistingBandWhiteFill(unittest.TestCase):
+    """When detectExistingBottomBand is on, old band content must be erased."""
+
+    def _cfg_with_band_detect(self) -> dict:
+        cfg = dict(DEFAULT_CFG)
+        cfg["detectExistingBottomBand"] = True
+        cfg["whiteThreshold"] = 240
+        cfg["whiteMinCoverageRatio"] = 0.96
+        return cfg
+
+    def test_existing_band_filled_with_band_color(self):
+        H, W = 600, 800
+        base = make_base(H, W, fill=128)
+        # Simulate an existing white band with a small dark "old logo".
+        # Keep the logo narrow so row-level white coverage stays above the
+        # detection threshold (~88% after smoothing).
+        band_h = 80
+        base[H - band_h:, :, :] = 250  # near-white band
+        # Place old logo at far left — outside where our centered new logo lands.
+        # New logo (200px wide) centers at x=300..500, so x=50..110 is safe.
+        old_logo_y = (H - band_h + 30, H - band_h + 50)
+        old_logo_x = (50, 110)
+        base[old_logo_y[0]:old_logo_y[1], old_logo_x[0]:old_logo_x[1], :] = 30
+
+        logo = make_logo_rgba(40, 200, alpha=255, color=(0, 0, 255))
+        cfg = self._cfg_with_band_detect()
+        out = composite(base, logo, cfg)
+
+        # Old dark pixels should be erased to bandColor (white).
+        old_logo_area = out[old_logo_y[0]:old_logo_y[1], old_logo_x[0]:old_logo_x[1], :]
+        self.assertTrue(np.all(old_logo_area >= 240),
+                        "old logo pixels should be erased by band color fill")
+
+    def test_base_above_band_preserved(self):
+        H, W = 600, 800
+        base = make_base(H, W, fill=77)
+        band_h = 80
+        base[H - band_h:, :, :] = 250
+
+        logo = make_logo_rgba(40, 200)
+        cfg = self._cfg_with_band_detect()
+        out = composite(base, logo, cfg)
+
+        # Content above the band must be untouched.
+        self.assertTrue(np.array_equal(out[:H - band_h, :, :], base[:H - band_h, :, :]))
+
+
 class TestHorizontalAlign(unittest.TestCase):
     """Verify x offset for left/center/right."""
 

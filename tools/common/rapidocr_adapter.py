@@ -55,3 +55,42 @@ def rapidocr_lines(output: Any) -> list[str]:
         if len(item) >= 2 and item[1]:
             lines.append(str(item[1]))
     return lines
+
+
+def rapidocr_with_boxes(output: Any) -> list[tuple[list, str, float]]:
+    """Normalize output to list of (box, text, confidence) tuples.
+
+    box is [[x1,y1],[x2,y2],[x3,y3],[x4,y4]] (four corners).
+    """
+    if output is None:
+        return []
+
+    result = output
+    if isinstance(output, tuple):
+        result = output[0] if output else None
+
+    # Modern RapidOCROutput exposes .boxes / .txts / .scores attributes.
+    boxes_attr = getattr(result, "boxes", None)
+    txts_attr = getattr(result, "txts", None)
+    if txts_attr is not None and boxes_attr is not None:
+        scores_attr = getattr(result, "scores", None) or []
+        items: list[tuple[list, str, float]] = []
+        for i, text in enumerate(txts_attr):
+            if not text:
+                continue
+            box = list(boxes_attr[i]) if i < len(boxes_attr) else []
+            conf = float(scores_attr[i]) if i < len(scores_attr) else 0.0
+            items.append((box, str(text), conf))
+        return items
+
+    if not result:
+        return []
+
+    items = []
+    for item in result:
+        if len(item) >= 2 and item[1]:
+            box = item[0]
+            text = str(item[1])
+            conf = float(item[2]) if len(item) >= 3 else 0.0
+            items.append((box, text, conf))
+    return items
