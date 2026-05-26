@@ -1118,8 +1118,13 @@ def _same_sha_sidecar_payloads(image_id: int, current_path: Path | None = None) 
 
 
 def _system_tags_for_same_sha_image(image_id: int, current_path: Path | None = None) -> list[dict[str, object]]:
-    payloads = _same_sha_sidecar_payloads(image_id, current_path)
-    return _merge_system_tags([_sidecar_system_tags(payload) for payload in payloads])
+    path = current_path
+    if path is None:
+        record = _upload_image_record(image_id)
+        if record is not None:
+            image, folder = record
+            path = _find_current_image_path(image, folder)
+    return _system_tags_for_image(path)
 
 
 def _folder_pipeline_counts(folder: dict[str, object]) -> dict[str, int]:
@@ -1567,7 +1572,8 @@ def _refresh_upload_search_index_for_image(image_id: int) -> None:
         return
 
     current_path = _find_current_image_path(image, folder)
-    sidecar_payloads = _same_sha_sidecar_payloads(image_id, current_path)
+    current_payload = _sidecar_payload_for_image(current_path)
+    sidecar_payloads = [current_payload] if current_payload else []
     fields = _merge_sidecar_query_fields(sidecar_payloads)
     system_tags = _merge_system_tags([_sidecar_system_tags(payload) for payload in sidecar_payloads])
     override_values = _normalize_ocr_tag_values(image.get("ocr_tags_override"))

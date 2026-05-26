@@ -235,7 +235,7 @@ class UploadCatalogTests(unittest.TestCase):
             self.assertTrue(upload_catalog.archive_image(image["id"], db_path=db_path))
             self.assertEqual(upload_catalog.list_images(folder["id"], db_path=db_path), [])
 
-    def test_update_image_ocr_override_applies_to_same_sha_images(self):
+    def test_update_image_ocr_override_applies_only_to_selected_image(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "catalog.db"
             folder = upload_catalog.create_folder("Same image", folder_slug="upload_test_ocr_same_sha", db_path=db_path)
@@ -255,7 +255,7 @@ class UploadCatalogTests(unittest.TestCase):
 
             images = {image["id"]: image for image in upload_catalog.list_images(folder["id"], db_path=db_path)}
             self.assertEqual(images[first["id"]]["ocr_tags_override"], ["New Zealand", "Alps"])
-            self.assertEqual(images[second["id"]]["ocr_tags_override"], ["New Zealand", "Alps"])
+            self.assertEqual(images[second["id"]]["ocr_tags_override"], [])
             self.assertEqual(images[first["id"]]["display_name"], "Only first")
             self.assertEqual(images[second["id"]]["display_name"], "")
 

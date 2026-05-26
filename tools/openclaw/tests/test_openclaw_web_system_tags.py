@@ -15,28 +15,20 @@ spec.loader.exec_module(openclaw_web)
 
 
 class SystemTagMergeTests(unittest.TestCase):
-    def test_same_sha_system_tags_are_merged_and_deduplicated(self):
-        payloads = [
-            {
-                "countries": ["紐西蘭"],
-                "regions": ["南島"],
-                "features": ["高山火車"],
-                "months": [8],
-            },
-            {
-                "countries": ["紐西蘭"],
-                "regions": ["皇后鎮"],
-                "features": ["高山火車", "冰河"],
-                "months": [8, 9],
-            },
-        ]
+    def test_system_tags_use_only_current_image_sidecar(self):
+        payload = {
+            "countries": ["紐西蘭"],
+            "regions": ["南島"],
+            "features": ["高山火車"],
+            "months": [8],
+        }
 
-        with patch.object(openclaw_web, "_same_sha_sidecar_payloads", return_value=payloads):
-            tags = openclaw_web._system_tags_for_same_sha_image(1)
+        with patch.object(openclaw_web, "_sidecar_payload_for_image", return_value=payload):
+            tags = openclaw_web._system_tags_for_same_sha_image(1, Path("current.jpg"))
 
         self.assertEqual(
             [tag["tag"] for tag in tags],
-            ["紐西蘭", "南島", "高山火車", "8月", "皇后鎮", "冰河", "9月"],
+            ["紐西蘭", "南島", "高山火車", "8月"],
         )
 
     def test_same_sha_sidecar_query_fields_are_merged(self):
@@ -52,6 +44,52 @@ class SystemTagMergeTests(unittest.TestCase):
         self.assertEqual(fields["months"], [8, 9])
         self.assertEqual(fields["duration_days"], 8)
         self.assertEqual(fields["price_from"], 99900)
+
+    def test_search_index_uses_only_current_image_sidecar(self):
+        current_path = openclaw_web.PROJECT_ROOT / "tmp" / "current.jpg"
+        image = {
+            "id": 7,
+            "folder_id": 3,
+            "stored_path": "tmp/current.jpg",
+            "original_filename": "current.jpg",
+            "display_name": "",
+            "reference_text": "",
+            "manual_note": "",
+            "sha256": "same-sha",
+            "ocr_tags_override": [],
+            "archived_at": None,
+            "uploaded_at": "2026-05-26T00:00:00Z",
+        }
+        folder = {
+            "id": 3,
+            "display_name": "測試資料夾",
+            "folder_slug": "upload_test",
+            "archived_at": None,
+        }
+        payload = {
+            "countries": ["越南"],
+            "regions": ["富國島"],
+            "features": ["郵輪"],
+            "months": [6],
+            "ocr": {"text": "越南 富國島"},
+        }
+
+        with (
+            patch.object(openclaw_web, "_upload_image_record", return_value=(image, folder)),
+            patch.object(openclaw_web, "_find_current_image_path", return_value=current_path),
+            patch.object(openclaw_web, "_sidecar_payload_for_image", return_value=payload),
+            patch.object(openclaw_web, "_same_sha_sidecar_payloads", side_effect=AssertionError("same-sha sidecars should not be merged")),
+            patch.object(openclaw_web, "_manual_tags_for_images", return_value={}),
+            patch.object(openclaw_web, "_branded_image_lookup", return_value=({}, {})),
+            patch.object(openclaw_web, "upsert_image_search_index") as upsert,
+        ):
+            openclaw_web._refresh_upload_search_index_for_image(7)
+
+        _, kwargs = upsert.call_args
+        self.assertEqual(kwargs["countries"], ["越南"])
+        self.assertEqual(kwargs["regions"], ["富國島"])
+        self.assertIn("郵輪", kwargs["features"])
+        self.assertIn("越南 富國島", kwargs["raw_text"])
 
 
 if __name__ == "__main__":
