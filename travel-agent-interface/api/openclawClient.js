@@ -154,4 +154,33 @@ export const openclawApi = {
     });
     return readJson(response, "settings failed");
   },
+
+  async getItemDetail(raw = {}) {
+    const params = new URLSearchParams();
+    const sourceKind = raw.source === "upload_catalog" || raw.image_id
+      ? "upload"
+      : raw.source_kind || raw.sourceKind || "";
+    const normalizedSourceKind = sourceKind === "unknown" ? "" : sourceKind;
+    if (normalizedSourceKind) params.set("source", normalizedSourceKind);
+    if (raw.image_id) params.set("image_id", raw.image_id);
+    if (raw.folder_id) params.set("folder_id", raw.folder_id);
+    if (raw.sidecar_path) params.set("sidecar_path", raw.sidecar_path);
+    if (raw.image_path) params.set("image_path", raw.image_path);
+    if (raw.branded_path) params.set("branded_path", raw.branded_path);
+    if (raw.target_id) params.set("target_id", raw.target_id);
+    if (raw.group_name) params.set("group_name", raw.group_name);
+    if (raw.source_time) params.set("source_time", raw.source_time);
+    const query = params.toString();
+    const response = await fetch(`/api/openclaw/item-detail${query ? `?${query}` : ""}`);
+    return readJson(response, "item detail failed");
+  },
+
+  async updateItemDetail(data) {
+    const response = await fetch("/api/openclaw/item-detail", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data || {}),
+    });
+    return readJson(response, "update item detail failed");
+  },
 };

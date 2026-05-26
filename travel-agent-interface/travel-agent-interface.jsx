@@ -12,6 +12,11 @@ import {
 import { openclawApi, uploadApi } from "./api/openclawClient.js";
 import SidebarNavigation from "./upload/SidebarNavigation.jsx";
 import UploadWorkspace from "./upload/UploadWorkspace.jsx";
+import ImageMetadataPanel, {
+  formatMetadataDateTime,
+  metadataSourceKindLabel,
+  preferredMetadataTime,
+} from "./upload/ImageMetadataPanel.jsx";
 import {
   Send,
   Sparkles,
@@ -1498,7 +1503,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
 
       {/* MODALS */}
       {preview && (
-        <DMPreviewModal
+        <DMPreviewModalReadOnly
           initial={preview.dm}
           list={preview.list}
           onClose={() => setPreview(null)}
@@ -2283,6 +2288,494 @@ function DuplicatesMessage({ groups, onCompareDup, onReviewDup, onPreview }) {
 }
 /* MODALS                                                                 */
 /* ===================================================================== */
+function DMPreviewModalReadOnly({ initial, list, onClose, onCopy, copiedId }) {
+  const dmList = list && list.length > 0 ? list : [initial];
+  const initialIdx = Math.max(0, dmList.findIndex((dm) => dm.id === initial.id));
+  const [index, setIndex] = useState(initialIdx);
+  const [detail, setDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const current = dmList[index] || initial;
+  const canNavigate = dmList.length > 1;
+
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key === "Escape") onClose();
+      if (event.key === "ArrowLeft" && canNavigate) setIndex((value) => (value - 1 + dmList.length) % dmList.length);
+      if (event.key === "ArrowRight" && canNavigate) setIndex((value) => (value + 1) % dmList.length);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose, canNavigate, dmList.length]);
+
+  useEffect(() => {
+    let active = true;
+    setDetail(null);
+    setDetailError("");
+    setDetailLoading(true);
+    openclawApi.getItemDetail({
+      ...(current.raw || {}),
+      source_kind: current.sourceKind,
+      sourceKind: current.sourceKind,
+    }).then((payload) => {
+      if (active) setDetail(payload.detail || null);
+    }).catch((error) => {
+      if (active) setDetailError(error.message || "讀取圖片資料失敗");
+    }).finally(() => {
+      if (active) setDetailLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [current.id]);
+
+  const raw = current.raw || {};
+  const panelImage = {
+    ...raw,
+    ...(detail || {}),
+    id: detail?.image_id || raw.image_id || current.id,
+    image_id: detail?.image_id || raw.image_id,
+    source_kind: detail?.source_kind || current.sourceKind || raw.source_kind || raw.source,
+    source_label: detail?.source_label || raw.source_label || current.source,
+    source_time: detail?.source_time || raw.source_time || raw.indexed_at,
+    uploaded_at: detail?.uploaded_at || raw.uploaded_at,
+    indexed_at: detail?.indexed_at || raw.indexed_at,
+    original_filename: detail?.original_filename || raw.original_filename || current.title,
+    system_tags: detail?.system_tags || raw.system_tags || [],
+    ocr_tags_override: detail?.ocr_tags_override || raw.ocr_tags_override || [],
+    manual_tags: detail?.manual_tags || raw.manual_tags || [],
+    reference_text: detail?.reference_text || raw.reference_text || "",
+    manual_note: detail?.manual_note || raw.manual_note || "",
+  };
+  const headerSourceType = metadataSourceKindLabel(panelImage.source_kind);
+  const headerTimeValue = preferredMetadataTime(panelImage);
+  const headerTime = formatMetadataDateTime(headerTimeValue);
+
+  return (
+    <div className="fixed inset-0 z-50 animate-backdrop-in overflow-hidden" style={{ backgroundColor: "rgba(17,24,39,0.88)" }} onClick={onClose}>
+      <div className="absolute left-4 right-4 top-4 z-10 flex items-center justify-between text-xs pointer-events-none">
+        <div className="pointer-events-auto rounded-md bg-white/90 px-3 py-2 shadow-sm">
+          <div className="text-xs font-medium tabular-nums text-stone-900">{index + 1} / {dmList.length}</div>
+        </div>
+        <button onClick={onClose} className="pointer-events-auto rounded-md bg-white/90 p-2 transition-colors hover:bg-white" aria-label="關閉預覽">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="grid h-full grid-cols-1 xl:grid-cols-[minmax(0,1fr)_400px]" onClick={(event) => event.stopPropagation()}>
+        <div className="relative flex min-h-0 items-center justify-center px-5 pb-4 pt-16 xl:pb-8 xl:pr-8">
+          {canNavigate && (
+            <button onClick={() => setIndex((value) => (value - 1 + dmList.length) % dmList.length)} className="absolute left-4 top-1/2 z-10 -translate-y-1/2 rounded-full bg-white/90 p-2 hover:bg-white" aria-label="上一張">
+              <ChevronLeft className="h-5 w-5" />
+            </button>
+          )}
+          <DmImage
+            src={current.fullImage || current.previewImage}
+            dm={current}
+            alt={current.title}
+            className="block max-h-full max-w-full rounded-lg bg-stone-100 shadow-2xl"
+            loading="eager"
+          />
+          {canNavigate && (
+            <button onClick={() => setIndex((value) => (value + 1) % dmList.length)} className="absolute right-4 top-1/2 z-10 -translate-y-1/2 rounded-full bg-white/90 p-2 hover:bg-white" aria-label="下一張">
+              <ChevronRight className="h-5 w-5" />
+            </button>
+          )}
+        </div>
+
+        <aside className="flex max-h-[48vh] min-h-0 flex-col overflow-y-auto bg-white/95 px-4 py-4 shadow-xl xl:max-h-none xl:px-5 xl:pt-16">
+          <div className="mb-4 flex items-start justify-between gap-3 border-b border-stone-200 pb-4">
+            <div className="min-w-0">
+              <div className="mb-1 flex items-center gap-1.5">
+                <span
+                  className="shrink-0 rounded-sm px-1.5 py-0.5 text-[9px] font-medium uppercase"
+                  style={{
+                    backgroundColor: panelImage.source_kind === "upload" ? "#0F6E56" : panelImage.source_kind === "line" ? "#2D8BC0" : "#78716C",
+                    color: "#F9F9F9",
+                  }}
+                >
+                  {panelImage.source_kind === "upload" ? "上傳" : panelImage.source_kind === "line" ? "LINE" : "來源"}
+                </span>
+                <div className="truncate text-sm font-medium text-stone-900">{panelImage.source_label || current.source}</div>
+              </div>
+              <div className="truncate text-xs text-stone-500">
+                {[headerSourceType, headerTime ? `時間：${headerTime}` : ""].filter(Boolean).join(" · ")}
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button onClick={() => onCopy(current)} className="inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors" style={{ backgroundColor: copiedId === current.id ? "#1D9E75" : "#0F6E56", color: "#F9F9F9" }}>
+                {copiedId === current.id ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                {copiedId === current.id ? "已複製" : "複製"}
+              </button>
+              <button onClick={() => onCopy([current])} className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-colors" style={{ borderColor: "#0F6E56", color: "#0F6E56" }}>
+                <Download className="h-3 w-3" />
+                下載
+              </button>
+            </div>
+          </div>
+
+          {detailLoading && (
+            <div className="flex items-center gap-2 py-4 text-xs text-stone-600">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              載入圖片資料中
+            </div>
+          )}
+
+          {detailError && (
+            <div className="mb-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{detailError}</span>
+            </div>
+          )}
+
+          <ImageMetadataPanel image={panelImage} mode="view" showManualNote={false} />
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function detailTagValues(values) {
+  if (!Array.isArray(values)) return [];
+  const seen = new Set();
+  return values
+    .map((value) => String(typeof value === "object" && value ? value.tag : value || "").trim())
+    .filter((value) => {
+      if (!value || seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
+}
+
+function detailDraftFrom(detail) {
+  return {
+    systemTags: detailTagValues(detail?.system_tags),
+    manualTags: detailTagValues(detail?.manual_tags),
+    referenceText: String(detail?.reference_text || ""),
+    manualNote: String(detail?.manual_note || ""),
+  };
+}
+
+function DetailRow({ label, value }) {
+  return (
+    <div className="grid grid-cols-[84px_minmax(0,1fr)] gap-2 text-xs">
+      <div className="text-stone-500">{label}</div>
+      <div className="min-w-0 break-words text-stone-900">{value || "未提供"}</div>
+    </div>
+  );
+}
+
+function DetailTagEditor({ label, values, inputValue, onInput, onAdd, onRemove, tone = "green" }) {
+  const active = tone === "blue";
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-xs font-medium text-stone-900">{label}</div>
+        <div className="text-[10px] text-stone-500">{values.length} 個</div>
+      </div>
+      <div className="mb-2 flex flex-wrap gap-1.5">
+        {values.length ? values.map((tag) => (
+          <span
+            key={tag}
+            className="inline-flex max-w-full items-center gap-1 rounded-sm px-2 py-1 text-[11px]"
+            style={{
+              backgroundColor: active ? "#E0F2FE" : "#E1F5EE",
+              color: active ? "#075985" : "#0F6E56",
+            }}
+          >
+            <span className="truncate">{tag}</span>
+            <button
+              type="button"
+              onClick={() => onRemove(tag)}
+              className="rounded-sm p-0.5 hover:bg-white/70"
+              aria-label={`移除 ${tag}`}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </span>
+        )) : <div className="text-[11px] text-stone-500">尚無標籤</div>}
+      </div>
+      <div className="flex gap-2">
+        <input
+          value={inputValue}
+          onChange={(event) => onInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              onAdd();
+            }
+          }}
+          className="min-w-0 flex-1 rounded-md border border-stone-200 px-2 py-1.5 text-xs outline-none focus:border-[#0F6E56]"
+          placeholder="新增標籤"
+        />
+        <button
+          type="button"
+          onClick={onAdd}
+          className="rounded-md px-3 py-1.5 text-xs font-medium"
+          style={{ backgroundColor: active ? "#2D8BC0" : "#0F6E56", color: "#F9F9F9" }}
+        >
+          新增
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DMPreviewModalMvp({ initial, list, onClose, onCopy, copiedId }) {
+  const dmList = list && list.length > 0 ? list : [initial];
+  const initialIdx = Math.max(0, dmList.findIndex((dm) => dm.id === initial.id));
+  const [index, setIndex] = useState(initialIdx);
+  const [detail, setDetail] = useState(null);
+  const [draft, setDraft] = useState(() => detailDraftFrom(null));
+  const [tagInput, setTagInput] = useState({ systemTags: "", manualTags: "" });
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailSaving, setDetailSaving] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const [saveMessage, setSaveMessage] = useState("");
+  const current = dmList[index] || initial;
+  const canNavigate = dmList.length > 1;
+
+  useEffect(() => {
+    const onKey = (event) => {
+      const tag = String(event.target?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+      if (event.key === "Escape") onClose();
+      if (event.key === "ArrowLeft" && canNavigate) setIndex((value) => (value - 1 + dmList.length) % dmList.length);
+      if (event.key === "ArrowRight" && canNavigate) setIndex((value) => (value + 1) % dmList.length);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose, canNavigate, dmList.length]);
+
+  useEffect(() => {
+    let active = true;
+    setDetail(null);
+    setDraft(detailDraftFrom(null));
+    setTagInput({ systemTags: "", manualTags: "" });
+    setDetailError("");
+    setSaveMessage("");
+    setDetailLoading(true);
+    openclawApi.getItemDetail({
+      ...(current.raw || {}),
+      source_kind: current.sourceKind,
+      sourceKind: current.sourceKind,
+    }).then((payload) => {
+      if (!active) return;
+      const nextDetail = payload.detail || null;
+      setDetail(nextDetail);
+      setDraft(detailDraftFrom(nextDetail));
+    }).catch((error) => {
+      if (active) setDetailError(error.message || "讀取失敗");
+    }).finally(() => {
+      if (active) setDetailLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [current.id]);
+
+  const setDraftField = (field, value) => {
+    setDraft((currentDraft) => ({ ...currentDraft, [field]: value }));
+  };
+
+  const addTag = (field) => {
+    const value = String(tagInput[field] || "").trim();
+    if (!value) return;
+    setDraft((currentDraft) => {
+      const currentValues = detailTagValues(currentDraft[field]);
+      if (currentValues.includes(value)) return currentDraft;
+      return { ...currentDraft, [field]: [...currentValues, value] };
+    });
+    setTagInput((currentInputs) => ({ ...currentInputs, [field]: "" }));
+  };
+
+  const removeTag = (field, tag) => {
+    setDraft((currentDraft) => ({
+      ...currentDraft,
+      [field]: detailTagValues(currentDraft[field]).filter((value) => value !== tag),
+    }));
+  };
+
+  const saveDetail = async () => {
+    if (!detail || detailSaving) return;
+    setDetailSaving(true);
+    setDetailError("");
+    setSaveMessage("");
+    try {
+      const payload = await openclawApi.updateItemDetail({
+        source_kind: detail.source_kind,
+        source_key: detail.source_key,
+        image_id: detail.image_id,
+        folder_id: detail.folder_id,
+        sidecar_path: detail.sidecar_path,
+        system_tags: draft.systemTags,
+        manual_tags: draft.manualTags,
+        reference_text: draft.referenceText,
+        manual_note: draft.manualNote,
+      });
+      const nextDetail = payload.detail || detail;
+      setDetail(nextDetail);
+      setDraft(detailDraftFrom(nextDetail));
+      setSaveMessage("已儲存");
+    } catch (error) {
+      setDetailError(error.message || "儲存失敗");
+    } finally {
+      setDetailSaving(false);
+    }
+  };
+
+  const sourceTime = detail?.source_time
+    ? new Date(detail.source_time).toLocaleString("zh-TW", { hour12: false })
+    : "";
+
+  return (
+    <div className="fixed inset-0 z-50 animate-backdrop-in overflow-hidden" style={{ backgroundColor: "rgba(17,24,39,0.88)" }} onClick={onClose}>
+      <div className="absolute top-4 left-4 right-4 flex items-center justify-between text-xs pointer-events-none z-10">
+        <div className="pointer-events-auto rounded-md bg-white/90 px-3 py-2 shadow-sm">
+          <div className="text-xs font-medium text-stone-900 tabular-nums">{index + 1} / {dmList.length}</div>
+        </div>
+        <button onClick={onClose} className="pointer-events-auto p-2 rounded-md bg-white/90 hover:bg-white transition-colors" aria-label="關閉預覽">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      <div className="grid h-full grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px]" onClick={(event) => event.stopPropagation()}>
+        <div className="relative flex min-h-0 items-center justify-center px-5 pb-4 pt-16 xl:pb-8 xl:pr-8">
+          {canNavigate && (
+            <button onClick={() => setIndex((value) => (value - 1 + dmList.length) % dmList.length)} className="absolute left-4 top-1/2 z-10 -translate-y-1/2 rounded-full bg-white/90 p-2 hover:bg-white" aria-label="上一張">
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+          )}
+          <DmImage
+            src={current.fullImage || current.previewImage}
+            dm={current}
+            alt={current.title}
+            className="block max-h-full max-w-full rounded-lg bg-stone-100 shadow-2xl"
+            loading="eager"
+          />
+          {canNavigate && (
+            <button onClick={() => setIndex((value) => (value + 1) % dmList.length)} className="absolute right-4 top-1/2 z-10 -translate-y-1/2 rounded-full bg-white/90 p-2 hover:bg-white" aria-label="下一張">
+              <ChevronRight className="w-5 h-5" />
+            </button>
+          )}
+        </div>
+
+        <aside className="flex max-h-[48vh] min-h-0 flex-col overflow-y-auto bg-white/95 px-4 py-4 shadow-xl xl:max-h-none xl:px-5 xl:pt-16">
+          <div className="mb-4 flex items-start justify-between gap-3 border-b border-stone-200 pb-4">
+            <div className="min-w-0">
+              <div className="mb-1 flex items-center gap-1.5">
+                <span
+                  className="shrink-0 rounded-sm px-1.5 py-0.5 text-[9px] font-medium uppercase"
+                  style={{
+                    backgroundColor: current.sourceKind === "upload" ? "#0F6E56" : current.sourceKind === "line" ? "#2D8BC0" : "#78716C",
+                    color: "#F9F9F9",
+                  }}
+                >
+                  {current.sourceKind === "upload" ? "上傳" : current.sourceKind === "line" ? "LINE" : "來源"}
+                </span>
+                <div className="truncate text-sm font-medium text-stone-900">{detail?.source_label || current.source}</div>
+              </div>
+              <div className="truncate text-xs text-stone-500">{current.region} / {current.period}</div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button onClick={() => onCopy(current)} className="inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors" style={{ backgroundColor: copiedId === current.id ? "#1D9E75" : "#0F6E56", color: "#F9F9F9" }}>
+                {copiedId === current.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                {copiedId === current.id ? "已複製" : "複製"}
+              </button>
+              <button onClick={() => onCopy([current])} className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-colors" style={{ borderColor: "#0F6E56", color: "#0F6E56" }}>
+                <Download className="w-3 h-3" />
+                下載
+              </button>
+            </div>
+          </div>
+
+          {detailLoading && (
+            <div className="flex items-center gap-2 py-4 text-xs text-stone-600">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              載入圖片資料中
+            </div>
+          )}
+
+          {detailError && (
+            <div className="mb-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{detailError}</span>
+            </div>
+          )}
+
+          <div className="space-y-5">
+            <section className="space-y-2 border-b border-stone-200 pb-4">
+              <div className="flex items-center gap-2 text-xs font-medium text-stone-900">
+                {detail?.source_kind === "upload" ? <Upload className="h-3.5 w-3.5" /> : <Globe className="h-3.5 w-3.5" />}
+                來源資訊
+              </div>
+              <DetailRow label="來源" value={detail?.source_label || current.source} />
+              <DetailRow label="時間" value={sourceTime} />
+              <DetailRow label="檔名" value={detail?.original_filename} />
+              {detail?.folder_note && <DetailRow label="資料夾備註" value={detail.folder_note} />}
+            </section>
+
+            <section className="space-y-4 border-b border-stone-200 pb-4">
+              <DetailTagEditor
+                label="系統標籤"
+                values={draft.systemTags}
+                inputValue={tagInput.systemTags}
+                onInput={(value) => setTagInput((currentInputs) => ({ ...currentInputs, systemTags: value }))}
+                onAdd={() => addTag("systemTags")}
+                onRemove={(tag) => removeTag("systemTags", tag)}
+                tone="blue"
+              />
+              <DetailTagEditor
+                label="人工標籤"
+                values={draft.manualTags}
+                inputValue={tagInput.manualTags}
+                onInput={(value) => setTagInput((currentInputs) => ({ ...currentInputs, manualTags: value }))}
+                onAdd={() => addTag("manualTags")}
+                onRemove={(tag) => removeTag("manualTags", tag)}
+              />
+            </section>
+
+            <section className="space-y-3">
+              <label className="block text-xs font-medium text-stone-900">
+                來源文案
+                <textarea
+                  value={draft.referenceText}
+                  onChange={(event) => setDraftField("referenceText", event.target.value)}
+                  className="mt-2 h-28 w-full resize-y rounded-md border border-stone-200 px-3 py-2 text-xs leading-5 outline-none focus:border-[#0F6E56]"
+                />
+              </label>
+              <label className="block text-xs font-medium text-stone-900">
+                人工備註
+                <textarea
+                  value={draft.manualNote}
+                  onChange={(event) => setDraftField("manualNote", event.target.value)}
+                  className="mt-2 h-20 w-full resize-y rounded-md border border-stone-200 px-3 py-2 text-xs leading-5 outline-none focus:border-[#0F6E56]"
+                  placeholder="補充搜尋線索、注意事項或修正說明"
+                />
+              </label>
+            </section>
+          </div>
+
+          <div className="sticky bottom-0 mt-5 flex items-center justify-between gap-3 border-t border-stone-200 bg-white/95 py-3">
+            <div className="min-w-0 text-xs text-stone-500">
+              {saveMessage || (detail?.editable ? "可編輯" : "唯讀")}
+            </div>
+            <button
+              onClick={saveDetail}
+              disabled={!detail || detailLoading || detailSaving}
+              className="inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-xs font-medium disabled:opacity-50"
+              style={{ backgroundColor: "#0F6E56", color: "#F9F9F9" }}
+            >
+              {detailSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+              儲存
+            </button>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
 function DMPreviewModal({ initial, list, onClose, onCopy, copiedId }) {
   const dmList = list && list.length > 0 ? list : [initial];
   const initialIdx = Math.max(0, dmList.findIndex((dm) => dm.id === initial.id));

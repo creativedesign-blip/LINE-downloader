@@ -782,6 +782,7 @@ def _search_index_row_to_public(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "image_id": row["image_id"],
         "folder_id": row["folder_id"],
+        "sha256": row["sha256"],
         "sidecar_path": row["sidecar_path"],
         "image_path": row["image_path"],
         "branded_path": row["branded_path"] or row["image_path"],
@@ -848,13 +849,19 @@ def query_image_search_index(
 
     params.append(max(1, min(int(limit), 200)))
     sql = (
-        "SELECT s.*, i.original_filename, i.display_name, i.uploaded_at, "
-        "f.display_name AS folder_name, f.folder_slug "
-        "FROM uploaded_image_search_index s "
-        "JOIN uploaded_images i ON i.id = s.image_id "
-        "JOIN upload_folders f ON f.id = s.folder_id "
-        f"WHERE {' AND '.join(clauses)} "
-        "ORDER BY s.indexed_at DESC, i.uploaded_at DESC LIMIT ?"
+        "SELECT * FROM ("
+        "  SELECT s.*, i.original_filename, i.display_name, i.uploaded_at, i.sha256, "
+        "  f.display_name AS folder_name, f.folder_slug, "
+        "  ROW_NUMBER() OVER ("
+        "    PARTITION BY COALESCE(NULLIF(i.sha256, ''), s.branded_path, s.image_path, s.sidecar_path, CAST(s.image_id AS TEXT)) "
+        "    ORDER BY s.indexed_at DESC, i.uploaded_at DESC, i.id DESC"
+        "  ) AS _rn "
+        "  FROM uploaded_image_search_index s "
+        "  JOIN uploaded_images i ON i.id = s.image_id "
+        "  JOIN upload_folders f ON f.id = s.folder_id "
+        f"  WHERE {' AND '.join(clauses)}"
+        ") WHERE _rn = 1 "
+        "ORDER BY indexed_at DESC, uploaded_at DESC LIMIT ?"
     )
     with closing(connect(db_path)) as conn:
         rows = conn.execute(sql, params).fetchall()

@@ -191,6 +191,51 @@ class UploadCatalogTests(unittest.TestCase):
             self.assertEqual(rows[0]["months"], [9, 10])
             self.assertEqual(rows[0]["price_from"], 110900)
 
+    def test_search_index_dedupes_same_sha_images(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "catalog.db"
+            folder = upload_catalog.create_folder(
+                "Same image search",
+                folder_slug="upload_test_search_same_sha",
+                db_path=db_path,
+            )
+            first_path = Path(tmp) / "first.jpg"
+            second_path = Path(tmp) / "second.jpg"
+            first_path.write_bytes(b"same image bytes")
+            second_path.write_bytes(b"same image bytes")
+            first = upload_catalog.add_image(folder["id"], first_path, "first.jpg", db_path=db_path)
+            second = upload_catalog.add_image(folder["id"], second_path, "second.jpg", db_path=db_path)
+
+            upload_catalog.upsert_image_search_index(
+                first["id"],
+                folder_id=folder["id"],
+                search_text="same image japan",
+                sidecar_path="line-rpa/download/upload_test/travel/first.jpg.json",
+                image_path="line-rpa/download/upload_test/travel/first.jpg",
+                branded_path="line-rpa/download/upload_test/branded/first.jpg",
+                source_time="2026-05-26T01:00:00Z",
+                db_path=db_path,
+            )
+            upload_catalog.upsert_image_search_index(
+                second["id"],
+                folder_id=folder["id"],
+                search_text="same image japan",
+                sidecar_path="line-rpa/download/upload_test/travel/second.jpg.json",
+                image_path="line-rpa/download/upload_test/travel/second.jpg",
+                branded_path="line-rpa/download/upload_test/branded/second.jpg",
+                source_time="2026-05-26T02:00:00Z",
+                db_path=db_path,
+            )
+
+            rows = upload_catalog.query_image_search_index(
+                query_text="japan",
+                limit=10,
+                db_path=db_path,
+            )
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["image_id"], second["id"])
+
     def test_missing_search_index_image_ids_ignores_indexed_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "catalog.db"

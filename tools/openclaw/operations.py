@@ -81,6 +81,24 @@ def _filter_archived_items(
     return [item for item in items if str(item.get("sidecar_path") or "") not in archived]
 
 
+def _dedupe_items_by_image_sha(
+    items: list[dict[str, Any]],
+    image_sha_by_sidecar: dict[str, str],
+) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for item in items:
+        sidecar = str(item.get("sidecar_path") or "").strip()
+        sha = str(image_sha_by_sidecar.get(sidecar) or "").strip()
+        key = f"sha:{sha}" if sha else f"sidecar:{sidecar}" if sidecar else ""
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
 def _parse_iso(value: str) -> datetime:
     text = str(value or "").strip()
     if not text:
@@ -248,17 +266,33 @@ def query_latest_results(
         clauses.append("target_id = ?")
         params.append(target_id)
 
+    result_limit = max(1, int(limit))
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-    sql_limit = int(limit)
-    if filter_by_first_seen:
-        sql_limit = max(int(limit) * 5, int(limit), 500)
-    elif not include_archived:
-        sql_limit = max(int(limit) * 5, int(limit), 100)
+    batch_size = max(result_limit * 5, 500 if filter_by_first_seen else 100)
     sql = (
         f"SELECT * FROM itineraries {where} "
-        "ORDER BY indexed_at DESC, source_time DESC LIMIT ?"
+        "ORDER BY indexed_at DESC, source_time DESC, rowid DESC LIMIT ? OFFSET ?"
     )
-    params.append(sql_limit)
+    base_params = list(params)
+
+    seen_log = load_image_seen_log() if filter_by_first_seen else {}
+    since_text = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if since_dt else ""
+
+    def today_marker(item: dict[str, Any]) -> str:
+        return str(
+            item.get("first_seen_at")
+            or item.get("source_time")
+            or item.get("indexed_at")
+            or ""
+        )
+
+    def eligible_items(batch_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        filtered = _filter_archived_items(batch_items, include_archived=include_archived, review_path=review_path)
+        if filter_by_first_seen:
+            filtered = [_with_first_seen(item, seen_log) for item in filtered]
+            if since_text:
+                filtered = [item for item in filtered if today_marker(item) >= since_text]
+        return filtered
 
     with _connect(db_path) as conn:
         if not _has_itineraries_table(conn):
@@ -276,32 +310,29 @@ def query_latest_results(
                 },
                 "warning": "travel_index.db is not initialized; run the fixed pipeline first",
             }
-        rows = conn.execute(sql, params).fetchall()
-        items = _attach_plan_summaries(conn, [_row_to_public(row) for row in rows])
-    items = _filter_archived_items(items, include_archived=include_archived, review_path=review_path)
-
-    seen_log = load_image_seen_log() if filter_by_first_seen else {}
-    items = [
-        _with_first_seen(item, seen_log) if filter_by_first_seen else item
-        for item in items
-    ]
-    if filter_by_first_seen and since_dt is not None:
-        since_text = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        def today_marker(item: dict[str, Any]) -> str:
-            return str(
-                item.get("first_seen_at")
-                or item.get("source_time")
-                or item.get("indexed_at")
-                or ""
-            )
-
-        items = [
-            item for item in items
-            if today_marker(item) >= since_text
-        ]
+        offset = 0
+        items: list[dict[str, Any]] = []
+        image_sha_by_sidecar: dict[str, str] = {}
+        while True:
+            rows = conn.execute(sql, [*base_params, batch_size, offset]).fetchall()
+            if not rows:
+                break
+            offset += len(rows)
+            image_sha_by_sidecar.update({
+                str(row["sidecar_path"] or ""): str(row["image_sha256"] or "")
+                for row in rows
+                if str(row["sidecar_path"] or "")
+            })
+            batch_items = _attach_plan_summaries(conn, [_row_to_public(row) for row in rows])
+            items.extend(eligible_items(batch_items))
+            if not filter_by_first_seen:
+                items = _dedupe_items_by_image_sha(items, image_sha_by_sidecar)
+                if len(items) >= result_limit:
+                    break
+    if filter_by_first_seen:
         items.sort(key=lambda item: (today_marker(item), str(item.get("indexed_at") or "")), reverse=True)
-    items = items[:int(limit)]
+        items = _dedupe_items_by_image_sha(items, image_sha_by_sidecar)
+    items = items[:result_limit]
     return {
         "count": len(items),
         "items": items,
@@ -312,7 +343,7 @@ def query_latest_results(
             "composed_only": bool(composed_only),
             "today_by": "first_seen_at_or_source_time" if filter_by_first_seen else "indexed_at" if today else None,
             "target_id": target_id,
-            "limit": int(limit),
+            "limit": result_limit,
             "include_archived": bool(include_archived),
         },
     }

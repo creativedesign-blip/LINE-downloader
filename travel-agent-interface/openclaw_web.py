@@ -44,11 +44,13 @@ OPENCLAW_SETTINGS_PATH = PROJECT_ROOT / "logs" / "openclaw" / "settings.json"
 PENDING_UPLOAD_JOBS_PATH = PROJECT_ROOT / "logs" / "openclaw" / "pending_upload_jobs.json"
 CHAT_REQUEST_LOG_PATH = PROJECT_ROOT / "logs" / "openclaw" / "chat_requests.jsonl"
 AUTH_SECRET_PATH = PROJECT_ROOT / "logs" / "openclaw" / "auth_secret.bin"
+ITEM_ANNOTATIONS_PATH = PROJECT_ROOT / "logs" / "openclaw" / "item_annotations.json"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 JOB_LOCK = threading.Lock()
 PENDING_UPLOAD_LOCK = threading.Lock()
+ITEM_ANNOTATIONS_LOCK = threading.Lock()
 MANUAL_JOB: dict[str, object] = {
     "running": False,
     "pid": None,
@@ -617,7 +619,7 @@ def _zip_bytes_for_files(files: list[Path]) -> bytes:
     return buffer.getvalue()
 
 
-_LINE_FILENAME_RE = re.compile(r"^(.+?)_\d{4}_line_\d+_\d+\.[A-Za-z]+$")
+_LINE_FILENAME_RE = re.compile(r"^(.+?)_\d{4}_line_\d+(?:_\d+)+\.[A-Za-z]+$")
 _UPLOAD_DISPLAY_NAME_CACHE: dict[str, str] = {}
 
 
@@ -717,6 +719,255 @@ def _with_media_urls(payload: dict) -> dict:
             groups.append(group_copy)
         copy["groups"] = groups
     return copy
+
+
+def _annotation_key(source_kind: str, source_key: object) -> str:
+    return f"{source_kind}:{str(source_key or '').strip()}"
+
+
+def _read_item_annotations() -> dict[str, dict[str, object]]:
+    try:
+        data = json.loads(ITEM_ANNOTATIONS_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(key): value for key, value in data.items() if isinstance(value, dict)}
+
+
+def _write_item_annotations(data: dict[str, dict[str, object]]) -> None:
+    ITEM_ANNOTATIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ITEM_ANNOTATIONS_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(ITEM_ANNOTATIONS_PATH)
+
+
+def _item_annotation(source_kind: str, source_key: object) -> dict[str, object]:
+    with ITEM_ANNOTATIONS_LOCK:
+        return dict(_read_item_annotations().get(_annotation_key(source_kind, source_key)) or {})
+
+
+def _save_item_annotation(source_kind: str, source_key: object, patch: dict[str, object]) -> dict[str, object]:
+    key = _annotation_key(source_kind, source_key)
+    with ITEM_ANNOTATIONS_LOCK:
+        data = _read_item_annotations()
+        current = dict(data.get(key) or {})
+        current.update(patch)
+        current["updated_at"] = _utc_now_iso()
+        data[key] = current
+        _write_item_annotations(data)
+        return dict(current)
+
+
+def _tag_text_values(values: object) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _normalize_ocr_tag_text(value.get("tag") if isinstance(value, dict) else value)
+        if text and text != SYSTEM_TAGS_CLEARED_SENTINEL and text not in seen:
+            result.append(text)
+            seen.add(text)
+    return result
+
+
+def _manual_tag_values(tags: object) -> list[str]:
+    if not isinstance(tags, list):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for tag in tags:
+        text = _normalize_ocr_tag_text(tag.get("tag") if isinstance(tag, dict) else tag)
+        if text and text not in seen:
+            result.append(text)
+            seen.add(text)
+    return result
+
+
+def _source_system_tag_values(system_tags: list[dict[str, object]]) -> list[str]:
+    return _tag_text_values(system_tags)
+
+
+def _effective_system_tag_values(source_tags: list[str], override_values: list[str]) -> list[str]:
+    if SYSTEM_TAGS_CLEARED_SENTINEL in override_values:
+        return [tag for tag in override_values if tag != SYSTEM_TAGS_CLEARED_SENTINEL]
+    return override_values if override_values else source_tags
+
+
+def _replace_upload_manual_tags(image_id: int, desired_values: list[str]) -> None:
+    current = list_manual_tags(image_id)
+    current_by_value = {
+        str(tag.get("tag") or "").strip(): tag
+        for tag in current
+        if str(tag.get("tag") or "").strip()
+    }
+    desired = [value for value in desired_values if value]
+    desired_set = set(desired)
+    for value, tag in current_by_value.items():
+        if value not in desired_set:
+            delete_manual_tag(int(tag["id"]))
+    for value in desired:
+        if value not in current_by_value:
+            add_manual_tag(image_id, value)
+
+
+def _upload_detail_source(folder: dict[str, object], image_path: str = "") -> tuple[str, str]:
+    source = str(folder.get("source") or "").strip()
+    if source == "line-auto":
+        leaf = str(image_path or "").replace("\\", "/").rsplit("/", 1)[-1]
+        match = _LINE_FILENAME_RE.match(leaf)
+        if match:
+            return "line-auto", match.group(1)
+        groups = [
+            str(group).strip()
+            for group in folder.get("line_groups") or []
+            if str(group).strip()
+        ]
+        label = " / ".join(groups) or str(
+            folder.get("display_name") or folder.get("folder_slug") or "LINE 自動爬取"
+        )
+        return "line-auto", label
+    label = str(folder.get("display_name") or folder.get("folder_slug") or "手動上傳")
+    return "upload", label
+
+
+def _upload_item_detail(image_id: int) -> dict[str, object] | None:
+    record = _upload_image_record(image_id)
+    if record is None:
+        return None
+    image, folder = record
+    current_path = _find_current_image_path(image, folder)
+    current_rel = current_path.relative_to(PROJECT_ROOT).as_posix() if current_path else str(image.get("stored_path") or "")
+    media_id = _media_id(current_rel) if current_rel else ""
+    source_tags = _source_system_tag_values(_system_tags_for_same_sha_image(image_id, current_path))
+    override_values = _normalize_ocr_tag_values(image.get("ocr_tags_override"))
+    manual_tags = list_manual_tags(image_id)
+    source_kind, source_label = _upload_detail_source(folder, current_rel)
+    return {
+        "source_kind": source_kind,
+        "source_key": str(image_id),
+        "image_id": image_id,
+        "folder_id": folder.get("id"),
+        "image_path": current_rel,
+        "media_id": media_id,
+        "image_url": f"/media?id={media_id}" if media_id else "",
+        "thumbnail_url": f"/media/thumbnail?id={media_id}&w=360" if media_id else "",
+        "source_label": source_label,
+        "source_time": image.get("uploaded_at") or "",
+        "uploaded_at": image.get("uploaded_at") or "",
+        "indexed_at": image.get("updated_at") or image.get("uploaded_at") or "",
+        "original_filename": image.get("original_filename") or "",
+        "folder_note": folder.get("note") or "",
+        "system_tags": _effective_system_tag_values(source_tags, override_values),
+        "source_system_tags": source_tags,
+        "ocr_tags_override": override_values,
+        "manual_tags": manual_tags,
+        "reference_text": image.get("reference_text") or "",
+        "manual_note": image.get("manual_note") or "",
+        "raw_text": " ".join(_sidecar_text_values(_sidecar_payload_for_image(current_path))),
+        "editable": True,
+    }
+
+
+def _line_item_detail(sidecar_path: str, params: dict[str, list[str]] | None = None) -> dict[str, object] | None:
+    sidecar = _resolve_project_file(sidecar_path)
+    if sidecar is None:
+        return None
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
+    item = {
+        "sidecar_path": sidecar.relative_to(PROJECT_ROOT).as_posix(),
+        "image_path": _first(params or {}, "image_path"),
+        "target_id": _first(params or {}, "target_id") or str(source.get("targetId") or source.get("target_id") or ""),
+        "group_name": _first(params or {}, "group_name") or str(source.get("groupName") or source.get("group_name") or ""),
+    }
+    source_label, _ = _humanize_source(item)
+    annotation = _item_annotation("line", item["sidecar_path"])
+    source_tags = _source_system_tag_values(_sidecar_system_tags(payload))
+    override_values = _normalize_ocr_tag_values(annotation.get("ocr_tags_override"))
+    raw_text = "\n".join(_sidecar_text_values(payload))
+    image_path = _resolve_project_file(str(item.get("image_path") or "")) or sidecar.with_suffix("")
+    return {
+        "source_kind": "line",
+        "source_key": item["sidecar_path"],
+        "sidecar_path": item["sidecar_path"],
+        "source_label": source_label,
+        "source_time": source.get("savedAt") or payload.get("savedAt") or _first(params or {}, "source_time"),
+        "original_filename": image_path.name,
+        "folder_note": "",
+        "system_tags": _effective_system_tag_values(source_tags, override_values),
+        "source_system_tags": source_tags,
+        "ocr_tags_override": override_values,
+        "manual_tags": [
+            {"id": f"line-{index}", "tag": value}
+            for index, value in enumerate(_manual_tag_values(annotation.get("manual_tags")), 1)
+        ],
+        "reference_text": str(annotation.get("reference_text")) if "reference_text" in annotation else raw_text,
+        "manual_note": str(annotation.get("manual_note") or ""),
+        "raw_text": raw_text,
+        "editable": True,
+    }
+
+
+def _query_item_detail(params: dict[str, list[str]]) -> dict[str, object] | None:
+    source = _first(params, "source")
+    image_id = _as_int(_first(params, "image_id"), None)
+    if image_id is None:
+        for value in (
+            _first(params, "sidecar_path"),
+            _first(params, "image_path"),
+            _first(params, "branded_path"),
+        ):
+            if not value:
+                continue
+            with sqlite3.connect(str(CATALOG_DB_PATH)) as conn:
+                row = conn.execute(
+                    """
+                    SELECT image_id
+                    FROM uploaded_image_search_index
+                    WHERE sidecar_path = ? OR image_path = ? OR branded_path = ?
+                    LIMIT 1
+                    """,
+                    (value, value, value),
+                ).fetchone()
+            if row:
+                image_id = int(row[0])
+                break
+    if source == "upload" or image_id is not None:
+        if image_id is not None:
+            return _upload_item_detail(int(image_id))
+        sidecar_path = _detail_sidecar_path(params)
+        return _line_item_detail(sidecar_path, params) if sidecar_path else None
+    return _line_item_detail(_detail_sidecar_path(params), params)
+
+
+def _detail_sidecar_path(params: dict[str, list[str]]) -> str:
+    for key in ("sidecar_path", "image_path", "branded_path"):
+        value = _first(params, key)
+        if not value:
+            continue
+        resolved = _resolve_project_file(value)
+        if resolved and resolved.suffix.lower() == ".json":
+            return value
+        json_value = f"{value}.json"
+        if _resolve_project_file(json_value):
+            return json_value
+    return _first(params, "sidecar_path")
+
+
+def _system_tag_override_for_update(source_tags: list[str], requested_tags: object) -> list[str] | None:
+    if not isinstance(requested_tags, list):
+        return None
+    desired = _tag_text_values(requested_tags)
+    if desired == source_tags:
+        return []
+    if not desired and source_tags:
+        return [SYSTEM_TAGS_CLEARED_SENTINEL]
+    return desired
 
 
 def _prewarm_payload_thumbnails(payload: dict, *, limit: int = 80, width: int = 360) -> None:
@@ -1671,6 +1922,8 @@ def _upload_image_query_item(folder: dict[str, object], image: dict[str, object]
         or image.get("image_path")
     )
     return {
+        "image_id": image.get("id"),
+        "folder_id": folder.get("id"),
         "sidecar_path": media_path,
         "image_path": image.get("current_path") or image.get("stored_path") or media_path,
         "branded_path": image.get("branded_path") or image.get("current_path") or media_path,
@@ -1732,6 +1985,212 @@ def _merge_upload_catalog_results(payload: dict, message: str, filters: dict[str
     return copy
 
 
+def _upload_slug_for_item(item: dict[str, object]) -> str:
+    for key in ("target_id", "group_name"):
+        value = str(item.get(key) or "").strip()
+        if value.startswith("upload_"):
+            return value
+    return ""
+
+
+def _archived_upload_folder_slugs(slugs: set[str]) -> set[str]:
+    if not slugs:
+        return set()
+    placeholders = ",".join("?" for _ in slugs)
+    try:
+        with sqlite3.connect(str(CATALOG_DB_PATH)) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT folder_slug
+                FROM upload_folders
+                WHERE archived_at IS NOT NULL
+                  AND folder_slug IN ({placeholders})
+                """,
+                sorted(slugs),
+            ).fetchall()
+    except sqlite3.Error:
+        return set()
+    return {str(row[0]) for row in rows}
+
+
+def _filter_archived_upload_items(payload: dict) -> dict:
+    items = [item for item in payload.get("items") or [] if isinstance(item, dict)]
+    group_items = [
+        item
+        for group in payload.get("groups") or []
+        if isinstance(group, dict)
+        for item in group.get("items") or []
+        if isinstance(item, dict)
+    ]
+    slugs = {_upload_slug_for_item(item) for item in [*items, *group_items]}
+    archived_slugs = _archived_upload_folder_slugs({slug for slug in slugs if slug})
+    if not archived_slugs:
+        return payload
+
+    def keep(item: dict[str, object]) -> bool:
+        return _upload_slug_for_item(item) not in archived_slugs
+
+    copy = dict(payload)
+    if isinstance(copy.get("items"), list):
+        copy["items"] = [item for item in items if keep(item)]
+        copy["count"] = len(copy["items"])
+    if isinstance(copy.get("groups"), list):
+        groups = []
+        for group in copy.get("groups") or []:
+            if not isinstance(group, dict):
+                continue
+            group_copy = dict(group)
+            filtered_items = [
+                item
+                for item in group.get("items") or []
+                if isinstance(item, dict) and keep(item)
+            ]
+            if filtered_items:
+                group_copy["items"] = filtered_items
+                group_copy["count"] = len(filtered_items)
+                groups.append(group_copy)
+        copy["groups"] = groups
+        copy["count"] = len(groups)
+    return copy
+
+
+def _item_path_values(item: dict[str, object]) -> list[str]:
+    values = []
+    for key in ("sidecar_path", "image_path", "branded_path"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            values.append(value)
+    return values
+
+
+def _batched_lookup_values(values: list[object], size: int = 250) -> list[list[object]]:
+    return [values[index:index + size] for index in range(0, len(values), size)]
+
+
+def _image_sha_lookup(items: list[dict[str, object]]) -> dict[str, str]:
+    image_ids = sorted({
+        int(item["image_id"])
+        for item in items
+        if str(item.get("image_id") or "").isdigit()
+    })
+    paths = sorted({path for item in items for path in _item_path_values(item)})
+    lookup: dict[str, str] = {}
+
+    if image_ids or paths:
+        try:
+            with sqlite3.connect(str(CATALOG_DB_PATH)) as conn:
+                rows = []
+                for batch in _batched_lookup_values(image_ids):
+                    placeholders = ",".join("?" for _ in batch)
+                    rows.extend(conn.execute(
+                        f"""
+                        SELECT i.id, i.sha256, s.sidecar_path, s.image_path, s.branded_path
+                        FROM uploaded_images i
+                        LEFT JOIN uploaded_image_search_index s ON s.image_id = i.id
+                        WHERE i.id IN ({placeholders})
+                        """,
+                        batch,
+                    ).fetchall())
+                for batch in _batched_lookup_values(paths):
+                    placeholders = ",".join("?" for _ in batch)
+                    rows.extend(conn.execute(
+                        f"""
+                        SELECT i.id, i.sha256, s.sidecar_path, s.image_path, s.branded_path
+                        FROM uploaded_images i
+                        LEFT JOIN uploaded_image_search_index s ON s.image_id = i.id
+                        WHERE s.sidecar_path IN ({placeholders})
+                           OR s.image_path IN ({placeholders})
+                           OR s.branded_path IN ({placeholders})
+                        """,
+                        [*batch, *batch, *batch],
+                    ).fetchall())
+        except sqlite3.Error:
+            rows = []
+        for row in rows:
+            sha = str(row[1] or "").strip()
+            if not sha:
+                continue
+            lookup[f"image_id:{row[0]}"] = sha
+            for value in (row[2], row[3], row[4]):
+                text = str(value or "").strip()
+                if text:
+                    lookup[f"path:{text}"] = sha
+
+    if paths:
+        try:
+            with sqlite3.connect(str(DEFAULT_DB_PATH)) as conn:
+                rows = []
+                for batch in _batched_lookup_values(paths):
+                    placeholders = ",".join("?" for _ in batch)
+                    rows.extend(conn.execute(
+                        f"""
+                        SELECT image_sha256, sidecar_path, image_path, branded_path
+                        FROM itineraries
+                        WHERE sidecar_path IN ({placeholders})
+                           OR image_path IN ({placeholders})
+                           OR branded_path IN ({placeholders})
+                        """,
+                        [*batch, *batch, *batch],
+                    ).fetchall())
+        except sqlite3.Error:
+            rows = []
+        for row in rows:
+            sha = str(row[0] or "").strip()
+            if not sha:
+                continue
+            for value in (row[1], row[2], row[3]):
+                text = str(value or "").strip()
+                if text:
+                    lookup[f"path:{text}"] = sha
+
+    return lookup
+
+
+def _image_dedupe_key(item: dict[str, object], sha_lookup: dict[str, str]) -> str:
+    for key in ("image_sha256", "sha256"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return f"sha:{value}"
+    image_id = str(item.get("image_id") or "").strip()
+    if image_id:
+        sha = sha_lookup.get(f"image_id:{image_id}")
+        if sha:
+            return f"sha:{sha}"
+    for path in _item_path_values(item):
+        sha = sha_lookup.get(f"path:{path}")
+        if sha:
+            return f"sha:{sha}"
+    path = next(iter(_item_path_values(item)), "")
+    return f"path:{path}" if path else ""
+
+
+def _dedupe_payload_images(payload: dict) -> dict:
+    """Final safety dedupe for payloads merged across travel and upload sources."""
+    items = [item for item in payload.get("items") or [] if isinstance(item, dict)]
+    if len(items) < 2:
+        return payload
+    needs_lookup = any(
+        not str(item.get("image_sha256") or item.get("sha256") or "").strip()
+        for item in items
+    )
+    sha_lookup = _image_sha_lookup(items) if needs_lookup else {}
+    seen: set[str] = set()
+    deduped = []
+    for item in items:
+        key = _image_dedupe_key(item, sha_lookup)
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        deduped.append(item)
+    if len(deduped) == len(items):
+        return payload
+    copy = dict(payload)
+    copy["items"] = deduped
+    copy["count"] = len(deduped)
+    return copy
+
+
 def _chat_payload(message: str, limit: int, *, include_archived: bool = False) -> dict:
     lower = message.lower()
     # Order matters: specific intent (latest/duplicates) beats general state queries (status).
@@ -1748,6 +2207,7 @@ def _chat_payload(message: str, limit: int, *, include_archived: bool = False) -
         else:
             payload = query_latest_results(limit=max(limit * 3, limit), include_archived=include_archived)
             payload = _prioritize_priced_items(payload, limit)
+        payload = _dedupe_payload_images(_filter_archived_upload_items(payload))
         payload = _with_media_urls(payload)
         payload["kind"] = "latest"
         payload["message"] = (
@@ -1758,7 +2218,8 @@ def _chat_payload(message: str, limit: int, *, include_archived: bool = False) -
         return payload
 
     if any(token in message for token in ["重複", "相同", "去重"]) or "duplicate" in lower:
-        payload = _with_media_urls(check_duplicates(limit_groups=min(limit, 30), include_same_source=True))
+        payload = _filter_archived_upload_items(check_duplicates(limit_groups=min(limit, 30), include_same_source=True))
+        payload = _with_media_urls(payload)
         payload["kind"] = "duplicates"
         payload["message"] = f"Agent 找到 {payload.get('count', 0)} 組可能重複圖片。"
         return payload
@@ -1787,6 +2248,7 @@ def _chat_payload(message: str, limit: int, *, include_archived: bool = False) -
         payload = {"count": 0, "items": [], "filters": {}, "warning": "沒有足夠條件可查詢。"}
 
     payload = _merge_upload_catalog_results(payload, message, filters, limit=limit)
+    payload = _dedupe_payload_images(_filter_archived_upload_items(payload))
     payload = _with_media_urls(payload)
     payload["kind"] = "query"
     payload["query"] = message
@@ -2037,24 +2499,28 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self._handle_uploads_post(parsed.path)
             return
+        openclaw_path = parsed.path.rstrip("/") if parsed.path.startswith("/api/openclaw/") else parsed.path
         if parsed.path.startswith("/api/openclaw/") and not self._require_auth():
             return
-        if parsed.path == "/api/openclaw/settings":
+        if openclaw_path == "/api/openclaw/settings":
             self._handle_settings_update()
             return
-        if parsed.path == "/api/openclaw/chat":
+        if openclaw_path == "/api/openclaw/item-detail":
+            self._handle_item_detail_update()
+            return
+        if openclaw_path == "/api/openclaw/chat":
             self._handle_chat()
             return
-        if parsed.path == "/api/openclaw/clipboard":
+        if openclaw_path == "/api/openclaw/clipboard":
             self._handle_clipboard()
             return
-        if parsed.path == "/api/openclaw/download":
+        if openclaw_path == "/api/openclaw/download":
             self._handle_download()
             return
-        if parsed.path == "/api/openclaw/duplicates/review":
+        if openclaw_path == "/api/openclaw/duplicates/review":
             self._handle_duplicate_review()
             return
-        if parsed.path == "/api/openclaw/run":
+        if openclaw_path == "/api/openclaw/run":
             self._handle_run()
             return
         self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
@@ -2088,12 +2554,21 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _handle_api(self, path: str, params: dict[str, list[str]]) -> None:
         try:
+            path = path.rstrip("/")
             if path == "/api/openclaw/status":
                 self._json(_status_with_manual_job(target_id=_first(params, "target") or None))
                 return
 
             if path == "/api/openclaw/settings":
                 self._json({"ok": True, "settings": _read_openclaw_settings()})
+                return
+
+            if path == "/api/openclaw/item-detail":
+                detail = _query_item_detail(params)
+                if detail is None:
+                    self._json({"ok": False, "error": "item not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                self._json({"ok": True, "detail": detail})
                 return
 
             if path == "/api/openclaw/run":
@@ -2125,7 +2600,7 @@ class Handler(SimpleHTTPRequestHandler):
                         kwargs={"limit": 80},
                         daemon=True,
                     ).start()
-                self._json(_with_media_urls(payload))
+                self._json(_with_media_urls(_dedupe_payload_images(_filter_archived_upload_items(payload))))
                 return
 
             if path == "/api/openclaw/download":
@@ -2167,6 +2642,61 @@ class Handler(SimpleHTTPRequestHandler):
             if "line_auto_enabled" in data:
                 settings["line_auto_enabled"] = bool(data.get("line_auto_enabled"))
             self._json({"ok": True, "settings": _write_openclaw_settings(settings)})
+        except Exception as exc:
+            self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _handle_item_detail_update(self) -> None:
+        try:
+            data = self._read_json_body()
+            source_kind = str(data.get("source_kind") or data.get("source") or "").strip()
+            image_id = _as_int(data.get("image_id"), None)
+
+            if source_kind == "upload" or image_id is not None:
+                if image_id is None:
+                    self._json({"ok": False, "error": "image_id is required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                detail = _upload_item_detail(int(image_id))
+                if detail is None:
+                    self._json({"ok": False, "error": "item not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                override = _system_tag_override_for_update(
+                    _tag_text_values(detail.get("source_system_tags")),
+                    data.get("system_tags"),
+                )
+                updated = update_image_metadata(
+                    int(image_id),
+                    ocr_tags_override=override,
+                    reference_text=str(data.get("reference_text") or "") if "reference_text" in data else None,
+                    manual_note=str(data.get("manual_note") or "") if "manual_note" in data else None,
+                    updated_by="web",
+                )
+                if not updated:
+                    self._json({"ok": False, "error": "item not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                if "manual_tags" in data:
+                    _replace_upload_manual_tags(int(image_id), _manual_tag_values(data.get("manual_tags")))
+                _refresh_upload_search_index_for_same_sha_images(int(image_id))
+                self._json({"ok": True, "detail": _upload_item_detail(int(image_id))})
+                return
+
+            sidecar_path = str(data.get("sidecar_path") or data.get("source_key") or "").strip()
+            detail = _line_item_detail(sidecar_path)
+            if detail is None:
+                self._json({"ok": False, "error": "item not found"}, HTTPStatus.NOT_FOUND)
+                return
+            override = _system_tag_override_for_update(
+                _tag_text_values(detail.get("source_system_tags")),
+                data.get("system_tags"),
+            )
+            patch = {
+                "manual_tags": _manual_tag_values(data.get("manual_tags")),
+                "reference_text": str(data.get("reference_text") or "") if "reference_text" in data else detail.get("reference_text", ""),
+                "manual_note": str(data.get("manual_note") or "") if "manual_note" in data else detail.get("manual_note", ""),
+            }
+            if override is not None:
+                patch["ocr_tags_override"] = override
+            _save_item_annotation("line", detail["sidecar_path"], patch)
+            self._json({"ok": True, "detail": _line_item_detail(str(detail["sidecar_path"]))})
         except Exception as exc:
             self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
 

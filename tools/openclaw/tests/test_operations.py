@@ -105,6 +105,97 @@ class TestOpenClawOperations(unittest.TestCase):
         self.assertIn("plan_prices", result["items"][0])
         self.assertEqual(result["items"][0]["countries"], ["泰國"])
 
+    def test_query_latest_results_dedupes_by_image_sha256(self):
+        with TravelIndex(self.db_path) as index:
+            insert_row(
+                index,
+                "line-rpa/download/source-old/travel/old.jpg.json",
+                target_id="source-old",
+                group_name="Source Old",
+                image_sha256="same-image",
+                source_time="2026-04-30T07:00:00Z",
+            )
+            insert_row(
+                index,
+                "line-rpa/download/source-new/travel/new.jpg.json",
+                target_id="source-new",
+                group_name="Source New",
+                image_sha256="same-image",
+                source_time="2026-04-30T10:00:00Z",
+            )
+
+        result = query_latest_results(self.db_path, limit=10)
+        same_image_items = [
+            item for item in result["items"]
+            if item["sidecar_path"] in {
+                "line-rpa/download/source-old/travel/old.jpg.json",
+                "line-rpa/download/source-new/travel/new.jpg.json",
+            }
+        ]
+
+        self.assertEqual(len(same_image_items), 1)
+        self.assertEqual(same_image_items[0]["target_id"], "source-new")
+
+    def test_query_latest_results_keeps_older_duplicate_when_latest_is_archived(self):
+        older_sidecar = "line-rpa/download/source-old/travel/old-keep.jpg.json"
+        newer_sidecar = "line-rpa/download/source-new/travel/new-archived.jpg.json"
+        with TravelIndex(self.db_path) as index:
+            insert_row(
+                index,
+                older_sidecar,
+                target_id="source-old",
+                group_name="Source Old",
+                image_sha256="same-archived-image",
+                source_time="2026-04-30T07:00:00Z",
+            )
+            insert_row(
+                index,
+                newer_sidecar,
+                target_id="source-new",
+                group_name="Source New",
+                image_sha256="same-archived-image",
+                source_time="2026-04-30T10:00:00Z",
+            )
+        review_path = self.tmp_path / "reviews.json"
+        record_duplicate_review(
+            "same-archived-image",
+            [older_sidecar],
+            review_path,
+            archived_sidecar_paths=[newer_sidecar],
+        )
+
+        result = query_latest_results(self.db_path, limit=10, review_path=review_path)
+        same_image_items = [
+            item for item in result["items"]
+            if item["sidecar_path"] in {older_sidecar, newer_sidecar}
+        ]
+
+        self.assertEqual(len(same_image_items), 1)
+        self.assertEqual(same_image_items[0]["sidecar_path"], older_sidecar)
+
+    def test_query_latest_results_overfetches_after_dedupe(self):
+        with TravelIndex(self.db_path) as index:
+            for number in range(110):
+                insert_row(
+                    index,
+                    f"line-rpa/download/source-dup/travel/dup-{number}.jpg.json",
+                    target_id=f"source-dup-{number}",
+                    group_name="Source Dup",
+                    image_sha256="same-overfetch-image",
+                    source_time="2026-04-30T10:00:00Z",
+                )
+
+        result = query_latest_results(self.db_path, limit=2)
+
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(
+            len([
+                item for item in result["items"]
+                if str(item["sidecar_path"]).startswith("line-rpa/download/source-dup/")
+            ]),
+            1,
+        )
+
     def test_query_itineraries_by_country_month_price(self):
         result = query_itineraries(
             self.db_path,

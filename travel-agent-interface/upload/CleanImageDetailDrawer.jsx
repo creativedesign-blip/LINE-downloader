@@ -6,20 +6,19 @@ import {
   explainClipboardError,
   mediaIdForPath,
 } from "../clipboard.js";
-import TagBadgeList from "./TagBadgeList.jsx";
-import {
-  SYSTEM_TAGS_CLEARED_SENTINEL,
-  imageFlowStatus,
-  imageTagValues,
-  tagValues,
-} from "./tagUtils.js";
+import ImageMetadataPanel from "./ImageMetadataPanel.jsx";
+import { imageFlowStatus } from "./tagUtils.js";
 
-export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDeleteTag, onUpdateImage, onArchiveImage, onSaved }) {
+export default function CleanImageDetailDrawer({
+  image,
+  onClose,
+  onAddTag,
+  onDeleteTag,
+  onUpdateImage,
+  onArchiveImage,
+  onSaved,
+}) {
   const imageTitle = image.display_name || image.original_filename || "圖片";
-  const [ocrTags, setOcrTags] = useState(imageTagValues(image));
-  const [referenceText, setReferenceText] = useState(image.reference_text || "");
-  const [tagDraft, setTagDraft] = useState("");
-  const [saving, setSaving] = useState(false);
   const [copyStatus, setCopyStatus] = useState("");
   const [copyError, setCopyError] = useState("");
   const flow = imageFlowStatus(image);
@@ -44,49 +43,12 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
   };
 
   useEffect(() => {
-    setOcrTags(imageTagValues(image));
-    setReferenceText(image.reference_text || "");
-    setTagDraft("");
-    setSaving(false);
     setCopyStatus("");
     setCopyError("");
   }, [image.id]);
 
-  const parsedOverrideTags = () => {
-    const values = tagValues(ocrTags);
-    const sourceTagCount = imageTagValues({ ...image, ocr_tags_override: [] }).length;
-    if (!values.length && sourceTagCount > 0) return [SYSTEM_TAGS_CLEARED_SENTINEL];
-    return values;
-  };
-
-  const removeOcrOverrideTag = (tagToRemove) => {
-    setOcrTags((current) => current.filter((tag) => tag !== tagToRemove));
-  };
-
-  const addManualTag = () => {
-    const value = tagDraft.trim();
-    if (!value) return;
-    onAddTag(image.id, value);
-    setTagDraft("");
-  };
-
-  const saveMetadata = async () => {
-    setSaving(true);
-    try {
-      await onUpdateImage(image.id, {
-        ocr_tags_override: parsedOverrideTags(),
-        reference_text: referenceText,
-      });
-      setSaving(false);
-      onSaved?.();
-    } catch (error) {
-      setSaving(false);
-      throw error;
-    }
-  };
-
   const archive = async () => {
-    if (!window.confirm("確定要刪除這張圖片嗎？此操作無法復原。")) return;
+    if (!window.confirm("確定要刪除這張圖片？刪除後不會出現在查詢結果。")) return;
     await onArchiveImage(image.id);
     onClose();
   };
@@ -94,12 +56,12 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
   const copyComposedImage = async () => {
     if (!hasComposedImage) {
       setCopyStatus("error");
-      setCopyError("組圖尚未完成，完成後才能複製到 LINE。");
+      setCopyError("組圖尚未完成，無法複製到 LINE。");
       return;
     }
     if (!composedPath) {
       setCopyStatus("error");
-      setCopyError("找不到組圖檔案路徑，剪貼簿橋接無法讀取本機檔案。");
+      setCopyError("找不到組圖檔案路徑，請重新處理圖片。");
       return;
     }
     setCopyStatus("copying");
@@ -117,7 +79,7 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
 
   const downloadComposedImage = async () => {
     if (!hasComposedImage) {
-      window.alert("組圖尚未完成，完成後才能下載。");
+      window.alert("組圖尚未完成，無法下載。");
       return;
     }
     try {
@@ -137,23 +99,23 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
         }
         .animate-upload-drawer-in { animation: upload-drawer-slide-in 0.24s ease-out; }
       `}</style>
-      <div className="w-full max-w-3xl h-full bg-white shadow-xl overflow-y-auto animate-upload-drawer-in">
-        <div className="sticky top-0 z-10 px-5 py-4 border-b flex items-center justify-between gap-3" style={{ borderColor: "#E1F5EE", backgroundColor: "#E1F5EE" }}>
+      <div className="h-full w-full max-w-3xl overflow-y-auto bg-white shadow-xl animate-upload-drawer-in">
+        <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b px-5 py-4" style={{ borderColor: "#E1F5EE", backgroundColor: "#E1F5EE" }}>
           <div className="min-w-0">
-            <div className="text-sm font-medium truncate">{imageTitle}</div>
-            <div className="text-xs text-stone-500 mt-0.5">{flow}</div>
+            <div className="truncate text-sm font-medium">{imageTitle}</div>
+            <div className="mt-0.5 text-xs text-stone-500">{flow}</div>
           </div>
-          <button type="button" onClick={onClose} className="p-1.5 rounded-md hover:bg-[#D4EFE5]" aria-label="關閉">
-            <X className="w-4 h-4" />
+          <button type="button" onClick={onClose} className="rounded-md p-1.5 hover:bg-[#D4EFE5]" aria-label="關閉">
+            <X className="h-4 w-4" />
           </button>
         </div>
 
-        <div className="p-5 grid lg:grid-cols-[320px_1fr] gap-5">
+        <div className="grid gap-5 p-5 lg:grid-cols-[320px_1fr]">
           <div>
-            <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-1">組圖結果</div>
+            <div className="mb-1 text-[10px] tracking-[0.15em] uppercase text-stone-500">組圖預覽</div>
             {hasComposedImage ? (
-              <a href={composedImageUrl} target="_blank" rel="noreferrer" className="block rounded-md border overflow-hidden bg-stone-100" style={{ borderColor: "#E1F5EE", aspectRatio: "827 / 1169" }}>
-                <img src={composedImageUrl} alt={`${image.original_filename} composed`} className="w-full h-full object-contain" />
+              <a href={composedImageUrl} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-md border bg-stone-100" style={{ borderColor: "#E1F5EE", aspectRatio: "827 / 1169" }}>
+                <img src={composedImageUrl} alt={`${image.original_filename} composed`} className="h-full w-full object-contain" />
               </a>
             ) : (
               <div className="rounded-md border px-3 py-8 text-center text-xs text-stone-500" style={{ borderColor: "#E1F5EE", backgroundColor: "#FFFFFF" }}>
@@ -168,7 +130,7 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
                   className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border px-3 text-xs"
                   style={{ borderColor: "#E1F5EE", color: "#292524" }}
                 >
-                  {copyStatus === "copying" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copyStatus === "copying" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Copy className="h-3.5 w-3.5" />}
                   {copyStatus === "copied" ? "已複製" : copyStatus === "error" ? "複製失敗" : "複製圖片"}
                 </button>
                 <button
@@ -177,14 +139,14 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
                   className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border px-3 text-xs"
                   style={{ borderColor: "#E1F5EE", color: "#292524" }}
                 >
-                  <ArrowDownToLine className="w-3.5 h-3.5" />
+                  <ArrowDownToLine className="h-3.5 w-3.5" />
                   下載圖片
                 </button>
               </div>
             )}
             {!hasComposedImage && (
               <div className="mt-2 rounded-md border px-3 py-2 text-xs text-stone-600" style={{ borderColor: "#E1F5EE", backgroundColor: "#FFFFFF" }}>
-                組圖完成後才可複製或下載。
+                組圖完成後才能複製或下載。
               </div>
             )}
             {copyError && (
@@ -195,72 +157,17 @@ export default function CleanImageDetailDrawer({ image, onClose, onAddTag, onDel
           </div>
 
           <div className="space-y-4">
-            <label className="block">
-              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">圖片貼標（系統）</span>
-              <div className="mt-2 rounded-md border px-3 py-2" style={{ borderColor: "#E1F5EE", backgroundColor: "#FFFFFF" }}>
-                <TagBadgeList tags={ocrTags} tone="system" emptyText="尚無圖片貼標" onRemove={removeOcrOverrideTag} />
-              </div>
-            </label>
-
-            <div>
-              <div className="text-[10px] tracking-[0.15em] uppercase text-stone-500 mb-2">人工標籤</div>
-              <div className="space-y-3">
-                <div className="rounded-md border px-3 py-2" style={{ borderColor: "#E1F5EE", backgroundColor: "#FFFFFF" }}>
-                  <TagBadgeList
-                    tags={image.manual_tags || []}
-                    tone="manual"
-                    emptyText="尚無人工標籤"
-                    onRemove={(tag) => {
-                      const matched = (image.manual_tags || []).find((item) => item.tag === tag);
-                      if (matched) onDeleteTag(matched.id);
-                    }}
-                  />
-                </div>
-                <div className="flex gap-2">
-                  <input
-                    value={tagDraft}
-                    onChange={(event) => setTagDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        addManualTag();
-                      }
-                    }}
-                    className="min-w-0 flex-1 h-9 rounded-md border px-3 text-sm outline-none"
-                    style={{ borderColor: "#E1F5EE" }}
-                    placeholder="輸入人工標籤後按 Enter 新增"
-                  />
-                  <button
-                    type="button"
-                    onClick={addManualTag}
-                    className="h-9 rounded-md px-3 text-xs"
-                    style={{ backgroundColor: "#0F6E56", color: "#F9F9F9" }}
-                  >
-                    新增
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <label className="block">
-              <span className="text-[10px] tracking-[0.15em] uppercase text-stone-500">來源文案</span>
-              <textarea
-                value={referenceText}
-                onChange={(event) => setReferenceText(event.target.value)}
-                className="mt-1 w-full rounded-md border px-3 py-2 text-sm leading-relaxed outline-none resize-y"
-                style={{ borderColor: "#E1F5EE", minHeight: "10rem" }}
-                rows={8}
-                placeholder="提供給 LINE 文案備註使用"
-              />
-            </label>
-
-            <div className="flex items-center justify-between gap-3 pt-2">
+            <ImageMetadataPanel
+              image={{ ...image, source_kind: image.source || "upload" }}
+              mode="edit"
+              onAddTag={onAddTag}
+              onDeleteTag={onDeleteTag}
+              onUpdateImage={onUpdateImage}
+              onSaved={onSaved}
+            />
+            <div className="flex justify-start pt-2">
               <button type="button" onClick={archive} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: "#B91C1C", color: "#991B1B" }}>
                 刪除圖片
-              </button>
-              <button type="button" onClick={saveMetadata} disabled={saving} className="inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60" style={{ backgroundColor: "#0F6E56", color: "#F9F9F9" }}>
-                {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                {saving ? "儲存中" : "儲存"}
               </button>
             </div>
           </div>
