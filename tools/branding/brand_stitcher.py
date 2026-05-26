@@ -132,6 +132,7 @@ class StitchContext:
     config_hash: str
     force: bool = False
     dry_run: bool = False
+    ocr_engine: Optional[object] = None
 
 
 Result = Literal["processed", "skipped", "error"]
@@ -272,14 +273,22 @@ def _get_footer_ocr_engine():
 def _has_foreign_footer_text(ocr_text: str) -> bool:
     """Quick pre-check: does the full OCR text contain >=2 footer-like patterns?"""
     text = str(ocr_text or "")
-    hits = sum(1 for p in FOREIGN_FOOTER_PATTERNS if p.search(text))
-    return hits >= 2
+    if not text:
+        return False
+    hits = 0
+    for p in FOREIGN_FOOTER_PATTERNS:
+        if p.search(text):
+            hits += 1
+            if hits >= 2:
+                return True
+    return False
 
 
 def detect_foreign_footer_cut_y(
     base: np.ndarray,
     ocr_text: str,
     cfg: dict,
+    ocr_engine: Optional[object] = None,
 ) -> Optional[int]:
     """Detect a foreign company footer via OCR bounding boxes + pattern matching.
 
@@ -298,7 +307,7 @@ def detect_foreign_footer_cut_y(
     if H < 200 or W < 200:
         return None
 
-    engine = _get_footer_ocr_engine()
+    engine = ocr_engine or _get_footer_ocr_engine()
     if engine is None:
         return None
 
@@ -415,7 +424,9 @@ def stitch_one(sidecar_path: Path, ctx: StitchContext) -> Result:
     ocr_text = (sidecar.get("ocr") or {}).get("text", "")
 
     old_cta_cut_y = detect_old_cta_cut_y(base, ocr_text, ctx.cfg)
-    foreign_footer_cut_y = detect_foreign_footer_cut_y(base, ocr_text, ctx.cfg)
+    foreign_footer_cut_y = detect_foreign_footer_cut_y(
+        base, ocr_text, ctx.cfg, ocr_engine=ctx.ocr_engine,
+    )
 
     cut_y: Optional[int] = None
     cut_reason = ""
@@ -457,8 +468,12 @@ def stitch_one(sidecar_path: Path, ctx: StitchContext) -> Result:
         H, W = base.shape[:2]
         logger.debug("resized base to %dx%d (cap %dpx)", W, H, max_width)
 
+    composite_cfg = ctx.cfg
+    if cut_y is not None:
+        composite_cfg = dict(ctx.cfg, detectExistingBottomBand=False)
+
     try:
-        out = composite(base, ctx.logo_img, ctx.cfg)
+        out = composite(base, ctx.logo_img, composite_cfg)
     except LogoTooSmallError as e:
         logger.warning("skip (logo too small): %s — %s", orig_img.name, e)
         return "skipped"
