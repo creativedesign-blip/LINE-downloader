@@ -96,10 +96,15 @@ export function imageFlowStatus(image, folder) {
   if (image?.flow_label) return image.flow_label;
   const currentStep = folder?.current_step || "";
   const folderStatus = folder?.status || "";
+  const stepStatuses = folder?.step_statuses || {};
   const hasOcr = image?.ocr_status === "success" || (image.system_tags || []).length > 0 || (image.ocr_tags_override || []).length > 0;
   const hasComposed = image?.compose_status === "success" || Boolean(image?.branded_thumbnail_url || image?.branded_url);
+  const ocrFailed = image?.ocr_status === "failed" || stepStatuses.ocr === "failed";
+  const composeFailed = image?.compose_status === "failed" || stepStatuses.compose === "failed";
 
   if (hasComposed || folderStatus === "success") return "執行完成";
+  if (composeFailed || (folder?.recovery?.stuck_step === "compose" && folder?.recovery?.stale)) return "組合失敗";
+  if (ocrFailed || (folder?.recovery?.stuck_step === "ocr" && folder?.recovery?.stale)) return "辨識失敗";
   if (folder?.recovery?.stale) return hasOcr ? "組合中斷" : "辨識中斷";
   if (hasOcr || currentStep === "compose" || image?.compose_status === "running") return "組合中";
   return "辨識中";

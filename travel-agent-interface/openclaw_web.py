@@ -1243,11 +1243,15 @@ def _folder_recovery_state(folder: dict[str, object]) -> dict[str, object]:
     current_step = str(folder.get("current_step") or "")
     step_statuses = dict(folder.get("step_statuses") or {})
     active_steps = {"ocr", "compose", "index"}
+    failed_steps = [name for name in ("ocr", "compose", "index") if step_statuses.get(name) == "failed"]
     reasons: list[str] = []
 
     latest = folder.get("job") if isinstance(folder.get("job"), dict) else None
     if latest and latest.get("status") in {"stale", "failed"}:
         reasons.append(str(latest.get("last_error") or latest.get("status") or "latest job is not active"))
+
+    if failed_steps:
+        reasons.append(f"{failed_steps[0]} step failed")
 
     if status == "stale":
         reasons.append("job status is stale")
@@ -1265,7 +1269,7 @@ def _folder_recovery_state(folder: dict[str, object]) -> dict[str, object]:
         if age_seconds is not None and age_seconds >= UPLOAD_FOLDER_STALE_AFTER_SECONDS:
             reasons.append("no folder progress for more than 60 minutes")
 
-    stuck_step = current_step if current_step in active_steps else ""
+    stuck_step = failed_steps[0] if failed_steps else current_step if current_step in active_steps else ""
     if not stuck_step:
         for name in ("ocr", "compose", "index"):
             if step_statuses.get(name) == "running":
@@ -1379,11 +1383,12 @@ def _folder_can_be_archived(folder: dict[str, object]) -> tuple[bool, str]:
     return False, "資料夾仍在 OCR / 組圖流程中，完成或失敗後才能刪除。"
 
 
-def _image_can_be_archived(folder: dict[str, object]) -> tuple[bool, str]:
+def _image_can_be_archived(folder: dict[str, object], image: dict[str, object] | None = None) -> tuple[bool, str]:
     folder = _folder_with_runtime_status(folder)
     status = str(folder.get("status") or "")
     recovery = folder.get("recovery") if isinstance(folder.get("recovery"), dict) else {}
-    if status == "running" and not recovery.get("stale"):
+    image_failed = bool(image and (image.get("ocr_status") == "failed" or image.get("compose_status") == "failed"))
+    if status == "running" and not recovery.get("stale") and not image_failed:
         return False, "資料夾仍在正常處理中，請等完成、失敗或中斷後再移除單張圖片。"
     return True, ""
 
@@ -2392,7 +2397,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if image.get("archived_at"):
                     self._json({"ok": False, "error": "image already archived"}, HTTPStatus.CONFLICT)
                     return
-                ok_to_archive, reason = _image_can_be_archived(folder)
+                ok_to_archive, reason = _image_can_be_archived(folder, image)
                 if not ok_to_archive:
                     self._json({"ok": False, "error": reason}, HTTPStatus.CONFLICT)
                     return
