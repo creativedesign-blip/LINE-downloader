@@ -2294,12 +2294,16 @@ function DMPreviewModalReadOnly({ initial, list, onClose, onCopy, copiedId }) {
   const [index, setIndex] = useState(initialIdx);
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailEditing, setDetailEditing] = useState(false);
+  const [detailSaveMessage, setDetailSaveMessage] = useState("");
   const [detailError, setDetailError] = useState("");
   const current = dmList[index] || initial;
   const canNavigate = dmList.length > 1;
 
   useEffect(() => {
     const onKey = (event) => {
+      const tag = String(event.target?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
       if (event.key === "Escape") onClose();
       if (event.key === "ArrowLeft" && canNavigate) setIndex((value) => (value - 1 + dmList.length) % dmList.length);
       if (event.key === "ArrowRight" && canNavigate) setIndex((value) => (value + 1) % dmList.length);
@@ -2312,6 +2316,8 @@ function DMPreviewModalReadOnly({ initial, list, onClose, onCopy, copiedId }) {
     let active = true;
     setDetail(null);
     setDetailError("");
+    setDetailEditing(false);
+    setDetailSaveMessage("");
     setDetailLoading(true);
     openclawApi.getItemDetail({
       ...(current.raw || {}),
@@ -2333,24 +2339,48 @@ function DMPreviewModalReadOnly({ initial, list, onClose, onCopy, copiedId }) {
   const panelImage = {
     ...raw,
     ...(detail || {}),
-    id: detail?.image_id || raw.image_id || current.id,
-    image_id: detail?.image_id || raw.image_id,
-    source_kind: detail?.source_kind || current.sourceKind || raw.source_kind || raw.source,
-    source_label: detail?.source_label || raw.source_label || current.source,
-    source_time: detail?.source_time || raw.source_time || raw.indexed_at,
-    uploaded_at: detail?.uploaded_at || raw.uploaded_at,
-    indexed_at: detail?.indexed_at || raw.indexed_at,
-    original_filename: detail?.original_filename || raw.original_filename || current.title,
-    system_tags: detail?.system_tags || raw.system_tags || [],
-    ocr_tags_override: detail?.ocr_tags_override || raw.ocr_tags_override || [],
-    manual_tags: detail?.manual_tags || raw.manual_tags || [],
-    reference_text: detail?.reference_text || raw.reference_text || "",
-    manual_note: detail?.manual_note || raw.manual_note || "",
+    id: detail?.image_id ?? raw.image_id ?? current.id,
+    image_id: detail?.image_id ?? raw.image_id,
+    source_kind: detail?.source_kind ?? current.sourceKind ?? raw.source_kind ?? raw.source,
+    source_label: detail?.source_label ?? raw.source_label ?? current.source,
+    source_time: detail?.source_time ?? raw.source_time ?? raw.indexed_at,
+    uploaded_at: detail?.uploaded_at ?? raw.uploaded_at,
+    indexed_at: detail?.indexed_at ?? raw.indexed_at,
+    original_filename: detail?.original_filename ?? raw.original_filename ?? current.title,
+    system_tags: detail?.system_tags ?? raw.system_tags ?? [],
+    ocr_tags_override: detail?.ocr_tags_override ?? raw.ocr_tags_override ?? [],
+    manual_tags: detail?.manual_tags ?? raw.manual_tags ?? [],
+    reference_text: detail?.reference_text ?? raw.reference_text ?? "",
+    manual_note: detail?.manual_note ?? raw.manual_note ?? "",
   };
   const headerSourceType = metadataSourceKindLabel(panelImage.source_kind);
   const headerTimeValue = preferredMetadataTime(panelImage);
   const headerTime = formatMetadataDateTime(headerTimeValue);
-
+  const headerKind = panelImage.source_kind;
+  const headerIsUpload = headerKind === "upload" || headerKind === "upload_catalog";
+  const headerIsLine = headerKind === "line" || headerKind === "line-auto";
+  const updateDetail = async (_imageId, patch) => {
+    if (!detail) return;
+    setDetailError("");
+    setDetailSaveMessage("");
+    try {
+      const payload = await openclawApi.updateItemDetail({
+        source_kind: detail.source_kind,
+        source_key: detail.source_key,
+        image_id: detail.image_id,
+        folder_id: detail.folder_id,
+        sidecar_path: detail.sidecar_path,
+        ...patch,
+      });
+      const nextDetail = payload.detail || detail;
+      setDetail(nextDetail);
+      setDetailEditing(false);
+      setDetailSaveMessage("已儲存");
+    } catch (error) {
+      setDetailError(error.message || "儲存失敗");
+      throw error;
+    }
+  };
   return (
     <div className="fixed inset-0 z-50 animate-backdrop-in overflow-hidden" style={{ backgroundColor: "rgba(17,24,39,0.88)" }} onClick={onClose}>
       <div className="absolute left-4 right-4 top-4 z-10 flex items-center justify-between text-xs pointer-events-none">
@@ -2390,11 +2420,11 @@ function DMPreviewModalReadOnly({ initial, list, onClose, onCopy, copiedId }) {
                 <span
                   className="shrink-0 rounded-sm px-1.5 py-0.5 text-[9px] font-medium uppercase"
                   style={{
-                    backgroundColor: panelImage.source_kind === "upload" ? "#0F6E56" : panelImage.source_kind === "line" ? "#2D8BC0" : "#78716C",
+                    backgroundColor: headerIsUpload ? "#0F6E56" : headerIsLine ? "#2D8BC0" : "#78716C",
                     color: "#F9F9F9",
                   }}
                 >
-                  {panelImage.source_kind === "upload" ? "上傳" : panelImage.source_kind === "line" ? "LINE" : "來源"}
+                  {headerIsUpload ? "上傳" : headerIsLine ? "LINE" : "來源"}
                 </span>
                 <div className="truncate text-sm font-medium text-stone-900">{panelImage.source_label || current.source}</div>
               </div>
@@ -2403,6 +2433,19 @@ function DMPreviewModalReadOnly({ initial, list, onClose, onCopy, copiedId }) {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              {detail?.editable && (
+                <button
+                  onClick={() => {
+                    setDetailEditing((value) => !value);
+                    setDetailSaveMessage("");
+                    setDetailError("");
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-colors"
+                  style={{ borderColor: "#0F6E56", color: "#0F6E56" }}
+                >
+                  {detailEditing ? "取消" : "編輯"}
+                </button>
+              )}
               <button onClick={() => onCopy(current)} className="inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors" style={{ backgroundColor: copiedId === current.id ? "#1D9E75" : "#0F6E56", color: "#F9F9F9" }}>
                 {copiedId === current.id ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
                 {copiedId === current.id ? "已複製" : "複製"}
@@ -2428,7 +2471,21 @@ function DMPreviewModalReadOnly({ initial, list, onClose, onCopy, copiedId }) {
             </div>
           )}
 
-          <ImageMetadataPanel image={panelImage} mode="view" showManualNote={false} />
+          {detailSaveMessage && (
+            <div className="mb-3 rounded-md border px-3 py-2 text-xs" style={{ borderColor: "#BBF7D0", backgroundColor: "#F0FDF4", color: "#166534" }}>
+              {detailSaveMessage}
+            </div>
+          )}
+
+          <ImageMetadataPanel
+            key={`${current.id}-${detailEditing ? "edit" : "view"}`}
+            image={panelImage}
+            mode={detailEditing ? "edit" : "view"}
+            showManualNote={detailEditing}
+            systemTagField="system_tags"
+            onUpdateImage={updateDetail}
+            onSaved={() => setDetailSaveMessage("已儲存")}
+          />
         </aside>
       </div>
     </div>

@@ -49,6 +49,7 @@ export default function ImageMetadataPanel({
   image,
   mode = "view",
   showManualNote,
+  systemTagField = "ocr_tags_override",
   onAddTag,
   onDeleteTag,
   onUpdateImage,
@@ -57,15 +58,19 @@ export default function ImageMetadataPanel({
   const editable = mode === "edit";
   const shouldShowManualNote = showManualNote ?? editable;
   const [ocrTags, setOcrTags] = useState(imageTagValues(image));
+  const [manualTags, setManualTags] = useState(tagValues(image?.manual_tags || []));
   const [referenceText, setReferenceText] = useState(image?.reference_text || "");
   const [manualNote, setManualNote] = useState(image?.manual_note || "");
+  const [systemTagDraft, setSystemTagDraft] = useState("");
   const [tagDraft, setTagDraft] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setOcrTags(imageTagValues(image));
+    setManualTags(tagValues(image?.manual_tags || []));
     setReferenceText(image?.reference_text || "");
     setManualNote(image?.manual_note || "");
+    setSystemTagDraft("");
     setTagDraft("");
     setSaving(false);
   }, [image?.id, image?.image_id, image?.source_key]);
@@ -82,20 +87,43 @@ export default function ImageMetadataPanel({
     setOcrTags((current) => current.filter((tag) => tag !== tagToRemove));
   };
 
+  const addOcrOverrideTag = () => {
+    if (!editable) return;
+    const value = systemTagDraft.trim();
+    if (!value) return;
+    setOcrTags((current) => current.includes(value) ? current : [...current, value]);
+    setSystemTagDraft("");
+  };
+
   const addManualTag = () => {
     if (!editable) return;
     const value = tagDraft.trim();
     if (!value) return;
-    onAddTag?.(image.id || image.image_id, value);
+    if (onAddTag) {
+      onAddTag(image.id || image.image_id, value);
+    } else {
+      setManualTags((current) => current.includes(value) ? current : [...current, value]);
+    }
     setTagDraft("");
+  };
+  const removeManualTag = (tag) => {
+    if (!editable) return;
+    if (onDeleteTag) {
+      const matched = (image?.manual_tags || []).find((item) => item.tag === tag);
+      if (matched) onDeleteTag(matched.id);
+      return;
+    }
+    setManualTags((current) => current.filter((value) => value !== tag));
   };
 
   const saveMetadata = async () => {
     if (!editable || !onUpdateImage) return;
+    const persistedManualTags = onAddTag || onDeleteTag ? image?.manual_tags || [] : manualTags;
     setSaving(true);
     try {
       await onUpdateImage(image.id || image.image_id, {
-        ocr_tags_override: parsedOverrideTags(),
+        [systemTagField]: parsedOverrideTags(),
+        manual_tags: tagValues(persistedManualTags),
         reference_text: referenceText,
         manual_note: manualNote,
       });
@@ -127,13 +155,40 @@ export default function ImageMetadataPanel({
         <SectionTitle>標籤區</SectionTitle>
         <div>
           <div className="mb-2 text-xs font-medium text-stone-900">系統標籤</div>
-          <div className="rounded-md border px-3 py-2" style={{ borderColor: "#E1F5EE", backgroundColor: "#FFFFFF" }}>
-            <TagBadgeList
-              tags={ocrTags}
-              tone="system"
-              emptyText="尚無系統標籤"
-              onRemove={editable ? removeOcrOverrideTag : undefined}
-            />
+          <div className="space-y-3">
+            <div className="rounded-md border px-3 py-2" style={{ borderColor: "#E1F5EE", backgroundColor: "#FFFFFF" }}>
+              <TagBadgeList
+                tags={ocrTags}
+                tone="system"
+                emptyText="尚無系統標籤"
+                onRemove={editable ? removeOcrOverrideTag : undefined}
+              />
+            </div>
+            {editable && (
+              <div className="flex gap-2">
+                <input
+                  value={systemTagDraft}
+                  onChange={(event) => setSystemTagDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addOcrOverrideTag();
+                    }
+                  }}
+                  className="min-w-0 flex-1 h-9 rounded-md border px-3 text-sm outline-none"
+                  style={{ borderColor: "#E1F5EE" }}
+                  placeholder="輸入系統標籤後按 Enter"
+                />
+                <button
+                  type="button"
+                  onClick={addOcrOverrideTag}
+                  className="h-9 rounded-md px-3 text-xs"
+                  style={{ backgroundColor: "#0F6E56", color: "#F9F9F9" }}
+                >
+                  新增
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -142,13 +197,10 @@ export default function ImageMetadataPanel({
           <div className="space-y-3">
             <div className="rounded-md border px-3 py-2" style={{ borderColor: "#E1F5EE", backgroundColor: "#FFFFFF" }}>
               <TagBadgeList
-                tags={image?.manual_tags || []}
+                tags={onAddTag || onDeleteTag ? image?.manual_tags || [] : manualTags}
                 tone="manual"
                 emptyText="尚無人工標籤"
-                onRemove={editable ? (tag) => {
-                  const matched = (image?.manual_tags || []).find((item) => item.tag === tag);
-                  if (matched) onDeleteTag?.(matched.id);
-                } : undefined}
+                onRemove={editable ? removeManualTag : undefined}
               />
             </div>
             {editable && (
