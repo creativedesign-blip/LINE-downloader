@@ -106,6 +106,14 @@ class TestPipelineTargetDiscovery(unittest.TestCase):
         self.assertIn("branding:all", names)
         self.assertIn("index:all", names)
 
+    def test_branding_is_scoped_to_target(self):
+        commands = build_commands(make_args(skip_ocr=True), [TEST_TARGET])
+        branding_commands = [command for name, command in commands if name == "branding:all"]
+
+        self.assertEqual(len(branding_commands), 1)
+        self.assertIn("--target", branding_commands[0])
+        self.assertIn(TEST_TARGET, branding_commands[0])
+
     def test_second_pass_ocr_is_opt_in(self):
         commands = build_commands(make_args(second_pass_ocr=True), [TEST_TARGET])
         second_pass_commands = [

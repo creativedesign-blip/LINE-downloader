@@ -263,9 +263,9 @@ def build_commands(args: argparse.Namespace, target_ids: list[str]) -> list[tupl
             commands.append(("ocr:all", cmd))
 
     if not args.skip_branding and target_ids:
-        # brand_stitcher.py with no --target processes every indexed target
-        # in one process; cheaper than N spawns each loading PIL/cv2/logo.
         cmd = [args.python, str(BRANDING_SCRIPT)]
+        for target_id in target_ids:
+            cmd.extend(["--target", target_id])
         if args.force_branding:
             cmd.append("--force")
         commands.append(("branding:all", cmd))
