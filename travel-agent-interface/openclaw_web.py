@@ -962,7 +962,8 @@ def _detail_sidecar_path(params: dict[str, list[str]]) -> str:
 def _system_tag_override_for_update(source_tags: list[str], requested_tags: object) -> list[str] | None:
     if not isinstance(requested_tags, list):
         return None
-    desired = _tag_text_values(requested_tags)
+    source_set = set(source_tags)
+    desired = [tag for tag in _tag_text_values(requested_tags) if tag in source_set]
     if desired == source_tags:
         return []
     if not desired and source_tags:
@@ -1963,6 +1964,181 @@ def _query_upload_catalog(message: str, filters: dict[str, object], *, limit: in
     )
 
 
+def _annotation_search_values(annotation: dict[str, object]) -> list[str]:
+    values: list[str] = []
+    for key in ("manual_tags", "ocr_tags_override"):
+        for value in _tag_text_values(annotation.get(key)):
+            values.append(value)
+    for key in ("reference_text", "manual_note"):
+        text = str(annotation.get(key) or "").strip()
+        if text:
+            values.append(text)
+    return values
+
+
+def _annotation_query_terms(message: str, filters: dict[str, object]) -> list[str]:
+    text = str(message or "").lower()
+    ignored: list[str] = []
+    for key in ("countries", "regions"):
+        values = filters.get(key)
+        if isinstance(values, list):
+            ignored.extend(str(value).strip().lower() for value in values if str(value).strip())
+    months = filters.get("months")
+    if isinstance(months, list):
+        for month in months:
+            value = str(month).strip().lower()
+            if value:
+                ignored.extend([value, f"{value}月"])
+    duration = filters.get("duration_days")
+    if duration:
+        value = str(duration).strip().lower()
+        ignored.extend([value, f"{value}天", f"{value}日"])
+
+    for value in sorted({term for term in ignored if term}, key=len, reverse=True):
+        text = text.replace(value, " ")
+    return [
+        term.strip()
+        for term in re.split(r"[\s,，、/|]+", text)
+        if term.strip()
+    ]
+
+
+def _annotation_matches_query(annotation: dict[str, object], message: str, filters: dict[str, object]) -> bool:
+    values = _annotation_search_values(annotation)
+    if not values:
+        return False
+    haystack = " ".join(values).lower()
+    terms = _annotation_query_terms(message, filters)
+    if terms:
+        return all(term in haystack for term in terms)
+    lowered_message = message.lower().strip()
+    return bool(lowered_message and lowered_message in haystack)
+
+
+def _csv_values(value: object) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for token in str(value or "").split(","):
+        text = token.strip()
+        if text and text not in seen:
+            result.append(text)
+            seen.add(text)
+    return result
+
+
+def _line_annotation_item(row: sqlite3.Row | dict[str, object], annotation: dict[str, object]) -> dict[str, object]:
+    override_tags = [
+        value
+        for value in _tag_text_values(annotation.get("ocr_tags_override"))
+        if value != SYSTEM_TAGS_CLEARED_SENTINEL
+    ]
+    manual_tags = _manual_tag_values(annotation.get("manual_tags"))
+    features = sorted({*override_tags, *manual_tags, *_csv_values(row["features_csv"])})
+    return {
+        "sidecar_path": row["sidecar_path"],
+        "image_path": row["image_path"],
+        "branded_path": row["branded_path"] or row["image_path"],
+        "target_id": row["target_id"],
+        "group_name": row["group_name"],
+        "countries": _csv_values(row["country_csv"]),
+        "regions": _csv_values(row["region_csv"]),
+        "months": [int(value) for value in _csv_values(row["months_csv"]) if value.isdigit()],
+        "price_from": row["price_from"],
+        "airlines": _csv_values(row["airline_csv"]),
+        "duration_days": row["duration_days"],
+        "features": features,
+        "source_time": row["source_time"],
+        "indexed_at": row["indexed_at"],
+        "manual_tags": [{"id": f"line-{index}", "tag": value} for index, value in enumerate(manual_tags, 1)],
+        "reference_text": str(annotation.get("reference_text") or ""),
+        "ocr_tags_override": override_tags,
+        "source": "line",
+    }
+
+
+def _query_line_annotation_results(message: str, filters: dict[str, object], *, limit: int) -> list[dict[str, object]]:
+    annotations = _read_item_annotations()
+    matched = {
+        key.removeprefix("line:"): annotation
+        for key, annotation in annotations.items()
+        if key.startswith("line:") and _annotation_matches_query(annotation, message, filters)
+    }
+    if not matched:
+        return []
+    sidecars = list(matched.keys())[:max(1, limit * 3)]
+    placeholders = ",".join("?" for _ in sidecars)
+    clauses = [f"sidecar_path IN ({placeholders})"]
+    params: list[object] = list(sidecars)
+
+    def add_csv_filter(column: str, values: object) -> None:
+        if not isinstance(values, list):
+            return
+        cleaned = [str(value).strip() for value in values if str(value).strip()]
+        if not cleaned:
+            return
+        clauses.append("(" + " OR ".join(f"{column} LIKE ?" for _ in cleaned) + ")")
+        params.extend(f"%,{value},%" for value in cleaned)
+
+    add_csv_filter("country_csv", filters.get("countries"))
+    add_csv_filter("region_csv", filters.get("regions"))
+    add_csv_filter("months_csv", filters.get("months"))
+    duration = filters.get("duration_days")
+    if duration:
+        clauses.append("duration_days = ?")
+        params.append(duration)
+    price_min = filters.get("price_min")
+    if price_min is not None:
+        clauses.append("price_from >= ?")
+        params.append(price_min)
+    price_max = filters.get("price_max")
+    if price_max is not None:
+        clauses.append("price_from <= ?")
+        params.append(price_max)
+
+    try:
+        with sqlite3.connect(str(DEFAULT_DB_PATH)) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                f"""
+                SELECT *
+                FROM itineraries
+                WHERE {" AND ".join(clauses)}
+                ORDER BY indexed_at DESC, source_time DESC, rowid DESC
+                LIMIT ?
+                """,
+                [*params, limit],
+            )
+            try:
+                rows = [dict(row) for row in cursor.fetchall()]
+            finally:
+                cursor.close()
+    except sqlite3.Error:
+        return []
+    return [_line_annotation_item(row, matched[str(row["sidecar_path"])]) for row in rows]
+
+
+def _merge_line_annotation_results(payload: dict, message: str, filters: dict[str, object], *, limit: int) -> dict:
+    line_items = _query_line_annotation_results(message, filters, limit=limit)
+    if not line_items:
+        return payload
+
+    copy = dict(payload)
+    items = list(copy.get("items") or [])
+    seen = {
+        str(item.get("sidecar_path") or item.get("branded_path") or item.get("image_path") or "")
+        for item in items
+    }
+    for item in line_items:
+        key = str(item.get("sidecar_path") or item.get("branded_path") or item.get("image_path") or "")
+        if key and key in seen:
+            continue
+        seen.add(key)
+        items.append(item)
+    copy["items"] = items[:limit]
+    copy["count"] = len(copy["items"])
+    return copy
+
+
 def _merge_upload_catalog_results(payload: dict, message: str, filters: dict[str, object], *, limit: int) -> dict:
     upload_items = _query_upload_catalog(message, filters, limit=limit)
     if not upload_items:
@@ -2248,6 +2424,7 @@ def _chat_payload(message: str, limit: int, *, include_archived: bool = False) -
         payload = {"count": 0, "items": [], "filters": {}, "warning": "沒有足夠條件可查詢。"}
 
     payload = _merge_upload_catalog_results(payload, message, filters, limit=limit)
+    payload = _merge_line_annotation_results(payload, message, filters, limit=limit)
     payload = _dedupe_payload_images(_filter_archived_upload_items(payload))
     payload = _with_media_urls(payload)
     payload["kind"] = "query"
