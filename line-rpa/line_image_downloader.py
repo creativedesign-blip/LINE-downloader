@@ -852,6 +852,11 @@ class LineRpa:
                     viewer_hwnd = self.wait_for_viewer_window(exclude_hwnds={media_hwnd})
                 if not viewer_hwnd or not win32gui.IsWindow(viewer_hwnd):
                     raise RuntimeError("image viewer window became invalid before download")
+                # LINE's Qt viewer auto-resizes to each image's aspect ratio after
+                # "next", so the one-time resize in wait_for_viewer_window drifts.
+                # Re-pin to viewer_window every round so the ratio-based download
+                # button coordinate stays aligned with the actual window rect.
+                self.apply_window_layout(viewer_hwnd, "viewer_window", DEFAULT_CONFIG["viewer_window"])
                 counts["attempted"] += 1
                 before = self.recent_download_candidates()
                 before_save_dir = self.snapshot_files(save_dir)
