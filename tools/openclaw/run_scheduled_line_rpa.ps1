@@ -251,12 +251,27 @@ for ($lockTry = 0; $lockTry -lt 2 -and -not $lockAcquired; $lockTry++) {
         $lockAcquired = $true
     } catch [System.IO.IOException] {
         if (Test-Path $LockPath) {
+            # The lock holds the owner PID. If that process is gone, reclaim the
+            # lock immediately instead of skipping scheduled runs for up to 6h
+            # (a crash/reboot used to leave a "fresh" lock that silently blocked
+            # every run and reported success). The 6h age cap is kept as a
+            # backstop against a hung owner or PID reuse.
+            $ownerPid = ""
+            try { $ownerPid = (Get-Content -LiteralPath $LockPath -Raw -ErrorAction Stop).Trim() } catch {}
+            $ownerAlive = $false
+            if ($ownerPid -match '^\d+$') {
+                $ownerAlive = [bool](Get-Process -Id ([int]$ownerPid) -ErrorAction SilentlyContinue)
+            }
             $age = (Get-Date) - (Get-Item $LockPath).LastWriteTime
-            if ($age.TotalHours -lt 6) {
-                Write-Log "Another scheduled LINE RPA run appears active. Lock: $LockPath"
+            if ($ownerAlive -and $age.TotalHours -lt 6) {
+                Write-Log "Another scheduled LINE RPA run appears active (PID $ownerPid). Lock: $LockPath"
                 exit 0
             }
-            Write-Log "Removing stale lock older than 6 hours. Lock: $LockPath"
+            if ($ownerAlive) {
+                Write-Log "Reclaiming lock held >6h by PID $ownerPid (likely hung). Lock: $LockPath"
+            } else {
+                Write-Log "Reclaiming lock from dead owner PID '$ownerPid'. Lock: $LockPath"
+            }
             Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue
         }
     }

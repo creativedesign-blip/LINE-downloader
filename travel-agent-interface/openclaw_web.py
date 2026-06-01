@@ -2452,7 +2452,7 @@ def _launch_upload_pipeline(folder: dict[str, object], *, trigger_source: str = 
         current_step="ocr",
         step_statuses={"upload": "success", "ocr": "pending", "compose": "pending", "index": "pending"},
     )
-    process = subprocess.Popen(
+    process = _spawn_logged(
         [
             "powershell.exe",
             "-NoProfile",
@@ -2467,9 +2467,8 @@ def _launch_upload_pipeline(folder: dict[str, object], *, trigger_source: str = 
             "-TriggerSource",
             trigger_source,
         ],
+        log_name="upload_subprocess.log",
         cwd=str(PROJECT_ROOT),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
         creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
     )
     # Without this watcher, queued upload jobs would only drain when the next
@@ -3349,7 +3348,7 @@ class Handler(SimpleHTTPRequestHandler):
                 })
                 return
             try:
-                process = subprocess.Popen(
+                process = _spawn_logged(
                     [
                         "powershell.exe",
                         "-NoProfile",
@@ -3360,9 +3359,8 @@ class Handler(SimpleHTTPRequestHandler):
                         "-TriggerSource",
                         "manual",
                     ],
+                    log_name="rpa_subprocess.log",
                     cwd=str(PROJECT_ROOT),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
                     creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
                 )
             except Exception as exc:
@@ -3419,6 +3417,39 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         with candidate.open("rb") as fh:
             shutil.copyfileobj(fh, self.wfile, 64 * 1024)
+
+
+def _spawn_logged(cmd: list[str], *, log_name: str, **kwargs) -> subprocess.Popen:
+    """Popen with stdout+stderr captured to logs/openclaw/<log_name> instead of
+    DEVNULL, so a child that dies before writing latest_job.json (bad
+    interpreter path, ExecutionPolicy, missing module) leaves its error on disk.
+    The child inherits its own copy of the handle, so the parent closes its copy
+    right after spawning."""
+    log_f = None
+    try:
+        log_path = PROJECT_ROOT / "logs" / "openclaw" / log_name
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Binary + truncate: the child writes raw bytes in its own (PowerShell
+        # native) encoding, so a text/utf-8 wrapper would be a no-op; and this is
+        # a "last crashed child" breadcrumb, not an audit trail, so overwriting
+        # each spawn keeps it readable and bounded instead of growing forever.
+        log_f = open(log_path, "wb")
+    except OSError as exc:
+        logger.warning(
+            "could not open subprocess log %s; child output will be discarded: %s",
+            log_name, exc,
+        )
+        log_f = None
+    try:
+        return subprocess.Popen(
+            cmd,
+            stdout=(log_f or subprocess.DEVNULL),
+            stderr=subprocess.STDOUT,
+            **kwargs,
+        )
+    finally:
+        if log_f is not None:
+            log_f.close()
 
 
 def _configure_logging() -> None:

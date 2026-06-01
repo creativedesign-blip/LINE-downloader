@@ -897,5 +897,60 @@ class LineImageDownloaderTests(unittest.TestCase):
             )
 
 
+class _Rec:
+    def __init__(self, status, failure_category=""):
+        self.status = status
+        self.failure_category = failure_category
+
+
+class _StubRPA:
+    def __init__(self, results):
+        self._results = list(results)
+        self.calls = 0
+
+    def run_group(self, group, save_dir):
+        self.calls += 1
+        return self._results[min(self.calls - 1, len(self._results) - 1)]
+
+
+class RunGroupWithRetryTests(unittest.TestCase):
+    def test_retries_line_not_ready_then_succeeds(self):
+        rpa = _StubRPA([
+            _Rec("failed", "LINE_NOT_READY"),
+            _Rec("failed", "LINE_NOT_READY"),
+            _Rec("ok"),
+        ])
+        slept = []
+        out = app.run_group_with_retry(
+            rpa, "G", "dir", attempts=3, backoff_seconds=5,
+            sleep=slept.append, log=lambda *a: None,
+        )
+        self.assertEqual(out.status, "ok")
+        self.assertEqual(rpa.calls, 3)
+        self.assertEqual(slept, [5, 10])  # backoff * attempt
+
+    def test_does_not_retry_other_failures(self):
+        rpa = _StubRPA([_Rec("failed", "MEDIA_NOT_FOUND")])
+
+        def _boom(_):
+            raise AssertionError("should not sleep / retry")
+
+        out = app.run_group_with_retry(
+            rpa, "G", "dir", attempts=3, backoff_seconds=5,
+            sleep=_boom, log=lambda *a: None,
+        )
+        self.assertEqual(out.failure_category, "MEDIA_NOT_FOUND")
+        self.assertEqual(rpa.calls, 1)
+
+    def test_stops_after_attempts_exhausted(self):
+        rpa = _StubRPA([_Rec("failed", "LINE_NOT_READY")])
+        out = app.run_group_with_retry(
+            rpa, "G", "dir", attempts=3, backoff_seconds=1,
+            sleep=lambda _: None, log=lambda *a: None,
+        )
+        self.assertEqual(rpa.calls, 3)  # initial + 2 retries
+        self.assertEqual(out.status, "failed")
+
+
 if __name__ == "__main__":
     unittest.main()

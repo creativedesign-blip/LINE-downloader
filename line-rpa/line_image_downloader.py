@@ -54,6 +54,10 @@ DEFAULT_CONFIG = {
     "max_no_new_download_rounds": 5,
     "next_image_wait_seconds": 1.0,
     "stop_on_group_failure": False,
+    # Retry a group whose only failure was LINE not being ready (main window in
+    # tray / a #32770 dialog up): re-running usually succeeds once LINE settles.
+    "line_ready_retries": 3,
+    "line_ready_retry_backoff_seconds": 8,
     "line_window": {
         "x": 0,
         "y": 80,
@@ -1355,6 +1359,29 @@ class LineRpa:
         return {path for path in save_dir.iterdir() if path.is_file()}
 
 
+def run_group_with_retry(rpa, group, save_dir, *, attempts=3, backoff_seconds=8.0,
+                         sleep=time.sleep, log=print):
+    """Run one group, retrying only transient LINE-not-ready failures with backoff.
+
+    A LINE_NOT_READY failure (main window in the tray, or only a #32770 dialog
+    up) is transient — re-running usually succeeds once LINE settles, and it is
+    safe because that failure happens before any download and download dedup
+    skips already-saved images on a re-run. Real failures (media window / save
+    dialog) are returned as-is, never retried.
+    """
+    record = rpa.run_group(group, save_dir)
+    attempt = 1
+    while (attempt < max(1, int(attempts))
+           and record.status == "failed"
+           and record.failure_category == "LINE_NOT_READY"):
+        wait = backoff_seconds * attempt
+        log(f"retry {group}: LINE not ready (attempt {attempt}/{int(attempts) - 1}), waiting {wait:.0f}s")
+        sleep(wait)
+        record = rpa.run_group(group, save_dir)
+        attempt += 1
+    return record
+
+
 def run(
     config_path: Path,
     dry_run: bool = False,
@@ -1442,7 +1469,13 @@ def run(
                     # open in Excel — the next group's flush will retry.
                     print(f"warning: write_log failed mid-loop ({log_exc}); continuing")
             else:
-                record = rpa.run_group(group, group_download_dir(save_root, group))
+                record = run_group_with_retry(
+                    rpa,
+                    group,
+                    group_download_dir(save_root, group),
+                    attempts=int(config.get("line_ready_retries", 3)),
+                    backoff_seconds=float(config.get("line_ready_retry_backoff_seconds", 8)),
+                )
                 records.append(record)
                 try:
                     write_log(log_path, records)
