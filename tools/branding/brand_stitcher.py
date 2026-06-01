@@ -357,6 +357,71 @@ def detect_foreign_footer_cut_y(
 
 
 # ---------------------------------------------------------------------------
+# Empty (content-free) colored bottom band detection
+# ---------------------------------------------------------------------------
+
+def detect_blank_bottom_band_cut_y(base: np.ndarray, cfg: dict) -> Optional[int]:
+    """Return y where a content-free, same-color bottom band should be cut off.
+
+    Unlike detect_old_cta_cut_y (which removes a *white* CTA box holding text
+    like 「請洽查詢」), this targets a bottom band of ANY solid color that holds
+    NO content at all — e.g. the empty teal/blue margin many DM templates leave
+    below the last line of text — so the brand band sits directly under the
+    content instead of below a wasted empty strip.
+
+    Safety: the scan walks up from the bottom and stops at the first row that
+    carries content (text/photo), so disclaimer fine print such as
+    「含稅不含小費」 is never swallowed — only genuinely-empty rows below it are
+    removed. Composed in stitch_one so it never reduces a CTA/foreign cut, so a
+    「請洽查詢」 box still gets covered. Gated by cfg["detectBlankColorFooter"].
+    """
+    if not cfg.get("detectBlankColorFooter", False):
+        return None
+
+    H, W = base.shape[:2]
+    if H < 200 or W < 200:
+        return None
+
+    content_std = float(cfg.get("blankFooterContentStd", 12.0))
+    color_tol = float(cfg.get("blankFooterColorTol", 40.0))
+
+    max_scan = max(1, int(H * 0.45))
+    min_band_h = max(60, int(H * 0.04))
+    anchor_h = min(max(8, int(H * 0.01)), max_scan)
+
+    # Only the bottom max_scan rows are ever inspected, so work on that slice and
+    # skip a full-image float32 copy + per-row std over rows we never read.
+    # Slice-local index i maps to original row y = (H - max_scan) + i.
+    y0 = H - max_scan
+    b = base[y0:].astype(np.float32)
+    # Per-row horizontal variation: ~0 for a solid/smooth-gradient row, high for
+    # any text or photo. This is what separates "empty" from "fine print".
+    row_score = b.std(axis=1).mean(axis=1)
+
+    # The very bottom must itself be content-free; otherwise the bottom holds
+    # content and we should append a fresh band rather than crop.
+    if float(row_score[max_scan - anchor_h:].mean()) >= content_std:
+        return None
+
+    ref = np.median(b[max_scan - anchor_h:].reshape(-1, 3), axis=0)
+    top = H
+    for i in range(max_scan - 1, -1, -1):
+        uniform = row_score[i] < content_std
+        same_color = float(np.abs(b[i].mean(axis=0) - ref).mean()) < color_tol
+        if not (uniform and same_color):
+            break          # stop at the first content row — never walk past text
+        top = y0 + i
+
+    # Reject too-small (noise) and, like detect_old_cta_cut_y /
+    # detect_foreign_footer_cut_y, too-large crops: a low-variance photo bottom
+    # must not lose up to max_scan (45%) of real content.
+    removed = H - top
+    if removed < min_band_h or removed > int(H * 0.25):
+        return None
+    return top
+
+
+# ---------------------------------------------------------------------------
 # Per-image pipeline
 # ---------------------------------------------------------------------------
 
@@ -441,6 +506,14 @@ def stitch_one(sidecar_path: Path, ctx: StitchContext) -> Result:
     elif foreign_footer_cut_y is not None:
         cut_y = foreign_footer_cut_y
         cut_reason = "foreign footer"
+
+    # An empty same-color band is always safe to remove. Apply it only if it
+    # removes *more* than the text detectors (smaller y); never let it reduce
+    # their cut, so a 「請洽查詢」/foreign box stays fully covered.
+    blank_band_cut_y = detect_blank_bottom_band_cut_y(base, ctx.cfg)
+    if blank_band_cut_y is not None and (cut_y is None or blank_band_cut_y < cut_y):
+        cut_y = blank_band_cut_y
+        cut_reason = "blank band" if not cut_reason else cut_reason + "+blank band"
 
     original_h_for_meta = H
     original_w_for_meta = W

@@ -18,6 +18,9 @@
   "outputMaxWidth": 1200,
   "detectExistingBottomBand": true,
   "detectForeignFooter": true,
+  "detectBlankColorFooter": true,
+  "blankFooterContentStd": 12,
+  "blankFooterColorTol": 40,
   "whiteThreshold": 240,
   "whiteMinCoverageRatio": 0.96
 }
