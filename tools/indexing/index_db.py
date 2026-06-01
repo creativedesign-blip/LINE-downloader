@@ -50,6 +50,8 @@ CREATE INDEX IF NOT EXISTS idx_airline  ON itineraries(airline_csv);
 CREATE INDEX IF NOT EXISTS idx_region   ON itineraries(region_csv);
 CREATE INDEX IF NOT EXISTS idx_duration ON itineraries(duration_days);
 CREATE INDEX IF NOT EXISTS idx_indexed_at ON itineraries(indexed_at);
+CREATE INDEX IF NOT EXISTS idx_image_path ON itineraries(image_path);
+CREATE INDEX IF NOT EXISTS idx_branded_path ON itineraries(branded_path);
 
 CREATE TABLE IF NOT EXISTS itinerary_plans (
     plan_id        TEXT PRIMARY KEY,

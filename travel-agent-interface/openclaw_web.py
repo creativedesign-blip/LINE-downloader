@@ -86,6 +86,7 @@ _OCR_TAG_FALLBACK_TRANSLATION = str.maketrans({
 })
 _PUNCTUATION_ONLY_TAG = re.compile(r"^[\s.。…·・,，、;；:：!?！？~～\-—_]+$")
 
+from tools.common.db import open_db  # noqa: E402
 from tools.openclaw.operations import (  # noqa: E402
     DEFAULT_DB_PATH,
     check_duplicates,
@@ -512,7 +513,7 @@ def _db_image_path(media_id: str, *, branded: bool = True) -> str | None:
     except Exception:
         return None
 
-    with sqlite3.connect(str(DEFAULT_DB_PATH)) as conn:
+    with open_db(DEFAULT_DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         # sidecar_path is unique, but image_path / branded_path are not — a
         # re-branded source can leave older rows behind. Pick the newest one
@@ -631,7 +632,7 @@ def _lookup_upload_folder_display_name(folder_slug: str) -> str | None:
     if cached:
         return cached
     try:
-        with sqlite3.connect(str(CATALOG_DB_PATH)) as conn:
+        with open_db(CATALOG_DB_PATH) as conn:
             row = conn.execute(
                 "SELECT display_name FROM upload_folders WHERE folder_slug = ? LIMIT 1",
                 (folder_slug,),
@@ -924,7 +925,7 @@ def _query_item_detail(params: dict[str, list[str]]) -> dict[str, object] | None
         ):
             if not value:
                 continue
-            with sqlite3.connect(str(CATALOG_DB_PATH)) as conn:
+            with open_db(CATALOG_DB_PATH) as conn:
                 row = conn.execute(
                     """
                     SELECT image_id
@@ -1753,7 +1754,7 @@ def _manual_tags_for_images(image_ids: list[int]) -> dict[int, list[dict[str, ob
 
 
 def _upload_image_record(image_id: int) -> tuple[dict[str, object], dict[str, object]] | None:
-    with sqlite3.connect(str(CATALOG_DB_PATH)) as conn:
+    with open_db(CATALOG_DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
@@ -1898,7 +1899,7 @@ def _ensure_upload_search_index_current() -> None:
 
 
 def _image_id_for_manual_tag(tag_id: int) -> int | None:
-    with sqlite3.connect(str(CATALOG_DB_PATH)) as conn:
+    with open_db(CATALOG_DB_PATH) as conn:
         row = conn.execute("SELECT image_id FROM manual_tags WHERE id = ?", (tag_id,)).fetchone()
     return int(row[0]) if row else None
 
@@ -2096,7 +2097,7 @@ def _query_line_annotation_results(message: str, filters: dict[str, object], *, 
         params.append(price_max)
 
     try:
-        with sqlite3.connect(str(DEFAULT_DB_PATH)) as conn:
+        with open_db(DEFAULT_DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
                 f"""
@@ -2174,7 +2175,7 @@ def _archived_upload_folder_slugs(slugs: set[str]) -> set[str]:
         return set()
     placeholders = ",".join("?" for _ in slugs)
     try:
-        with sqlite3.connect(str(CATALOG_DB_PATH)) as conn:
+        with open_db(CATALOG_DB_PATH) as conn:
             rows = conn.execute(
                 f"""
                 SELECT folder_slug
@@ -2254,7 +2255,7 @@ def _image_sha_lookup(items: list[dict[str, object]]) -> dict[str, str]:
 
     if image_ids or paths:
         try:
-            with sqlite3.connect(str(CATALOG_DB_PATH)) as conn:
+            with open_db(CATALOG_DB_PATH) as conn:
                 rows = []
                 for batch in _batched_lookup_values(image_ids):
                     placeholders = ",".join("?" for _ in batch)
@@ -2294,7 +2295,7 @@ def _image_sha_lookup(items: list[dict[str, object]]) -> dict[str, str]:
 
     if paths:
         try:
-            with sqlite3.connect(str(DEFAULT_DB_PATH)) as conn:
+            with open_db(DEFAULT_DB_PATH) as conn:
                 rows = []
                 for batch in _batched_lookup_values(paths):
                     placeholders = ",".join("?" for _ in batch)
