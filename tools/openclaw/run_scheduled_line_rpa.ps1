@@ -260,7 +260,12 @@ for ($lockTry = 0; $lockTry -lt 2 -and -not $lockAcquired; $lockTry++) {
             try { $ownerPid = (Get-Content -LiteralPath $LockPath -Raw -ErrorAction Stop).Trim() } catch {}
             $ownerAlive = $false
             if ($ownerPid -match '^\d+$') {
-                $ownerAlive = [bool](Get-Process -Id ([int]$ownerPid) -ErrorAction SilentlyContinue)
+                $ownerProc = Get-Process -Id ([int]$ownerPid) -ErrorAction SilentlyContinue
+                # Only a live PowerShell process counts as the owner; a reused PID
+                # now belonging to some unrelated process must not look active.
+                if ($ownerProc -and $ownerProc.ProcessName -in @('powershell', 'pwsh')) {
+                    $ownerAlive = $true
+                }
             }
             $age = (Get-Date) - (Get-Item $LockPath).LastWriteTime
             if ($ownerAlive -and $age.TotalHours -lt 6) {
@@ -270,9 +275,12 @@ for ($lockTry = 0; $lockTry -lt 2 -and -not $lockAcquired; $lockTry++) {
             if ($ownerAlive) {
                 Write-Log "Reclaiming lock held >6h by PID $ownerPid (likely hung). Lock: $LockPath"
             } else {
-                Write-Log "Reclaiming lock from dead owner PID '$ownerPid'. Lock: $LockPath"
+                Write-Log "Reclaiming lock from dead/foreign owner PID '$ownerPid'. Lock: $LockPath"
             }
             Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue
+            if (Test-Path $LockPath) {
+                Write-Log "WARNING: failed to remove stale lock (still held?): $LockPath"
+            }
         }
     }
 }
