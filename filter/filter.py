@@ -444,7 +444,10 @@ def process_one(ocr, img_path: Path, *, routes: Routes, assume_travel: bool = Fa
     # runs inline (idempotent, so the later branding:all is a cheap no-op).
     if classification == 'travel':
         sc = sidecar_of(new_path)
-        from tools.branding.brand_stitcher import stitch_one_auto
+        from tools.branding.brand_stitcher import stitch_one_auto, set_footer_ocr_engine
+        # Reuse the RapidOCR engine we already loaded for classification so the
+        # branding footer detector doesn't load a second copy into this process.
+        set_footer_ocr_engine(ocr)
         stitch_one_auto(sc)
         if auto_index:
             from tools.indexing.reindex import reindex_one_auto

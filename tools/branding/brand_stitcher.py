@@ -270,6 +270,19 @@ def _get_footer_ocr_engine():
     return _FOOTER_OCR_ENGINE
 
 
+def set_footer_ocr_engine(engine) -> None:
+    """Share an already-loaded RapidOCR engine for foreign-footer detection.
+
+    filter.py loads RapidOCR for classification; passing that engine here lets
+    the inline branding path's footer detection reuse it instead of loading a
+    second copy of the model into the same process. No-op on None.
+    """
+    global _FOOTER_OCR_ENGINE, _FOOTER_OCR_UNAVAILABLE
+    if engine is not None:
+        _FOOTER_OCR_ENGINE = engine
+        _FOOTER_OCR_UNAVAILABLE = False
+
+
 def _has_foreign_footer_text(ocr_text: str) -> bool:
     """Quick pre-check: does the full OCR text contain >=2 footer-like patterns?"""
     text = str(ocr_text or "")
