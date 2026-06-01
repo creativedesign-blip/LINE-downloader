@@ -189,17 +189,35 @@ function Invoke-LoggedJobStep {
     return $exitCode
 }
 
-if (Test-Path $LockPath) {
-    $age = (Get-Date) - (Get-Item $LockPath).LastWriteTime
-    if ($age.TotalHours -lt 6) {
-        Write-Log "Another image processing run appears active. Lock: $LockPath"
-        exit 0
+# Acquire the lock atomically: CreateNew fails if the file already exists, so a
+# scheduled RPA run and an image-processing run can never both pass the gate (the
+# old Test-Path + Set-Content was a check-then-create race). On contention with
+# a fresh lock we bow out; a >6h lock is treated as stale and reclaimed once.
+$lockAcquired = $false
+for ($lockTry = 0; $lockTry -lt 2 -and -not $lockAcquired; $lockTry++) {
+    try {
+        $lockFs = [System.IO.File]::Open($LockPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        try {
+            $lockBytes = [System.Text.Encoding]::ASCII.GetBytes([string]$PID)
+            $lockFs.Write($lockBytes, 0, $lockBytes.Length)
+        } finally { $lockFs.Dispose() }
+        $lockAcquired = $true
+    } catch [System.IO.IOException] {
+        if (Test-Path $LockPath) {
+            $age = (Get-Date) - (Get-Item $LockPath).LastWriteTime
+            if ($age.TotalHours -lt 6) {
+                Write-Log "Another image processing run appears active. Lock: $LockPath"
+                exit 0
+            }
+            Write-Log "Removing stale lock older than 6 hours. Lock: $LockPath"
+            Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue
+        }
     }
-    Write-Log "Removing stale lock older than 6 hours. Lock: $LockPath"
-    Remove-Item -LiteralPath $LockPath -Force
 }
-
-Set-Content -LiteralPath $LockPath -Value $PID -Encoding ASCII
+if (-not $lockAcquired) {
+    Write-Log "Could not acquire image processing lock after stale cleanup. Lock: $LockPath"
+    exit 0
+}
 Initialize-JobStatus
 
 try {
