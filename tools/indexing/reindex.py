@@ -49,19 +49,43 @@ Result = Literal["indexed", "skipped", "error", "fresh"]
 DEFAULT_DB_PATH = TRAVEL_INDEX_DB_PATH
 SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 
-# Bump this when extractor logic / vocab semantically changes; existing rows
-# with a stale extractor_version will be re-extracted on the next reindex
-# even if their sidecar mtime is unchanged.
-# v2: removed ambiguous 松山 -> 日本 region hint that mis-tagged Taiwan
-#     travel DM with "松山出發" as containing 日本.
-# v3: schema v5 added image_sha256 column for query-time dedup of
-#     RPA-missed duplicates; existing rows must be re-upserted to fill it.
-# v4: extract_region now synthesises canonical regions from landmarks
-#     (e.g. 美麗海/玉泉洞/琉球 -> 沖繩) so OCR-mangled DM is still
-#     reachable by region search.
-# v6: plan price extraction no longer treats flight codes (e.g. VJ8513) as
-#     prices, which had created phantom plans/departures with junk price_from.
-EXTRACTOR_VERSION = "6"
+# extractor_version is derived from a content hash of the extraction logic +
+# vocab files, prefixed by a manual epoch. Any change to those files changes the
+# hash, so existing rows are re-extracted on the next reindex automatically — no
+# more "remember to bump a number by hand" landmine. Bump _EXTRACTOR_EPOCH only
+# to force a rebuild for reasons OUTSIDE these files (e.g. a row-shape change in
+# this module). Newlines are normalized so CRLF/LF checkouts hash identically.
+#
+# Historical manual versions: v2 region hint removal, v3 image_sha256 column,
+# v4 landmark->region synthesis, v6 flight-code price fix.
+_EXTRACTOR_EPOCH = "7"
+
+
+def _compute_extractor_version() -> str:
+    import hashlib
+
+    here = Path(__file__).resolve().parent
+    sources = [
+        here / "extractor.py",
+        here / "plan_extractor.py",
+        here.parent / "domains" / "travel" / "index_document.py",
+    ]
+    vocab_dir = here / "vocab"
+    if vocab_dir.is_dir():
+        sources += sorted(p for p in vocab_dir.iterdir() if p.is_file())
+
+    digest = hashlib.sha256()
+    for path in sources:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        digest.update(path.name.encode("utf-8") + b"\0")
+        digest.update(text.replace("\r\n", "\n").encode("utf-8") + b"\0")
+    return f"{_EXTRACTOR_EPOCH}-{digest.hexdigest()[:12]}"
+
+
+EXTRACTOR_VERSION = _compute_extractor_version()
 
 logger = logging.getLogger("indexing")
 
