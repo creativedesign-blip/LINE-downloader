@@ -59,7 +59,9 @@ SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 # v4: extract_region now synthesises canonical regions from landmarks
 #     (e.g. 美麗海/玉泉洞/琉球 -> 沖繩) so OCR-mangled DM is still
 #     reachable by region search.
-EXTRACTOR_VERSION = "5"
+# v6: plan price extraction no longer treats flight codes (e.g. VJ8513) as
+#     prices, which had created phantom plans/departures with junk price_from.
+EXTRACTOR_VERSION = "6"
 
 logger = logging.getLogger("indexing")
 

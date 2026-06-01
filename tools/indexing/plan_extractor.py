@@ -26,8 +26,12 @@ from tools.indexing.extractor import (
 
 DEFAULT_YEAR = 2026
 
+# A bare number glued to ASCII letters (with or without a space) is a flight
+# code like VJ8513 / VJ 8513, not a price — the two lookbehinds exclude those.
+# Genuine prices are prefixed by $/NT$, a Chinese marker, whitespace, or a CJK
+# char, none of which trip the [A-Za-z] lookbehinds.
 _PRICE_RE = re.compile(
-    r"(?:NT\$|\$)?\s*(\d{1,3}(?:[,，.]\d{3})|\d{4,6})\s*(?:元|含稅|含税|起)?"
+    r"(?:NT\$|\$)?\s*(?<![A-Za-z])(?<![A-Za-z]\s)(\d{1,3}(?:[,，.]\d{3})|\d{4,6})\s*(?:元|含稅|含税|起)?"
 )
 _MONTH_DAY_LIST_RE = re.compile(
     r"(?<!\d)(\d{1,2})\s*/\s*(\d{1,2})((?:\s*[.,、，]\s*\d{1,2})*)"

@@ -36,6 +36,26 @@ class TestPlanExtractor(unittest.TestCase):
         self.assertEqual(plans[0].departures[0].date_iso, "2026-06-20")
         self.assertEqual(plans[0].departures[0].weekday, 6)  # Saturday
 
+    def test_flight_codes_are_not_parsed_as_prices(self):
+        """Flight codes like VJ8513 must not become prices / phantom plans."""
+        text = (
+            "VJ8513\n桃園 峴港\nVJ8512\n峴港 桃園\n"
+            "中越雙城 5天\n20,900 起（含稅）"
+        )
+        plans = extract_plans(text)
+        prices = [p.price_from for p in plans]
+        self.assertNotIn(8513, prices)
+        self.assertNotIn(8512, prices)
+        self.assertIn(20900, prices)
+        # Only the real price yields a plan, not the two flight numbers.
+        self.assertEqual(len(plans), 1)
+
+    def test_space_separated_flight_code_not_a_price(self):
+        plans = extract_plans("BR 8513\n台北\n29,900起")
+        prices = [p.price_from for p in plans]
+        self.assertNotIn(8513, prices)
+        self.assertIn(29900, prices)
+
 
 if __name__ == "__main__":
     unittest.main()
