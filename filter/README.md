@@ -8,7 +8,7 @@ Current flow:
 RPA saves raw images to line-rpa/download/<group-name>/
 python tools/pipeline/process_downloads.py --target "<group-name>"
 filter/filter.py classifies images into travel/other/error under the same group folder
-travel images are branded and indexed into config/travel_index.db
+travel images are branded and indexed into data/travel_index.db
 ```
 
 `line-rpa/download/<group-name>/inbox/` is still supported for compatibility,

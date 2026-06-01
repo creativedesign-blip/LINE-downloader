@@ -44,7 +44,7 @@ from tools.indexing.plan_extractor import extract_plans
 Result = Literal["indexed", "skipped", "error", "fresh"]
 
 
-DEFAULT_DB_PATH = PROJECT_ROOT / "config" / "travel_index.db"
+DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "travel_index.db"
 SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 
 # Bump this when extractor logic / vocab semantically changes; existing rows

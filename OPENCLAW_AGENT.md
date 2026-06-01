@@ -42,11 +42,11 @@ The command reuses the current implementation:
 2. Travel images are moved to `line-rpa/download/<line-group-name>/travel/`.
 3. `tools/branding/brand_stitcher.py` stitches `config/brand.png`.
 4. Branded images are written to `line-rpa/download/<line-group-name>/branded/`.
-5. `tools/indexing/reindex.py` rebuilds `config/travel_index.db`.
+5. `tools/indexing/reindex.py` rebuilds `data/travel_index.db`.
 6. The pipeline syncs `line-rpa/download/image_index.json` from classified original images in `travel/`, `other/`, and `review/` for each target. `branded/` is excluded because it contains derived logo-stitched images.
 7. Pipeline JSON output includes `review_images`, grouped by target, listing files under `line-rpa/download/<target>/review/` that need user confirmation.
 
-OpenClaw should query `config/travel_index.db` as the source of truth and
+OpenClaw should query `data/travel_index.db` as the source of truth and
 send `branded` images first.
 
 ## Useful Commands
@@ -113,7 +113,7 @@ python tools/openclaw/operations.py latest --hours 24
 python tools/openclaw/operations.py latest --target "<line-group-name>" --limit 10
 ```
 
-This operation reads `config/travel_index.db` and returns JSON containing
+This operation reads `data/travel_index.db` and returns JSON containing
 `branded_path`, source group, parsed countries, regions, months, price,
 duration, features, `source_time`, and `indexed_at`.
 

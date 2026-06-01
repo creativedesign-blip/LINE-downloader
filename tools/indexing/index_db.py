@@ -157,6 +157,7 @@ class TravelIndex:
             from a long-running writer encountering a new schema.
         """
         self.db_path = str(db_path)
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         self._autocommit = True

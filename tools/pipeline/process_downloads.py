@@ -6,7 +6,7 @@ Pipeline contract:
     -> keep travel images in line-rpa/download/<target>/travel/
     -> keep non-travel images in line-rpa/download/<target>/other/
     -> stitch config/brand.png into line-rpa/download/<target>/branded/
-    -> rebuild config/travel_index.db
+    -> rebuild data/travel_index.db
 
   line-rpa/download/<target>/inbox/ is also supported for compatibility.
 
