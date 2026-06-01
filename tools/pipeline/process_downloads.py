@@ -258,6 +258,10 @@ def build_commands(args: argparse.Namespace, target_ids: list[str]) -> list[tupl
             cmd = [args.python, str(FILTER_SCRIPT)]
             if getattr(args, "assume_travel", False):
                 cmd.append("--assume-travel")
+            # When a batch index:all follows, skip filter's slow inline per-row
+            # reindex (it is redundant with the batched rebuild).
+            if not args.skip_index:
+                cmd.append("--no-auto-index")
             for target_id in pending_targets:
                 cmd.extend(["--target", target_id])
             commands.append(("ocr:all", cmd))

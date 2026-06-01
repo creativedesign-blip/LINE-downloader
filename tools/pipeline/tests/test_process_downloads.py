@@ -99,6 +99,26 @@ class TestPipelineTargetDiscovery(unittest.TestCase):
         self.assertEqual(len(ocr_commands), 1)
         self.assertNotIn("--assume-travel", ocr_commands[0])
 
+    def test_build_commands_skips_inline_index_when_indexing(self):
+        """When index:all runs, filter is told to skip its redundant inline index."""
+        (self.inbox_dir / "sample.jpg").write_bytes(b"not-a-real-image")
+        commands = build_commands(make_args(), [TEST_TARGET])
+        ocr_commands = [command for name, command in commands if name == "ocr:all"]
+        names = [name for name, _ in commands]
+        self.assertEqual(len(ocr_commands), 1)
+        self.assertIn("--no-auto-index", ocr_commands[0])
+        self.assertIn("index:all", names)
+
+    def test_build_commands_keeps_inline_index_when_skip_index(self):
+        """With --skip-index there is no batch reindex, so inline index must stay."""
+        (self.inbox_dir / "sample.jpg").write_bytes(b"not-a-real-image")
+        commands = build_commands(make_args(skip_index=True), [TEST_TARGET])
+        ocr_commands = [command for name, command in commands if name == "ocr:all"]
+        names = [name for name, _ in commands]
+        self.assertEqual(len(ocr_commands), 1)
+        self.assertNotIn("--no-auto-index", ocr_commands[0])
+        self.assertNotIn("index:all", names)
+
     def test_skip_ocr_still_brands_and_indexes(self):
         commands = build_commands(make_args(skip_ocr=True), [TEST_TARGET])
         names = [name for name, _ in commands]

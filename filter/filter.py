@@ -204,6 +204,10 @@ def parse_args(argv=None):
     parser.add_argument('--min-weak-hits', type=int, default=DEFAULT_MIN_WEAK_HITS)
     parser.add_argument('--watch', action='store_true',
                         help='Watch mode polls a single input dir; not allowed with --target.')
+    parser.add_argument('--no-auto-index', action='store_true',
+                        help='Skip the inline per-image reindex of travel images. Use when a '
+                             'batch reindex (index:all) runs afterwards, so the slow per-row '
+                             'autocommit index pass is not duplicated. Branding still runs inline.')
     return parser.parse_args(argv)
 
 
@@ -339,7 +343,8 @@ def update_sidecar_with_ocr(img_path: Path, *, classification: str, text: str = 
         print(f"  [警告] sidecar 寫入失敗 {img_path.name}: {save_err}")
 
 
-def process_one(ocr, img_path: Path, *, routes: Routes, assume_travel: bool = False):
+def process_one(ocr, img_path: Path, *, routes: Routes, assume_travel: bool = False,
+                auto_index: bool = True):
     # 先檢查檔案是否還在——另一個 classifier 行程（例如 UI server 內部的）可能已經搬走
     if not img_path.exists():
         return 'skip'
@@ -432,12 +437,18 @@ def process_one(ocr, img_path: Path, *, routes: Routes, assume_travel: bool = Fa
     # Only auto-brand + auto-index confirmed travel images. review/ images
     # wait for human confirmation; once moved into travel/, the next
     # pipeline run picks them up via reindex/branding.
+    #
+    # auto_index=False (set by process_downloads when a batch index:all follows)
+    # skips the inline reindex: that per-row autocommit pass is ~100x slower than
+    # the batched rebuild and is fully redundant with index:all. Branding still
+    # runs inline (idempotent, so the later branding:all is a cheap no-op).
     if classification == 'travel':
         sc = sidecar_of(new_path)
         from tools.branding.brand_stitcher import stitch_one_auto
-        from tools.indexing.reindex import reindex_one_auto
         stitch_one_auto(sc)
-        reindex_one_auto(sc)
+        if auto_index:
+            from tools.indexing.reindex import reindex_one_auto
+            reindex_one_auto(sc)
 
     return classification
 
@@ -559,7 +570,8 @@ def main(argv=None) -> int:
         print(f"[{in_dir}] 找到 {len(files)} 張，開始處理")
         for i, f in enumerate(files, 1):
             print(f"  [{i:3d}/{len(files)}]", end=' ')
-            stats[process_one(get_ocr(), f, routes=routes, assume_travel=bool(args.assume_travel))] += 1
+            stats[process_one(get_ocr(), f, routes=routes, assume_travel=bool(args.assume_travel),
+                              auto_index=not args.no_auto_index)] += 1
         print()
 
     if not any_files:
