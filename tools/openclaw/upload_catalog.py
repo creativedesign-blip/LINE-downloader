@@ -14,6 +14,7 @@ from openpyxl import load_workbook
 
 from tools.common.image_seen import file_sha256
 from tools.common.targets import DOWNLOADS_DIR, PROJECT_ROOT, relpath_from_root
+from tools.common.db import open_db
 
 
 CATALOG_DB_PATH = PROJECT_ROOT / "logs" / "openclaw" / "upload_catalog.db"
@@ -53,9 +54,7 @@ def upload_folder_slug(display_name: str, timestamp: str | None = None) -> str:
 
 
 def connect(db_path: Path = CATALOG_DB_PATH) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = open_db(db_path)
     init_db(conn)
     return conn
 

@@ -14,12 +14,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from tools.openclaw.operations import DEFAULT_DB_PATH, query_latest_results
 from tools.openclaw.upload_catalog import CATALOG_DB_PATH, query_image_search_index
+from tools.common.db import open_db
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    return conn
+    return open_db(db_path)
 
 
 def _count_rows(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> int:

@@ -31,7 +31,9 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from tools.branding.io_utils import image_of_sidecar
-from tools.common.targets import DOWNLOADS_DIR, PROJECT_ROOT, load_target_ids, relpath_from_root
+from tools.common.targets import (
+    DOWNLOADS_DIR, PROJECT_ROOT, TRAVEL_INDEX_DB_PATH, load_target_ids, relpath_from_root,
+)
 from tools.domains.travel.index_document import (
     build_index_document,
     int_or_none,
@@ -44,7 +46,7 @@ from tools.indexing.plan_extractor import extract_plans
 Result = Literal["indexed", "skipped", "error", "fresh"]
 
 
-DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "travel_index.db"
+DEFAULT_DB_PATH = TRAVEL_INDEX_DB_PATH
 SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 
 # Bump this when extractor logic / vocab semantically changes; existing rows

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.common.targets import PROJECT_ROOT, relpath_from_root
+from tools.common.db import open_db
 
 
 DB_PATH = PROJECT_ROOT / "logs" / "openclaw" / "learning_candidates.db"
@@ -34,9 +35,7 @@ def desktop_dir() -> Path:
 
 
 def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = open_db(db_path)
     init_db(conn)
     return conn
 

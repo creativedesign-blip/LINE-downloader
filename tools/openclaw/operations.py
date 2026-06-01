@@ -22,11 +22,14 @@ except ImportError:  # pragma: no cover - Python 3.8+ on this project.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from tools.common.targets import DOWNLOADS_DIR, PROJECT_ROOT, load_target_ids, relpath_from_root
+from tools.common.targets import (
+    DOWNLOADS_DIR, PROJECT_ROOT, TRAVEL_INDEX_DB_PATH, load_target_ids, relpath_from_root,
+)
 from tools.common.image_seen import first_seen_for_path, load_image_seen_log
+from tools.common.db import open_db
 
 
-DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "travel_index.db"
+DEFAULT_DB_PATH = TRAVEL_INDEX_DB_PATH
 DEFAULT_REVIEW_PATH = PROJECT_ROOT / "config" / "duplicate_reviews.json"
 SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 MIN_PLAN_PRICE = 10_000
@@ -210,10 +213,7 @@ def _with_first_seen(item: dict[str, Any], seen_log: dict[str, dict[str, Any]]) 
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    return conn
+    return open_db(db_path)
 
 
 def _has_itineraries_table(conn: sqlite3.Connection) -> bool:

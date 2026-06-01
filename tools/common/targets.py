@@ -12,6 +12,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 TARGETS_PATH = PROJECT_ROOT / "config" / "targets.json"
 DOWNLOADS_DIR = PROJECT_ROOT / "line-rpa" / "download"
+# Canonical location of the rebuildable travel query index. Single-sourced here
+# so tools/indexing (writer) and tools/openclaw (reader) cannot drift.
+TRAVEL_INDEX_DB_PATH = PROJECT_ROOT / "data" / "travel_index.db"
 
 
 def load_target_ids() -> list[str]:

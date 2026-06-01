@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
+from tools.common.db import open_db
+
 
 SCHEMA_VERSION = 5
 
@@ -47,6 +49,7 @@ CREATE INDEX IF NOT EXISTS idx_target   ON itineraries(target_id);
 CREATE INDEX IF NOT EXISTS idx_airline  ON itineraries(airline_csv);
 CREATE INDEX IF NOT EXISTS idx_region   ON itineraries(region_csv);
 CREATE INDEX IF NOT EXISTS idx_duration ON itineraries(duration_days);
+CREATE INDEX IF NOT EXISTS idx_indexed_at ON itineraries(indexed_at);
 
 CREATE TABLE IF NOT EXISTS itinerary_plans (
     plan_id        TEXT PRIMARY KEY,
@@ -157,9 +160,7 @@ class TravelIndex:
             from a long-running writer encountering a new schema.
         """
         self.db_path = str(db_path)
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.db_path)
-        self.conn.row_factory = sqlite3.Row
+        self.conn = open_db(self.db_path)
         self._autocommit = True
 
         current = self.conn.execute("PRAGMA user_version").fetchone()[0]
