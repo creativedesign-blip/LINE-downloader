@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import io
+import logging
 import math
 import mimetypes
 import os
@@ -16,12 +17,15 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import zipfile
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
+
+logger = logging.getLogger("openclaw_web")
 
 from PIL import Image, ImageOps
 
@@ -2722,6 +2726,13 @@ class Handler(SimpleHTTPRequestHandler):
         self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
 
     def _json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
+        # Central server-side trace for every 5xx. Called from within handler
+        # `except` blocks, so traceback.format_exc() captures the live exception.
+        if int(status) >= 500:
+            if sys.exc_info()[0] is not None:
+                logger.error("%s %s -> %s\n%s", self.command, self.path, payload, traceback.format_exc())
+            else:
+                logger.error("%s %s -> %s", self.command, self.path, payload)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -3410,16 +3421,33 @@ class Handler(SimpleHTTPRequestHandler):
             shutil.copyfileobj(fh, self.wfile, 64 * 1024)
 
 
+def _configure_logging() -> None:
+    """Send logs to console + logs/openclaw/web.log so server-side failures are
+    no longer invisible. Safe to call once at startup."""
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    try:
+        log_path = PROJECT_ROOT / "logs" / "openclaw" / "web.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_path, encoding="utf-8"))
+    except OSError:
+        pass
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        handlers=handlers,
+    )
+
+
 def main() -> int:
+    _configure_logging()
     port = _as_int(sys.argv[1] if len(sys.argv) > 1 else "4173", 4173) or 4173
     if AUTH_USERNAME == DEFAULT_AUTH_USERNAME and AUTH_PASSWORD == DEFAULT_AUTH_PASSWORD:
-        sys.stderr.write(
-            "[openclaw_web] WARNING: using built-in default credentials. "
-            "Set OPENCLAW_WEB_USER and OPENCLAW_WEB_PASSWORD before exposing this "
-            "service publicly (e.g. via Cloudflare Tunnel).\n"
+        logger.warning(
+            "using built-in default credentials; set OPENCLAW_WEB_USER and "
+            "OPENCLAW_WEB_PASSWORD before exposing this service publicly"
         )
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    print(f"Agent travel interface listening on http://0.0.0.0:{port}/", flush=True)
+    logger.info("Agent travel interface listening on http://0.0.0.0:%s/", port)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
