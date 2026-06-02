@@ -239,7 +239,7 @@ function Invoke-LoggedJobStep {
 # Acquire the lock atomically: CreateNew fails if the file already exists, so a
 # scheduled run and a manually-triggered run can never both pass the gate (the
 # old Test-Path + Set-Content was a check-then-create race). On contention with
-# a fresh lock we bow out; a >6h lock is treated as stale and reclaimed once.
+# a fresh lock we bow out; a lock with a dead/foreign owner is reclaimed once.
 $lockAcquired = $false
 for ($lockTry = 0; $lockTry -lt 2 -and -not $lockAcquired; $lockTry++) {
     try {
@@ -252,10 +252,11 @@ for ($lockTry = 0; $lockTry -lt 2 -and -not $lockAcquired; $lockTry++) {
     } catch [System.IO.IOException] {
         if (Test-Path $LockPath) {
             # The lock holds the owner PID. If that process is gone, reclaim the
-            # lock immediately instead of skipping scheduled runs for up to 6h
-            # (a crash/reboot used to leave a "fresh" lock that silently blocked
-            # every run and reported success). The 6h age cap is kept as a
-            # backstop against a hung owner or PID reuse.
+            # lock immediately instead of skipping scheduled runs (a crash/reboot
+            # used to leave a "fresh" lock that silently blocked every run and
+            # reported success). Liveness (a live powershell owner) is the primary
+            # signal; the 24h age cap is only a far backstop for a hung-but-alive
+            # owner, set well above any legitimate run so it never evicts one.
             $ownerPid = ""
             try { $ownerPid = (Get-Content -LiteralPath $LockPath -Raw -ErrorAction Stop).Trim() } catch {}
             $ownerAlive = $false
@@ -268,12 +269,12 @@ for ($lockTry = 0; $lockTry -lt 2 -and -not $lockAcquired; $lockTry++) {
                 }
             }
             $age = (Get-Date) - (Get-Item $LockPath).LastWriteTime
-            if ($ownerAlive -and $age.TotalHours -lt 6) {
+            if ($ownerAlive -and $age.TotalHours -lt 24) {
                 Write-Log "Another scheduled LINE RPA run appears active (PID $ownerPid). Lock: $LockPath"
                 exit 0
             }
             if ($ownerAlive) {
-                Write-Log "Reclaiming lock held >6h by PID $ownerPid (likely hung). Lock: $LockPath"
+                Write-Log "Reclaiming lock held >24h by PID $ownerPid (likely hung). Lock: $LockPath"
             } else {
                 Write-Log "Reclaiming lock from dead/foreign owner PID '$ownerPid'. Lock: $LockPath"
             }
