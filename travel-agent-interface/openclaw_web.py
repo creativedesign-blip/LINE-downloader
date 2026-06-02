@@ -453,6 +453,14 @@ def _watch_manual_process(process: subprocess.Popen) -> None:
             last_error=str(exc),
             returncode=None,
         )
+    finally:
+        # The RPA run has exited and released the shared lock; start any upload
+        # queued while it ran. Without this, RPA->upload never chains and the
+        # queued upload waits for a stray browser request to drain it.
+        try:
+            _start_pending_upload_pipeline_if_idle()
+        except Exception:
+            pass
 
 
 def _parse_search(text: str) -> dict[str, object]:

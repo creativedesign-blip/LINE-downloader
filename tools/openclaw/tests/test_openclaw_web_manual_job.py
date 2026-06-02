@@ -86,5 +86,34 @@ class ManualJobSnapshotTests(unittest.TestCase):
         self.assertTrue(snapshot["last_success"])
 
 
+class WatchManualProcessDrainTests(unittest.TestCase):
+    """A finished RPA run must drain the pending-upload queue (it released the
+    shared lock), otherwise an upload queued during the run is stranded."""
+
+    def test_finished_run_drains_pending_upload_queue(self):
+        class _FakeProc:
+            def wait(self):
+                return 0
+
+        with patch.object(openclaw_web, "_set_manual_job"), \
+                patch.object(openclaw_web, "_latest_job_snapshot", return_value=None), \
+                patch.object(openclaw_web, "_prewarm_latest_thumbnails"), \
+                patch.object(openclaw_web, "_start_pending_upload_pipeline_if_idle") as drain:
+            openclaw_web._watch_manual_process(_FakeProc())
+
+        drain.assert_called_once()
+
+    def test_drains_even_when_watch_body_raises(self):
+        class _FakeProc:
+            def wait(self):
+                raise RuntimeError("boom")
+
+        with patch.object(openclaw_web, "_set_manual_job"), \
+                patch.object(openclaw_web, "_start_pending_upload_pipeline_if_idle") as drain:
+            openclaw_web._watch_manual_process(_FakeProc())
+
+        drain.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
