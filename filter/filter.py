@@ -10,7 +10,6 @@ RapidOCR image classifier for travel-related LINE downloads.
   單次：python filter.py
   監看：python filter.py --watch
 """
-import os
 import sys
 try:
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -61,9 +60,6 @@ def move_with_sidecar(src: Path, dest: Path) -> None:
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
-
-os.environ.setdefault('FLAGS_use_mkldnn', 'false')          # 關掉 oneDNN 避開 PIR bug
-os.environ.setdefault('PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK', 'True')
 
 try:
     import numpy as np
