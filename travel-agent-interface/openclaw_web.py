@@ -68,6 +68,7 @@ DEFAULT_AUTH_USERNAME = "admin_dadova"
 DEFAULT_AUTH_PASSWORD = "StarBit123"
 AUTH_USERNAME = os.environ.get("OPENCLAW_WEB_USER", DEFAULT_AUTH_USERNAME)
 AUTH_PASSWORD = os.environ.get("OPENCLAW_WEB_PASSWORD", DEFAULT_AUTH_PASSWORD)
+USING_DEFAULT_AUTH_CREDENTIALS = AUTH_USERNAME == DEFAULT_AUTH_USERNAME and AUTH_PASSWORD == DEFAULT_AUTH_PASSWORD
 AUTH_COOKIE_NAME = "openclaw_session"
 AUTH_SESSION_TTL_SECONDS = 12 * 60 * 60
 AUTH_SESSION_TTL_REMEMBER_SECONDS = 30 * 24 * 60 * 60
@@ -2619,6 +2620,18 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _handle_auth_login(self) -> None:
         try:
+            if USING_DEFAULT_AUTH_CREDENTIALS and self._is_secure_request():
+                self._json_auth_response(
+                    {
+                        "ok": False,
+                        "error": (
+                            "default credentials are disabled for proxied HTTPS access; "
+                            "set OPENCLAW_WEB_USER and OPENCLAW_WEB_PASSWORD"
+                        ),
+                    },
+                    HTTPStatus.FORBIDDEN,
+                )
+                return
             data = self._read_json_body()
             username = str(data.get("username") or "").strip()
             password = str(data.get("password") or "")
@@ -3480,7 +3493,7 @@ def _configure_logging() -> None:
 def main() -> int:
     _configure_logging()
     port = _as_int(sys.argv[1] if len(sys.argv) > 1 else "4173", 4173) or 4173
-    if AUTH_USERNAME == DEFAULT_AUTH_USERNAME and AUTH_PASSWORD == DEFAULT_AUTH_PASSWORD:
+    if USING_DEFAULT_AUTH_CREDENTIALS:
         logger.warning(
             "using built-in default credentials; set OPENCLAW_WEB_USER and "
             "OPENCLAW_WEB_PASSWORD before exposing this service publicly"
