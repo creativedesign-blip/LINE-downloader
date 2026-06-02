@@ -16,13 +16,9 @@ spec.loader.exec_module(openclaw_web)
 
 
 class FakeAuthHandler:
-    def __init__(self, *, secure: bool, body: dict):
-        self.secure = secure
+    def __init__(self, body: dict):
         self.body = body
         self.response = None
-
-    def _is_secure_request(self):
-        return self.secure
 
     def _read_json_body(self):
         return self.body
@@ -34,37 +30,32 @@ class FakeAuthHandler:
         return f"openclaw_session={token}; Max-Age={max_age}"
 
 
-class AuthLoginDefaultsTests(unittest.TestCase):
-    def test_default_credentials_are_blocked_for_secure_proxy_login(self):
-        handler = FakeAuthHandler(
-            secure=True,
-            body={
-                "username": openclaw_web.DEFAULT_AUTH_USERNAME,
-                "password": openclaw_web.DEFAULT_AUTH_PASSWORD,
-            },
-        )
+class AuthEnvironmentTests(unittest.TestCase):
+    def test_login_is_rejected_when_auth_env_is_missing(self):
+        handler = FakeAuthHandler({"username": "admin_dadova", "password": "StarBit123"})
 
-        with patch.object(openclaw_web, "USING_DEFAULT_AUTH_CREDENTIALS", True):
+        with patch.object(openclaw_web, "AUTH_CONFIGURED", False):
             openclaw_web.Handler._handle_auth_login(handler)
 
-        self.assertEqual(handler.response["status"], HTTPStatus.FORBIDDEN)
+        self.assertEqual(handler.response["status"], HTTPStatus.SERVICE_UNAVAILABLE)
         self.assertFalse(handler.response["payload"]["ok"])
 
-    def test_default_credentials_still_work_for_local_non_proxy_login(self):
-        handler = FakeAuthHandler(
-            secure=False,
-            body={
-                "username": openclaw_web.DEFAULT_AUTH_USERNAME,
-                "password": openclaw_web.DEFAULT_AUTH_PASSWORD,
-            },
-        )
+    def test_login_uses_credentials_from_environment(self):
+        handler = FakeAuthHandler({"username": "admin_dadova", "password": "StarBit123"})
 
-        with patch.object(openclaw_web, "USING_DEFAULT_AUTH_CREDENTIALS", True):
+        with patch.object(openclaw_web, "AUTH_CONFIGURED", True), \
+             patch.object(openclaw_web, "AUTH_USERNAME", "admin_dadova"), \
+             patch.object(openclaw_web, "AUTH_PASSWORD", "StarBit123"):
             openclaw_web.Handler._handle_auth_login(handler)
 
         self.assertEqual(handler.response["status"], HTTPStatus.OK)
         self.assertTrue(handler.response["payload"]["ok"])
-        self.assertEqual(handler.response["payload"]["username"], openclaw_web.DEFAULT_AUTH_USERNAME)
+        self.assertEqual(handler.response["payload"]["username"], "admin_dadova")
+
+    def test_main_fails_when_auth_env_is_missing(self):
+        with patch.object(openclaw_web, "AUTH_CONFIGURED", False), \
+             patch.object(openclaw_web, "_configure_logging"):
+            self.assertEqual(openclaw_web.main(), 1)
 
 
 if __name__ == "__main__":

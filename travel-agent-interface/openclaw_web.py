@@ -64,11 +64,9 @@ MANUAL_JOB: dict[str, object] = {
     "last_error": None,
     "returncode": None,
 }
-DEFAULT_AUTH_USERNAME = "admin_dadova"
-DEFAULT_AUTH_PASSWORD = "StarBit123"
-AUTH_USERNAME = os.environ.get("OPENCLAW_WEB_USER", DEFAULT_AUTH_USERNAME)
-AUTH_PASSWORD = os.environ.get("OPENCLAW_WEB_PASSWORD", DEFAULT_AUTH_PASSWORD)
-USING_DEFAULT_AUTH_CREDENTIALS = AUTH_USERNAME == DEFAULT_AUTH_USERNAME and AUTH_PASSWORD == DEFAULT_AUTH_PASSWORD
+AUTH_USERNAME = os.environ.get("OPENCLAW_WEB_USER", "").strip()
+AUTH_PASSWORD = os.environ.get("OPENCLAW_WEB_PASSWORD", "")
+AUTH_CONFIGURED = bool(AUTH_USERNAME and AUTH_PASSWORD)
 AUTH_COOKIE_NAME = "openclaw_session"
 AUTH_SESSION_TTL_SECONDS = 12 * 60 * 60
 AUTH_SESSION_TTL_REMEMBER_SECONDS = 30 * 24 * 60 * 60
@@ -2620,16 +2618,13 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _handle_auth_login(self) -> None:
         try:
-            if USING_DEFAULT_AUTH_CREDENTIALS and self._is_secure_request():
+            if not AUTH_CONFIGURED:
                 self._json_auth_response(
                     {
                         "ok": False,
-                        "error": (
-                            "default credentials are disabled for proxied HTTPS access; "
-                            "set OPENCLAW_WEB_USER and OPENCLAW_WEB_PASSWORD"
-                        ),
+                        "error": "authentication is not configured; set OPENCLAW_WEB_USER and OPENCLAW_WEB_PASSWORD",
                     },
-                    HTTPStatus.FORBIDDEN,
+                    HTTPStatus.SERVICE_UNAVAILABLE,
                 )
                 return
             data = self._read_json_body()
@@ -3493,11 +3488,9 @@ def _configure_logging() -> None:
 def main() -> int:
     _configure_logging()
     port = _as_int(sys.argv[1] if len(sys.argv) > 1 else "4173", 4173) or 4173
-    if USING_DEFAULT_AUTH_CREDENTIALS:
-        logger.warning(
-            "using built-in default credentials; set OPENCLAW_WEB_USER and "
-            "OPENCLAW_WEB_PASSWORD before exposing this service publicly"
-        )
+    if not AUTH_CONFIGURED:
+        logger.error("OPENCLAW_WEB_USER and OPENCLAW_WEB_PASSWORD must be set before starting this service")
+        return 1
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     logger.info("Agent travel interface listening on http://0.0.0.0:%s/", port)
     try:

@@ -6,34 +6,15 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Cloudflared = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
 
-function Test-AuthEnvValue {
-  param(
-    [string]$Name,
-    [string]$DefaultValue = ""
-  )
-  $value = [Environment]::GetEnvironmentVariable($Name, "Process")
-  if (-not $value) {
-    $value = [Environment]::GetEnvironmentVariable($Name, "User")
-  }
-  if (-not $value) {
-    $value = [Environment]::GetEnvironmentVariable($Name, "Machine")
-  }
-  return ($value -and $value -ne $DefaultValue)
+if (-not [Environment]::GetEnvironmentVariable("OPENCLAW_WEB_USER", "Process") -and
+    -not [Environment]::GetEnvironmentVariable("OPENCLAW_WEB_USER", "User") -and
+    -not [Environment]::GetEnvironmentVariable("OPENCLAW_WEB_USER", "Machine")) {
+  throw "OPENCLAW_WEB_USER is not set. Set it before starting internet mode."
 }
-
-if (-not (Test-AuthEnvValue "OPENCLAW_WEB_USER" "admin_dadova") -or
-    -not (Test-AuthEnvValue "OPENCLAW_WEB_PASSWORD" "StarBit123") -or
-    -not (Test-AuthEnvValue "OPENCLAW_WEB_AUTH_SECRET")) {
-  throw @"
-Internet mode requires custom authentication settings before starting Cloudflare Tunnel.
-
-Set these environment variables, then reopen PowerShell:
-  OPENCLAW_WEB_USER
-  OPENCLAW_WEB_PASSWORD
-  OPENCLAW_WEB_AUTH_SECRET
-
-Do not use the built-in default username or password for internet access.
-"@
+if (-not [Environment]::GetEnvironmentVariable("OPENCLAW_WEB_PASSWORD", "Process") -and
+    -not [Environment]::GetEnvironmentVariable("OPENCLAW_WEB_PASSWORD", "User") -and
+    -not [Environment]::GetEnvironmentVariable("OPENCLAW_WEB_PASSWORD", "Machine")) {
+  throw "OPENCLAW_WEB_PASSWORD is not set. Set it before starting internet mode."
 }
 
 if (-not (Test-Path $Cloudflared)) {
