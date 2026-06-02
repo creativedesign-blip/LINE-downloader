@@ -53,7 +53,7 @@ export const uploadApi = {
   async uploadToNewFolder({ displayName, note = "", files }) {
     const folderPayload = await this.createFolder({ displayName, note });
     const uploadPayload = await this.uploadImages(folderPayload.folder.id, files);
-    return { ...uploadPayload, folder: folderPayload.folder };
+    return uploadPayload;
   },
 
   async uploadToExistingFolder({ folderId, files }) {
