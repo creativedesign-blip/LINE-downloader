@@ -725,6 +725,9 @@ function UploadFolderDetail({
   const folderCanRetry = canRetryFolder(folder);
   const folderCanMarkFailed = canMarkFolderFailed(folder);
   const imageCanArchive = canArchiveImage(folder);
+  const folderFailed = folder.status === "failed";
+  const recoveryTitle = folderFailed ? "流程已標記失敗" : "流程可能已中斷";
+  const recoveryAction = folderFailed ? "可重新處理、封存資料夾，或移除失敗圖片。" : "可重新處理、標記失敗，或移除卡住圖片。";
 
   useEffect(() => {
     setSelectedIds([]);
@@ -827,6 +830,7 @@ function UploadFolderDetail({
         onChange={(event) => setQuickTag((current) => ({ ...(current || {}), value: event.target.value }))}
         onKeyDown={(event) => {
           if (event.key === "Enter") {
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return; // IME 組字中
             event.preventDefault();
             saveQuickTag(image);
           }
@@ -902,7 +906,7 @@ function UploadFolderDetail({
           {recovery.stale && (
             <div className="mt-2 flex max-w-2xl items-start gap-2 rounded-md border px-3 py-2 text-xs" style={{ borderColor: "#FCD34D", backgroundColor: "#FFFBEB", color: "#92400E" }}>
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
-              <span>流程可能已中斷：{recovery.reason || "沒有偵測到有效處理程序"}。可重新處理、標記失敗，或移除卡住圖片。</span>
+              <span>{recoveryTitle}：{recovery.reason || "沒有偵測到有效處理程序"}。{recoveryAction}</span>
             </div>
           )}
         </div>

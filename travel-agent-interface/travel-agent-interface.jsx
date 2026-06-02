@@ -96,6 +96,102 @@ function DmImage({ dm, src, alt, className = "", loading = "lazy" }) {
   );
 }
 
+function basenameFromPath(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const clean = text.split(/[?#]/)[0].replace(/\\/g, "/");
+  const filename = clean.split("/").filter(Boolean).pop() || "";
+  return filename.endsWith(".json") ? filename.slice(0, -5) : filename;
+}
+
+function filenameFromItemDetail(detail, raw) {
+  for (const value of [
+    detail?.original_filename,
+    raw?.original_filename,
+    detail?.display_name,
+    raw?.display_name,
+  ]) {
+    const text = String(value || "").trim();
+    if (text) return text;
+  }
+  for (const value of [
+    detail?.image_path,
+    raw?.image_path,
+    detail?.branded_path,
+    raw?.branded_path,
+    detail?.sidecar_path,
+    raw?.sidecar_path,
+  ]) {
+    const filename = basenameFromPath(value);
+    if (filename) return filename;
+  }
+  return "";
+}
+
+const TRADITIONAL_DISPLAY_MAP = {
+  税: "稅",
+  国: "國",
+  团: "團",
+  东: "東",
+  万: "萬",
+  龙: "龍",
+  广: "廣",
+  门: "門",
+  乐: "樂",
+  发: "發",
+  见: "見",
+  网: "網",
+  园: "園",
+  关: "關",
+  风: "風",
+  亚: "亞",
+  岛: "島",
+  冲: "沖",
+  馆: "館",
+  宫: "宮",
+  丽: "麗",
+  马: "馬",
+  兰: "蘭",
+  苏: "蘇",
+  汉: "漢",
+  阳: "陽",
+  郑: "鄭",
+  厦: "廈",
+  县: "縣",
+  乡: "鄉",
+  叶: "葉",
+  义: "義",
+  术: "術",
+  观: "觀",
+  车: "車",
+  书: "書",
+  双: "雙",
+  线: "線",
+  纪: "紀",
+  级: "級",
+  历: "歷",
+  划: "劃",
+  华: "華",
+  头: "頭",
+  贝: "貝",
+  节: "節",
+  号: "號",
+  码: "碼",
+  图: "圖",
+  产: "產",
+  优: "優",
+  势: "勢",
+  际: "際",
+  鸭: "鴨",
+  云: "雲",
+};
+
+function toTraditionalDisplay(value) {
+  return String(value ?? "").replace(/[税国团东万龙广门乐发见网园关风亚岛冲馆宫丽马兰苏汉阳郑厦县乡叶义术观车书双线纪级历划华头贝节号码图产优势际鸭云]/g, (char) => (
+    TRADITIONAL_DISPLAY_MAP[char] || char
+  ));
+}
+
 function getLineImagePipelineStatus(status) {
   if (status?.pipeline) {
     return {
@@ -152,6 +248,153 @@ function getLineImagePipelineStatus(status) {
     label: isComplete ? "LINE 圖片處理完成" : "LINE 圖片處理中",
     color: isComplete ? "#1D9E75" : "#D97706",
   };
+}
+
+function jobStepName(step) {
+  if (step === "rpa") return "LINE 抓圖";
+  if (step === "upload") return "圖片匯入";
+  if (step === "ocr") return "OCR 辨識";
+  if (step === "compose") return "組圖";
+  if (step === "index") return "索引更新";
+  return "流程";
+}
+
+function activeJobStep(job) {
+  const entries = Object.entries(job?.steps || {});
+  const running = entries.find(([, step]) => step?.status === "running");
+  if (running) return running[0];
+  const failed = entries.find(([, step]) => step?.status === "failed");
+  return failed?.[0] || "";
+}
+
+function isLineRpaFailure(job) {
+  const step = activeJobStep(job);
+  const text = [
+    job?.last_error,
+    job?.error,
+    job?.steps?.rpa?.error,
+  ].filter(Boolean).join(" ").toLowerCase();
+  return step === "rpa" || text.includes("line") || text.includes("rpa") || text.includes("window not found");
+}
+
+function jobTimestamp(job) {
+  const value = job?.finished_at || job?.last_finished_at || job?.started_at || job?.last_started_at || "";
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : 0;
+}
+
+function isFailedJob(job) {
+  return Boolean(job && (job.status === "failed" || job.last_success === false));
+}
+
+function getHeaderAgentStatus(overview, lineAutoEnabled) {
+  if (overview?.loading || typeof lineAutoEnabled !== "boolean") {
+    return {
+      label: "同步狀態中",
+      color: "#D97706",
+      detail: "正在同步系統狀態。",
+    };
+  }
+
+  if (overview?.error) {
+    return {
+      label: "狀態異常",
+      color: "#B91C1C",
+      detail: "系統狀態異常，請重新整理頁面；若仍持續發生，請聯繫系統原廠排查處理。",
+    };
+  }
+
+  const manualJob = overview?.status?.manual_job || null;
+  const latestJob = overview?.status?.latest_job || null;
+  const runningJob = [manualJob, latestJob].filter(Boolean).find(isJobRunning);
+  if (runningJob) {
+    const step = activeJobStep(runningJob);
+    const isRpa = step === "rpa";
+    return {
+      label: isRpa ? "LINE 自動抓圖中" : "LINE 圖片處理中",
+      color: "#D97706",
+      detail: `正在執行${jobStepName(step)}，請稍候。`,
+    };
+  }
+
+  const staleJob = [latestJob, manualJob].filter(Boolean).find((job) => job?.status === "stale");
+  if (staleJob) {
+    return {
+      label: "流程狀態中斷",
+      color: "#B91C1C",
+      detail: "流程狀態中斷，請聯繫系統原廠排查處理。",
+    };
+  }
+
+  const manualFailed = isFailedJob(manualJob);
+  const latestFailed = isFailedJob(latestJob);
+  const scheduledFailed = latestFailed && latestJob?.trigger_source === "scheduled";
+  const manualFailureIsCurrent = manualFailed && jobTimestamp(manualJob) > jobTimestamp(latestJob);
+  if (lineAutoEnabled === false && scheduledFailed && !manualFailureIsCurrent) {
+    return {
+      label: "LINE 自動抓圖停用",
+      color: "#78716C",
+      detail: "LINE 自動抓圖目前停用；過去的排程失敗不影響手動上傳與查詢。",
+    };
+  }
+
+  if (lineAutoEnabled === false && !manualFailureIsCurrent && !latestFailed) {
+    return {
+      label: "LINE 自動抓圖停用",
+      color: "#78716C",
+      detail: "LINE 自動抓圖目前停用；手動上傳與查詢不受影響。",
+    };
+  }
+
+  const failedJob = [manualJob, latestJob].filter(Boolean).find(isFailedJob);
+  if (failedJob) {
+    return {
+      label: "最近一次流程失敗",
+      color: "#B91C1C",
+      detail: isLineRpaFailure(failedJob)
+        ? "最近一次 LINE 抓圖失敗，請確認 LINE 已登入且視窗開啟後重新處理；若仍失敗，請聯繫系統原廠。"
+        : "最近一次流程失敗，請聯繫系統原廠排查處理。",
+    };
+  }
+
+  if (lineAutoEnabled === false) {
+    return {
+      label: "LINE 自動抓圖停用",
+      color: "#78716C",
+      detail: "LINE 自動抓圖目前停用；手動上傳與查詢不受影響。",
+    };
+  }
+
+  return {
+    label: "待命中",
+    color: "#1D9E75",
+    detail: "系統目前待命中，沒有正在執行的抓圖、OCR 或組圖流程。",
+  };
+}
+
+function isLocalToday(value) {
+  if (!value) return false;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+  const now = new Date();
+  return date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate();
+}
+
+function latestCompletedUploadFolder(folders) {
+  const completed = (Array.isArray(folders) ? folders : [])
+    .filter((folder) => {
+      const source = String(folder?.source || "");
+      const status = String(folder?.status || "");
+      const step = String(folder?.current_step || "");
+      const updatedAt = folder?.updated_at || folder?.created_at;
+      return source === "upload"
+        && (status === "success" || step === "done")
+        && isLocalToday(updatedAt);
+    })
+    .sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")));
+  return completed[0] || null;
 }
 
 function formatDateTime(value) {
@@ -512,7 +755,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
   const [uploadDetail, setUploadDetail] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
-  const [lineAutoEnabled, setLineAutoEnabled] = useState(true);
+  const [lineAutoEnabled, setLineAutoEnabled] = useState(null);
   const [activeWorkspace, setActiveWorkspace] = useState("chat");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const [toast, setToast] = useState(null);
@@ -565,34 +808,95 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
     return Number.isFinite(n) && n >= 5000 ? `NT$ ${n.toLocaleString()}` : "價格未標示";
   };
 
+  const validPriceNumbers = (values) => (
+    Array.isArray(values)
+      ? [...new Set(values.map(Number).filter((n) => Number.isFinite(n) && n >= 5000))]
+      : []
+  );
+
   const formatPriceSummary = (item) => {
-    const planPrices = Array.isArray(item.plan_prices)
-      ? [...new Set(item.plan_prices.map(Number).filter((n) => Number.isFinite(n) && n >= 5000))]
+    const candidates = validPriceNumbers([item.price_from, ...(Array.isArray(item.plan_prices) ? item.plan_prices : [])]);
+    if (!candidates.length) return "價格未標示";
+    return `${formatPrice(Math.min(...candidates))} 起`;
+  };
+
+  const displayMonths = (item) => {
+    const months = Array.isArray(item.months)
+      ? [...new Set(item.months.map(Number).filter((month) => Number.isInteger(month) && month >= 1 && month <= 12))]
       : [];
-    if (planPrices.length > 1) {
-      return `NT$ ${planPrices.map((n) => n.toLocaleString()).join(" / ")}`;
-    }
-    return formatPrice(planPrices[0] || item.price_from);
+    if (months.length <= 1 || !item.indexed_at) return months;
+    const indexedMonth = new Date(item.indexed_at).getMonth() + 1;
+    if (!Number.isInteger(indexedMonth)) return months;
+    const filtered = months.filter((month) => month !== indexedMonth);
+    return filtered.length >= 2 ? filtered : months;
   };
 
   const formatPeriod = (item) => {
-    const months = Array.isArray(item.months) && item.months.length
-      ? `${item.months.join(", ")}月`
+    const months = displayMonths(item);
+    const monthText = months.length
+      ? `${months.join(", ")}月`
       : "月份未標示";
     const indexed = item.indexed_at
       ? `索引 ${new Date(item.indexed_at).toLocaleDateString("zh-TW")}`
       : "";
-    return [months, indexed].filter(Boolean).join(" · ");
+    return [monthText, indexed].filter(Boolean).join(" · ");
+  };
+
+  const formatDepartureSummary = (item) => {
+    const months = displayMonths(item);
+    return months.length ? `出發：${months.join("、")}月` : "出發月份未標示";
+  };
+
+  const formatIndexSummary = (item) => (
+    item.indexed_at ? `索引：${new Date(item.indexed_at).toLocaleDateString("zh-TW")}` : "索引時間未標示"
+  );
+
+  const compactSourceLine = (item) => {
+    const label = toTraditionalDisplay(item.source_label || item.group_name || item.target_id || "來源未標示");
+    return `${label}｜${metadataSourceKindLabel(item.source_kind || "unknown")}`;
+  };
+
+  const titleTokensFromPlan = (plan) => (
+    toTraditionalDisplay(plan?.title || "")
+      .split("/")
+      .map((token) => token.trim())
+      .filter((token) => {
+        if (!token) return false;
+        if (/air|airlines/i.test(token)) return false;
+        if (/航空|航空公司|國航|海航|華航|長榮|星宇/.test(token)) return false;
+        if (/^\d+\s*(日|天)$/.test(token)) return false;
+        if (/購物|自費|含稅|小費|優惠|特惠/.test(token)) return false;
+        return true;
+      })
+  );
+
+  const summarizeItemTitle = (item, place) => {
+    const plans = Array.isArray(item.plans) ? item.plans : [];
+    let fallback = "";
+    for (const plan of plans) {
+      const tokens = titleTokensFromPlan(plan);
+      if (tokens.length >= 2) return tokens.slice(0, 2).join("・");
+      if (!fallback && tokens.length === 1) fallback = tokens[0];
+    }
+    return fallback || place;
+  };
+
+  const compactTags = (countries, regions, features, days) => {
+    const values = [...countries, ...regions, ...(days ? [`${days}天`] : []), ...features]
+      .map((tag) => String(tag || "").trim())
+      .filter(Boolean);
+    return [...new Set(values)].slice(0, 5);
   };
 
   const normalizeAgentItem = (item, index = 0) => {
-    const countries = Array.isArray(item.countries) ? item.countries : [];
-    const regions = Array.isArray(item.regions) ? item.regions : [];
-    const features = Array.isArray(item.features) ? item.features : [];
+    const countries = Array.isArray(item.countries) ? item.countries.map(toTraditionalDisplay) : [];
+    const regions = Array.isArray(item.regions) ? item.regions.map(toTraditionalDisplay) : [];
+    const features = Array.isArray(item.features) ? item.features.map(toTraditionalDisplay) : [];
     const place = [...countries, ...regions].filter(Boolean).join(" / ") || "未分類";
     const days = Number(item.duration_days) || 0;
     const priceSummary = formatPriceSummary(item);
-    const titleParts = [place, days ? `${days}天` : "", priceSummary];
+    const title = summarizeItemTitle(item, place);
+    const cardTags = compactTags(countries, regions, features, days);
 
     return {
       id: item.sidecar_path || item.branded_path || item.image_path || `openclaw-${index}`,
@@ -601,19 +905,24 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       previewImage: item.preview_url || item.image_url || item.branded_path || item.image_path || "",
       thumbnail: item.thumbnail_url || item.image_url || item.branded_path || item.image_path || "",
       mediaId: item.media_id || "",
-      title: titleParts.filter(Boolean).join(" · "),
+      title,
       region: place,
       period: formatPeriod(item),
+      departure: formatDepartureSummary(item),
+      indexSummary: formatIndexSummary(item),
       days,
       price: priceSummary,
       tag: features[0] || "Agent",
+      cardTags,
+      tagSummary: cardTags.length ? `標籤：${cardTags.join("、")}` : "標籤未標示",
+      sourceLine: compactSourceLine(item),
       keywords: [...countries, ...regions, ...features],
       highlights: [
         countries.length ? `國家：${countries.join("、")}` : "國家未標示",
         regions.length ? `地區：${regions.join("、")}` : "地區未標示",
-        item.group_name || item.target_id ? `來源：${item.group_name || item.target_id}` : "來源未標示",
+        item.group_name || item.target_id ? `來源：${toTraditionalDisplay(item.group_name || item.target_id)}` : "來源未標示",
       ],
-      source: item.source_label || item.group_name || item.target_id || "Agent",
+      source: toTraditionalDisplay(item.source_label || item.group_name || item.target_id || "Agent"),
       sourceKind: item.source_kind || "unknown",
       raw: item,
     };
@@ -678,7 +987,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       setOverview((current) => ({ ...current, loading: true, error: null }));
       const [statusRes, latestRes, duplicatesRes] = await Promise.all([
         fetch("/api/openclaw/status"),
-        fetch("/api/openclaw/latest?limit=8"),
+        fetch("/api/openclaw/latest?today=1&composed_only=1&limit=8"),
         fetch("/api/openclaw/duplicates?limit=20"),
       ]);
       const [status, latest, duplicates] = await Promise.all([
@@ -751,6 +1060,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
   };
 
   const handleToggleLineAuto = async () => {
+    if (typeof lineAutoEnabled !== "boolean") return;
     const next = !lineAutoEnabled;
     const payload = await openclawApi.updateSettings({ line_auto_enabled: next });
     setLineAutoEnabled(Boolean(payload.settings.line_auto_enabled));
@@ -1197,11 +1507,20 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
   const latestCount = Number(overview.latest?.count || 0);
   const duplicateCount = Number(overview.duplicates?.count || 0);
   const totalIndexed = Number(overview.status?.total_indexed || 0);
-  const hasUnreadNotifications = !notifRead && !overview.loading && (latestCount > 0 || duplicateCount > 0);
-  const linePipeline = getLineImagePipelineStatus(overview.status);
-  const agentStatusLabel = overview.loading ? "LINE 圖片處理中" : linePipeline.label;
-  const agentStatusColor = overview.error ? "#B91C1C" : overview.loading ? "#D97706" : linePipeline.color;
+  const uploadCompletedNotice = latestCompletedUploadFolder(uploadFolders);
+  const hasUnreadNotifications = !notifRead && !overview.loading && (
+    latestCount > 0 || duplicateCount > 0 || Boolean(uploadCompletedNotice)
+  );
+  const headerAgentStatus = getHeaderAgentStatus(overview, lineAutoEnabled);
   const currentUser = sessionUser || "admin_dadova";
+
+  const handleSelectUploadCompleted = (folder) => {
+    if (!folder?.id) return;
+    setNotifOpen(false);
+    setNotifRead(true);
+    setActiveWorkspace("uploads");
+    refreshUploadDetail(folder.id).catch((error) => setUploadError(error.message));
+  };
 
   return (
     <div
@@ -1264,12 +1583,16 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
 
             {/* Right side: status + notifications + user */}
             <div className="flex items-center gap-3 md:gap-4 flex-shrink-0">
-              <div className="hidden md:flex items-center gap-1.5 text-xs text-stone-500">
+              <div
+                className="hidden md:flex items-center gap-1.5 text-xs text-stone-500"
+                title={headerAgentStatus.detail}
+                aria-label={headerAgentStatus.detail}
+              >
                 <span
                   className="w-1.5 h-1.5 rounded-full animate-pulse-soft"
-                  style={{ backgroundColor: agentStatusColor }}
+                  style={{ backgroundColor: headerAgentStatus.color }}
                 />
-                {agentStatusLabel}
+                {headerAgentStatus.label}
               </div>
               <div className="relative" ref={notifRef}>
                 <button
@@ -1295,10 +1618,12 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                     latestCount={latestCount}
                     duplicateCount={duplicateCount}
                     totalIndexed={totalIndexed}
+                    uploadCompletedNotice={uploadCompletedNotice}
                     onRefresh={refreshOverview}
                     onSelectStatus={() => showOverviewMessage(overview.status, "status", "流程狀態")}
                     onSelectNew={() => showOverviewMessage(overview.latest, "latest", "今日新增")}
                     onSelectDup={() => showOverviewMessage(overview.duplicates, "duplicates", "重複圖片")}
+                    onSelectUploadCompleted={handleSelectUploadCompleted}
                   />
                 )}
               </div>
@@ -1358,6 +1683,7 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
                 <SidebarNavigation
                   activeWorkspace={activeWorkspace}
                   lineAutoEnabled={lineAutoEnabled}
+                  lineAutoLoading={typeof lineAutoEnabled !== "boolean"}
                   uploadCount={uploadFolders.length}
                   collapsed={sidebarCollapsed}
                   onSelect={setActiveWorkspace}
@@ -1660,26 +1986,24 @@ function NotificationPanel({
   latestCount,
   duplicateCount,
   totalIndexed,
+  uploadCompletedNotice,
   onRefresh,
   onSelectStatus,
   onSelectNew,
   onSelectDup,
+  onSelectUploadCompleted,
 }) {
   const latestItems = Array.isArray(overview?.latest?.items) ? overview.latest.items : [];
   const latestTime = latestItems[0]?.source_time || latestItems[0]?.indexed_at;
   const latestLabel = latestTime
     ? new Date(latestTime).toLocaleString("zh-TW", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
     : "尚無時間";
-  const sourceEvents = (Array.isArray(overview?.status?.items) ? overview.status.items : [])
-    .map((item) => ({
-      name: item.target_id || "Agent",
-      time: item.latest_indexed_at || item.latest_file_time,
-      indexed: Number(item.indexed_count || 0),
-    }))
-    .filter((item) => item.time)
-    .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
-    .slice(0, 3);
-  const hasAny = latestCount > 0 || duplicateCount > 0 || totalIndexed > 0 || overview?.loading || overview?.error;
+  const uploadCompletedTime = uploadCompletedNotice?.updated_at || uploadCompletedNotice?.created_at;
+  const uploadCompletedLabel = uploadCompletedTime
+    ? new Date(uploadCompletedTime).toLocaleString("zh-TW", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
+    : "尚無時間";
+  const hasUploadCompleted = Boolean(uploadCompletedNotice?.id);
+  const hasAny = latestCount > 0 || duplicateCount > 0 || totalIndexed > 0 || hasUploadCompleted || overview?.loading || overview?.error;
 
   return (
     <div
@@ -1727,20 +2051,6 @@ function NotificationPanel({
             </button>
           )}
 
-          {sourceEvents.length > 0 && (
-            <div className="px-4 py-3" style={{ borderTop: "1px solid #E1F5EE", backgroundColor: "#FFFFFF" }}>
-              <div className="text-xs font-medium mb-1">資料來源概況</div>
-              <div className="space-y-1.5">
-                {sourceEvents.map((item) => (
-                  <div key={`${item.name}-${item.time}`} className="flex items-center justify-between gap-3 text-[11px] text-stone-600">
-                    <span className="truncate">{item.name}</span>
-                    <span className="shrink-0 tabular-nums">{item.indexed} 筆</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
           {latestCount > 0 && (
             <button onClick={onSelectNew} className="w-full px-4 py-3 text-left hover:bg-[#E1F5EE] transition-colors group flex gap-3">
               <div className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0" style={{ backgroundColor: "#E1F5EE" }}>
@@ -1748,11 +2058,28 @@ function NotificationPanel({
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2 mb-0.5">
-                  <span className="text-xs font-medium">最新圖片</span>
+                  <span className="text-xs font-medium">今日新增組圖</span>
                   <span className="text-[10px] text-stone-500 tabular-nums">{latestLabel}</span>
                 </div>
                 <p className="text-[11px] text-stone-600 leading-relaxed">
                   找到 <span className="font-display italic text-base text-stone-900">{latestCount}</span> 筆今日新增組圖。
+                </p>
+              </div>
+            </button>
+          )}
+
+          {hasUploadCompleted && (
+            <button onClick={() => onSelectUploadCompleted?.(uploadCompletedNotice)} className="w-full px-4 py-3 text-left hover:bg-[#E1F5EE] transition-colors group flex gap-3">
+              <div className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0" style={{ backgroundColor: "#E1F5EE" }}>
+                <Upload className="w-3 h-3" style={{ color: "#0F6E56" }} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2 mb-0.5">
+                  <span className="text-xs font-medium">手動上傳完成</span>
+                  <span className="text-[10px] text-stone-500 tabular-nums">{uploadCompletedLabel}</span>
+                </div>
+                <p className="text-[11px] text-stone-600 leading-relaxed">
+                  資料夾「{uploadCompletedNotice.display_name || "未命名資料夾"}」已完成 {Number(uploadCompletedNotice.image_count || 0)} 筆圖片處理。
                 </p>
               </div>
             </button>
@@ -1992,12 +2319,20 @@ function ResultHero({ dm, query, kind, criteria, copiedId, onCopy, onPreview }) 
           <DmImage src={dm.fullImage || dm.previewImage} dm={dm} alt={dm.title} className="w-full h-full object-contain" loading="eager" />
         </button>
         <div className="p-4">
-          <div className="flex items-baseline justify-between gap-2 mb-2">
-            <h3 className="font-serif-tc text-base font-medium leading-tight truncate flex-1">{dm.title}</h3>
+          <div className="mb-1 truncate text-[11px] font-medium" style={{ color: "#0F6E56" }}>{dm.sourceLine}</div>
+          <div className="flex items-baseline justify-between gap-2 mb-1">
+            <h3 className="text-base font-semibold leading-tight truncate flex-1 text-stone-950">{dm.title}</h3>
             <span className="text-sm font-semibold tabular-nums shrink-0" style={{ color: "#B91C1C" }}>{dm.price}</span>
           </div>
-          <div className="text-xs text-stone-600 mb-1">{dm.region} · {dm.period}</div>
-          <div className="text-[11px] text-stone-500 mb-4 truncate">來源：{dm.source}</div>
+          <div className="text-xs text-stone-600 mb-2 truncate">{[dm.days ? `${dm.days}天` : "", dm.departure].filter(Boolean).join(" · ")}</div>
+          {dm.cardTags?.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1">
+              {dm.cardTags.map((tag) => (
+                <span key={tag} className="rounded border px-1.5 py-0.5 text-[10px]" style={{ borderColor: "#D7F0E8", color: "#0F6E56" }}>{tag}</span>
+              ))}
+            </div>
+          )}
+          <div className="text-[11px] text-stone-500 mb-4 truncate">{dm.indexSummary}</div>
           <div className="flex gap-2">
             <button
               onClick={() => onCopy(dm)}
@@ -2030,9 +2365,10 @@ function DmThumbCard({ dm, onPreview, isSelected, onToggleSelect, onCopy, copied
         <DmImage dm={dm} alt={dm.title} className="w-full h-full object-cover" />
       </button>
       <div className="absolute inset-x-0 bottom-0 pointer-events-none bg-gradient-to-t from-black/80 via-black/30 to-transparent p-2 pb-2.5">
-        <div className="text-[9px] text-white/80 truncate">{dm.source}</div>
+        <div className="text-[9px] text-white/80 truncate">{dm.sourceLine || dm.source}</div>
         <div className="text-[11px] text-white font-medium leading-tight line-clamp-2">{dm.title}</div>
-        <div className="text-[10px] text-white/80 truncate mt-0.5">{dm.region} · {dm.price}</div>
+        <div className="text-[10px] text-white/90 truncate mt-0.5">{dm.departure} · {dm.price}</div>
+        <div className="text-[9px] text-white/70 truncate mt-0.5">{dm.tagSummary}</div>
       </div>
       {onToggleSelect && (
         <button
@@ -2342,16 +2678,16 @@ function DMPreviewModalReadOnly({ initial, list, onClose, onCopy, copiedId }) {
     id: detail?.image_id ?? raw.image_id ?? current.id,
     image_id: detail?.image_id ?? raw.image_id,
     source_kind: detail?.source_kind ?? current.sourceKind ?? raw.source_kind ?? raw.source,
-    source_label: detail?.source_label ?? raw.source_label ?? current.source,
+    source_label: toTraditionalDisplay(detail?.source_label ?? raw.source_label ?? current.source),
     source_time: detail?.source_time ?? raw.source_time ?? raw.indexed_at,
     uploaded_at: detail?.uploaded_at ?? raw.uploaded_at,
     indexed_at: detail?.indexed_at ?? raw.indexed_at,
-    original_filename: detail?.original_filename ?? raw.original_filename ?? current.title,
-    system_tags: detail?.system_tags ?? raw.system_tags ?? [],
-    ocr_tags_override: detail?.ocr_tags_override ?? raw.ocr_tags_override ?? [],
-    manual_tags: detail?.manual_tags ?? raw.manual_tags ?? [],
-    reference_text: detail?.reference_text ?? raw.reference_text ?? "",
-    manual_note: detail?.manual_note ?? raw.manual_note ?? "",
+    original_filename: toTraditionalDisplay(filenameFromItemDetail(detail, raw)),
+    system_tags: detailTagValues(detail?.system_tags ?? raw.system_tags ?? []),
+    ocr_tags_override: detailTagValues(detail?.ocr_tags_override ?? raw.ocr_tags_override ?? []),
+    manual_tags: detailTagValues(detail?.manual_tags ?? raw.manual_tags ?? []),
+    reference_text: toTraditionalDisplay(detail?.reference_text ?? raw.reference_text ?? ""),
+    manual_note: toTraditionalDisplay(detail?.manual_note ?? raw.manual_note ?? ""),
   };
   const headerSourceType = metadataSourceKindLabel(panelImage.source_kind);
   const headerTimeValue = preferredMetadataTime(panelImage);
@@ -2496,7 +2832,7 @@ function detailTagValues(values) {
   if (!Array.isArray(values)) return [];
   const seen = new Set();
   return values
-    .map((value) => String(typeof value === "object" && value ? value.tag : value || "").trim())
+    .map((value) => toTraditionalDisplay(typeof value === "object" && value ? value.tag : value || "").trim())
     .filter((value) => {
       if (!value || seen.has(value)) return false;
       seen.add(value);
@@ -2508,8 +2844,8 @@ function detailDraftFrom(detail) {
   return {
     systemTags: detailTagValues(detail?.system_tags),
     manualTags: detailTagValues(detail?.manual_tags),
-    referenceText: String(detail?.reference_text || ""),
-    manualNote: String(detail?.manual_note || ""),
+    referenceText: toTraditionalDisplay(detail?.reference_text || ""),
+    manualNote: toTraditionalDisplay(detail?.manual_note || ""),
   };
 }
 
@@ -2517,12 +2853,12 @@ function DetailRow({ label, value }) {
   return (
     <div className="grid grid-cols-[84px_minmax(0,1fr)] gap-2 text-xs">
       <div className="text-stone-500">{label}</div>
-      <div className="min-w-0 break-words text-stone-900">{value || "未提供"}</div>
+      <div className="min-w-0 break-words text-stone-900">{toTraditionalDisplay(value) || "未提供"}</div>
     </div>
   );
 }
 
-function DetailTagEditor({ label, values, inputValue, onInput, onAdd, onRemove, tone = "green" }) {
+function DetailTagEditor({ label, values, inputValue, onInput, onAdd, onRemove, tone = "green", allowAdd = true }) {
   const active = tone === "blue";
   return (
     <div>
@@ -2552,28 +2888,31 @@ function DetailTagEditor({ label, values, inputValue, onInput, onAdd, onRemove, 
           </span>
         )) : <div className="text-[11px] text-stone-500">尚無標籤</div>}
       </div>
-      <div className="flex gap-2">
-        <input
-          value={inputValue}
-          onChange={(event) => onInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              onAdd();
-            }
-          }}
-          className="min-w-0 flex-1 rounded-md border border-stone-200 px-2 py-1.5 text-xs outline-none focus:border-[#0F6E56]"
-          placeholder="新增標籤"
-        />
-        <button
-          type="button"
-          onClick={onAdd}
-          className="rounded-md px-3 py-1.5 text-xs font-medium"
-          style={{ backgroundColor: active ? "#2D8BC0" : "#0F6E56", color: "#F9F9F9" }}
-        >
-          新增
-        </button>
-      </div>
+      {allowAdd && (
+        <div className="flex gap-2">
+          <input
+            value={inputValue}
+            onChange={(event) => onInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                if (event.nativeEvent.isComposing || event.keyCode === 229) return; // IME 組字中
+                event.preventDefault();
+                onAdd();
+              }
+            }}
+            className="min-w-0 flex-1 rounded-md border border-stone-200 px-2 py-1.5 text-xs outline-none focus:border-[#0F6E56]"
+            placeholder="新增標籤"
+          />
+          <button
+            type="button"
+            onClick={onAdd}
+            className="rounded-md px-3 py-1.5 text-xs font-medium"
+            style={{ backgroundColor: active ? "#2D8BC0" : "#0F6E56", color: "#F9F9F9" }}
+          >
+            新增
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -2632,11 +2971,11 @@ function DMPreviewModalMvp({ initial, list, onClose, onCopy, copiedId }) {
   }, [current.id]);
 
   const setDraftField = (field, value) => {
-    setDraft((currentDraft) => ({ ...currentDraft, [field]: value }));
+    setDraft((currentDraft) => ({ ...currentDraft, [field]: toTraditionalDisplay(value) }));
   };
 
   const addTag = (field) => {
-    const value = String(tagInput[field] || "").trim();
+    const value = toTraditionalDisplay(tagInput[field] || "").trim();
     if (!value) return;
     setDraft((currentDraft) => {
       const currentValues = detailTagValues(currentDraft[field]);
@@ -2732,7 +3071,7 @@ function DMPreviewModalMvp({ initial, list, onClose, onCopy, copiedId }) {
                 </span>
                 <div className="truncate text-sm font-medium text-stone-900">{detail?.source_label || current.source}</div>
               </div>
-              <div className="truncate text-xs text-stone-500">{current.region} / {current.period}</div>
+              <div className="truncate text-xs text-stone-500">{[current.departure, current.price, current.indexSummary].filter(Boolean).join(" · ")}</div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <button onClick={() => onCopy(current)} className="inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors" style={{ backgroundColor: copiedId === current.id ? "#1D9E75" : "#0F6E56", color: "#F9F9F9" }}>
@@ -2781,6 +3120,7 @@ function DMPreviewModalMvp({ initial, list, onClose, onCopy, copiedId }) {
                 onAdd={() => addTag("systemTags")}
                 onRemove={(tag) => removeTag("systemTags", tag)}
                 tone="blue"
+                allowAdd={false}
               />
               <DetailTagEditor
                 label="人工標籤"
@@ -2895,7 +3235,7 @@ function DMPreviewModal({ initial, list, onClose, onCopy, copiedId }) {
             </span>
             <div className="text-sm font-medium truncate">{current.source}</div>
           </div>
-          <div className="text-xs text-stone-500 truncate">{current.region} · {current.period}</div>
+          <div className="text-xs text-stone-500 truncate">{[current.departure, current.price, current.indexSummary].filter(Boolean).join(" · ")}</div>
         </div>
         <div className="shrink-0 flex items-center gap-2">
           <button onClick={() => onCopy(current)} className="inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors" style={{ backgroundColor: copiedId === current.id ? "#1D9E75" : "#0F6E56", color: "#F9F9F9" }}>
