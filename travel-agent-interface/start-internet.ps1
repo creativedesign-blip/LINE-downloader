@@ -84,4 +84,5 @@ Write-Host "  https://travel.quick-buyer.com/"
 Write-Host "Keep this window open while others are using the site. Press Ctrl+C to stop the tunnel."
 Write-Host ""
 
-& $Cloudflared tunnel run travel
+$TunnelLog = Join-Path $env:USERPROFILE ".cloudflared\travel-live.log"
+& $Cloudflared --logfile $TunnelLog --loglevel info tunnel run travel
