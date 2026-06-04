@@ -300,7 +300,10 @@ def query_latest_results(
         local_now = datetime.now(tz)
         since_dt = local_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
     elif hours is not None:
-        since_dt = datetime.now(timezone.utc) - timedelta(hours=float(hours))
+        # Clamp to a sane lookback (<=100y) so an absurd value can't raise
+        # OverflowError out of timedelta and 500 the endpoint.
+        safe_hours = max(0.0, min(float(hours), 24.0 * 365 * 100))
+        since_dt = datetime.now(timezone.utc) - timedelta(hours=safe_hours)
     filter_by_first_seen = today and composed_only
     if since_dt is not None and not filter_by_first_seen:
         clauses.append("indexed_at >= ?")
@@ -517,7 +520,9 @@ def query_itineraries(
         rows = conn.execute(sql, params).fetchall()
         items = _attach_plan_summaries(conn, [_row_to_public(row) for row in rows])
     items = _filter_archived_items(items, include_archived=include_archived, review_path=review_path)
-    items = items[:int(limit)]
+    # Clamp to >=1 so a negative client limit can't slice from the end
+    # (items[:-5] silently dropping results) instead of limiting the count.
+    items = items[:max(1, int(limit))]
     return {
         "count": len(items),
         "items": items,
@@ -548,6 +553,15 @@ def _normalized_month_key(values: Any) -> tuple[int, ...]:
         except (TypeError, ValueError):
             continue
     return tuple(sorted(months))
+
+
+def _coerce_price(value: Any) -> Optional[int]:
+    """Best-effort int price for dedup signatures; None if not numeric (skip the
+    row) rather than raising and 500-ing the whole duplicates request."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _source_year(item: dict[str, Any]) -> Optional[int]:
@@ -625,24 +639,26 @@ def _group_sources(items: list[dict[str, Any]]) -> set[str]:
     return sources
 
 
-def _reviewed_path_sets(review_path: Path = DEFAULT_REVIEW_PATH) -> list[frozenset[str]]:
-    """Sidecar-path sets that have already been reviewed.
+def _reviewed_path_sets(review_path: Path = DEFAULT_REVIEW_PATH) -> list[tuple[frozenset[str], frozenset[str]]]:
+    """(full_set, keep_set) for each past review.
 
-    Lets us treat a group as reviewed when its members are fully covered by a
-    past review, so review state survives group_id drift from key changes.
+    full_set = keep ∪ archived, used to recognise the same group across group_id
+    drift from key changes. keep_set = the surviving copies. A new group is only
+    treated as reviewed when it is covered by full_set AND still contains a kept
+    survivor — once every kept copy is gone the remaining archived members are
+    live duplicates again and must resurface. Reviews with no recorded keeper
+    (e.g. an ignore/dismiss) keep the plain subset behaviour.
     """
     data = _load_duplicate_reviews(review_path)
-    path_sets: list[frozenset[str]] = []
+    path_sets: list[tuple[frozenset[str], frozenset[str]]] = []
     for entry in data.get("reviews", []):
         if not isinstance(entry, dict):
             continue
-        paths: set[str] = set()
-        for key in ("keep_sidecar_paths", "archived_sidecar_paths"):
-            for value in entry.get(key) or []:
-                if value:
-                    paths.add(str(value))
-        if paths:
-            path_sets.append(frozenset(paths))
+        keep = {str(v) for v in (entry.get("keep_sidecar_paths") or []) if v}
+        archived = {str(v) for v in (entry.get("archived_sidecar_paths") or []) if v}
+        full = keep | archived
+        if full:
+            path_sets.append((frozenset(full), frozenset(keep)))
     return path_sets
 
 
@@ -721,7 +737,15 @@ def check_duplicates(
     def is_reviewed(group_id: str, member_paths: frozenset[str]) -> bool:
         if group_id in reviewed_group_ids:
             return True
-        return bool(member_paths) and any(member_paths <= reviewed for reviewed in reviewed_path_sets)
+        if not member_paths:
+            return False
+        # Suppress only when this group is covered by a past review AND still
+        # holds a kept survivor (or the review recorded no keeper at all). If
+        # every kept copy is gone, the remaining members are live duplicates.
+        return any(
+            member_paths <= full and (not keep or bool(member_paths & keep))
+            for full, keep in reviewed_path_sets
+        )
 
     # Phase 1 — image duplicates: "is this the same picture?". Cluster
     # phash-bearing items by perceptual hash (byte-identical copies fall in at
@@ -863,12 +887,12 @@ def check_duplicates(
         if not countries:
             continue
         date = str(dep["departure_date"] or "").strip()
-        price = dep["price_from"]
+        price = _coerce_price(dep["price_from"])
         if not date or price is None:
             continue
         sidecars_with_offers.add(sidecar)
         duration = dep["duration_days"] if dep["duration_days"] is not None else item.get("duration_days")
-        signature = (countries, _normalized_str_key(item.get("regions")), date, duration, int(price))
+        signature = (countries, _normalized_str_key(item.get("regions")), date, duration, price)
         offer_groups.setdefault(signature, {})[sidecar] = item
     for signature, members_by_sidecar in offer_groups.items():
         countries, regions, date, duration, price = signature
@@ -891,12 +915,12 @@ def check_duplicates(
             continue
         countries = _normalized_str_key(item.get("countries"))
         months = _normalized_month_key(item.get("months"))
-        price = item.get("price_from")
+        price = _coerce_price(item.get("price_from"))
         if not countries or not months or price is None:
             continue
         year = _source_year(item)
         signature = (countries, _normalized_str_key(item.get("regions")), year, months,
-                     item.get("duration_days"), int(price))
+                     item.get("duration_days"), price)
         month_groups.setdefault(signature, {})[sidecar] = item
     for signature, members_by_sidecar in month_groups.items():
         countries, regions, year, months, duration, price = signature

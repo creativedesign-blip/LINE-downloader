@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -169,6 +170,46 @@ def load_image_index(path: Path) -> dict[str, list[str]]:
 
 def save_image_index(path: Path, index: dict[str, list[str]]) -> None:
     save_json_dict(path, index)
+
+
+@contextmanager
+def _index_file_lock(target: Path, timeout: float = 10.0, poll: float = 0.05):
+    """Best-effort cross-process lock via an exclusive lock file, so concurrent
+    group downloads merge into image_index.json instead of clobbering each
+    other's keys. On timeout (e.g. a stale lock left by a crash) proceed anyway
+    rather than hang — a rare lost update beats a wedged downloader."""
+    lock_path = Path(str(target) + ".lock")
+    deadline = time.time() + timeout
+    fd = None
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            break
+        except FileExistsError:
+            if time.time() >= deadline:
+                break
+            time.sleep(poll)
+        except OSError:
+            break
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+            try:
+                os.unlink(lock_path)
+            except OSError:
+                pass
+
+
+def merge_save_image_index(path: Path, group_key: str, hashes) -> None:
+    """Set one group's hashes in image_index.json, re-reading the on-disk copy
+    under a lock so a concurrent run for a different group can't overwrite this
+    group's key (last-writer-wins lost update)."""
+    with _index_file_lock(path):
+        current = load_image_index(path)
+        current[group_key] = sorted(hashes)
+        save_image_index(path, current)
 
 
 def read_groups(excel_path: Path) -> list[str]:
@@ -917,7 +958,9 @@ class LineRpa:
                         image_index[group_name] = sorted(seen_image_hashes)
                         pending_index_writes += unique_count
                         if pending_index_writes >= INDEX_FLUSH_EVERY:
-                            save_image_index(index_path, image_index)
+                            # Merge into the on-disk index under a lock so a
+                            # concurrent run for another group isn't clobbered.
+                            merge_save_image_index(index_path, group_name, seen_image_hashes)
                             pending_index_writes = 0
                     if image_seen_log is not None and seen_log_path is not None and seen_log_changed:
                         save_image_seen_log(image_seen_log, seen_log_path)
@@ -942,7 +985,7 @@ class LineRpa:
                     # should stop the scan.
                     consecutive_dups = 0
 
-                if no_new_rounds >= int(self.config.get("max_no_new_download_rounds", 8)):
+                if no_new_rounds >= int(self.config.get("max_no_new_download_rounds", DEFAULT_CONFIG["max_no_new_download_rounds"])):
                     break
                 self.hover_window_ratio(viewer_hwnd, "viewer_next_button")
                 self.click_window_ratio(viewer_hwnd, "viewer_next_button")
@@ -954,7 +997,7 @@ class LineRpa:
             outer_exc_in_flight = sys.exc_info()[0] is not None
             if pending_index_writes and image_index is not None and index_path is not None and group_name is not None:
                 try:
-                    save_image_index(index_path, image_index)
+                    merge_save_image_index(index_path, group_name, seen_image_hashes)
                 except Exception as flush_exc:
                     trace(f"final image_index flush failed: {flush_exc}")
                     # If we got here via natural exit (no upstream exception),

@@ -597,6 +597,55 @@ class TestOpenClawOperations(unittest.TestCase):
         self.assertEqual(len(myanmar), 1)
         self.assertEqual(myanmar[0]["count"], 2)
 
+    def test_reviewed_group_resurfaces_when_kept_copy_gone(self):
+        # A near (phash) group {x,y,z} reviewed keep_one x (archive y,z). The near
+        # group_id is membership-derived, so once x is deleted the remaining {y,z}
+        # is a *different* group_id and falls to the path-set check — which must
+        # now resurface it (kept survivor gone), not keep suppressing it.
+        review_path = self.tmp_path / "reviews.json"
+        paths = {}
+        with TravelIndex(self.db_path) as index:
+            for i, tid in enumerate(("rk-x", "rk-y", "rk-z")):
+                p = f"line-rpa/download/{tid}/travel/{tid}.jpg.json"
+                paths[tid] = p
+                insert_row(
+                    index, p, target_id=tid, group_name=tid,
+                    countries=["不丹"], months=[5], regions=["廷布"],
+                    image_sha256=f"distinct-sha-{i}",  # distinct -> not "certain"
+                    image_phash="ffffffffffffffff",     # identical -> near cluster
+                )
+
+        def _near_groups(**kw):
+            return [g for g in check_duplicates(self.db_path, **kw)["groups"]
+                    if g["match_type"] == "image_phash"
+                    and set(g["sources"]) <= {"rk-x", "rk-y", "rk-z"}]
+
+        groups = _near_groups()
+        self.assertEqual(len(groups), 1)
+        record_duplicate_review(
+            groups[0]["group_id"], [paths["rk-x"]], review_path,
+            archived_sidecar_paths=[paths["rk-y"], paths["rk-z"]],
+        )
+        # Suppressed while the kept copy (x) still exists.
+        self.assertEqual(_near_groups(review_path=review_path), [])
+        # The kept survivor disappears...
+        with TravelIndex(self.db_path) as index:
+            index.delete(paths["rk-x"])
+        # ...so y/z resurface as an unreviewed duplicate.
+        after = _near_groups(review_path=review_path)
+        self.assertEqual(len(after), 1)
+        self.assertEqual(set(after[0]["sources"]), {"rk-y", "rk-z"})
+
+    def test_query_latest_results_tolerates_huge_hours(self):
+        # An absurd hours value must clamp, not raise OverflowError.
+        result = query_latest_results(self.db_path, hours=10 ** 21, limit=5)
+        self.assertIn("items", result)
+
+    def test_query_itineraries_negative_limit_does_not_slice_from_end(self):
+        # limit=-5 must clamp to >=1, not slice items[:-5] (dropping results).
+        result = query_itineraries(self.db_path, months=[7], limit=-5)
+        self.assertEqual(len(result["items"]), 1)
+
     def test_check_duplicates_country_order_does_not_split_group(self):
         # Same multi-country product listed in different token order must stay
         # in one group thanks to normalized (sorted) keys.

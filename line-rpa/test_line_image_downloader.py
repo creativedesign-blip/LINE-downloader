@@ -907,6 +907,18 @@ class LineImageDownloaderTests(unittest.TestCase):
 
             self.assertEqual(app.load_image_index(index_path), {"group-b": ["keep"]})
 
+    def test_merge_save_image_index_preserves_other_groups(self):
+        # The merge-save must re-read the on-disk index and update only its own
+        # group key, so a concurrent run for another group isn't clobbered.
+        with tempfile.TemporaryDirectory() as tmp:
+            index_path = Path(tmp) / "image_index.json"
+            app.save_image_index(index_path, {"group-a": ["aaa"]})
+            app.merge_save_image_index(index_path, "group-b", ["ccc", "bbb"])
+            self.assertEqual(
+                app.load_image_index(index_path),
+                {"group-a": ["aaa"], "group-b": ["bbb", "ccc"]},
+            )
+
     def test_pipeline_runs_after_all_groups_are_downloaded(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
