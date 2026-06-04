@@ -39,6 +39,14 @@ APP_DIR = Path(__file__).resolve().parent
 WEB_DIR = APP_DIR / "dist" if (APP_DIR / "dist" / "index.html").is_file() else APP_DIR
 PROJECT_ROOT = APP_DIR.parent
 THUMBNAIL_DIR = PROJECT_ROOT / ".cache" / "openclaw-thumbnails"
+# /media (and its thumbnail variant) only ever serves raster images. Restricting
+# the servable extensions stops the ?path= param from reading non-image files
+# such as logs/openclaw/auth_secret.bin (the HMAC session-signing key), the
+# SQLite catalogs, chat logs, *.ps1 scripts, or source under PROJECT_ROOT.
+MEDIA_IMAGE_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp",
+    ".tif", ".tiff", ".avif", ".heic", ".heif",
+}
 CLIPBOARD_SCRIPT = PROJECT_ROOT / "tools" / "openclaw" / "copy_files_to_clipboard.ps1"
 RUN_RPA_SCRIPT = PROJECT_ROOT / "tools" / "openclaw" / "run_scheduled_line_rpa.ps1"
 RUN_UPLOAD_SCRIPT = PROJECT_ROOT / "tools" / "openclaw" / "run_uploaded_images.ps1"
@@ -510,7 +518,12 @@ def _decode_media_id(value: str) -> str:
 def _resolve_project_file(raw: str) -> Path | None:
     if not raw:
         return None
-    candidate = (PROJECT_ROOT / unquote(raw)).resolve()
+    try:
+        candidate = (PROJECT_ROOT / unquote(raw)).resolve()
+    except (ValueError, OSError):
+        # e.g. an embedded null byte (%00) in the path — treat as not found
+        # rather than letting resolve() raise and surface as an unhandled 500.
+        return None
     try:
         candidate.relative_to(PROJECT_ROOT)
     except ValueError:
@@ -3416,6 +3429,12 @@ class Handler(SimpleHTTPRequestHandler):
         candidate = _resolve_project_file(raw)
         if candidate is None:
             self.send_error(HTTPStatus.FORBIDDEN, "path outside project")
+            return
+        if candidate.suffix.lower() not in MEDIA_IMAGE_EXTENSIONS:
+            # /media only ever serves images. Refusing non-image files keeps the
+            # ?path= param from leaking secrets (auth_secret.bin), the SQLite
+            # catalogs, chat logs, scripts, or source under PROJECT_ROOT.
+            self.send_error(HTTPStatus.FORBIDDEN, "unsupported media type")
             return
 
         thumbnail_failed = False
