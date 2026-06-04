@@ -16,14 +16,17 @@ import line_image_downloader as app
 TEST_TEMP_ROOT = Path(__file__).resolve().parent / ".test-tmp"
 TEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
 _TEMP_COUNTER = count(1)
+_ORIG_TEMPORARY_DIRECTORY = tempfile.TemporaryDirectory
 
 
 class LocalTemporaryDirectory:
     """Stand-in for tempfile.TemporaryDirectory that puts test data under
-    a predictable path. Mirror the cleanup() API too — this module
-    monkeypatches tempfile.TemporaryDirectory globally, so other test
-    suites in the same process (e.g. tools/branding/tests/test_io_utils)
-    that call .cleanup() must keep working.
+    a predictable path inside the repo. Mirrors the cleanup() API.
+
+    The swap is scoped to this module via setUpModule/tearDownModule — a
+    process-wide, unrestored patch would otherwise make other suites' temp
+    files land under PROJECT_ROOT (e.g. tools/indexing/tests/test_reindex
+    relies on tempfile dirs being OUTSIDE the repo for relpath_from_root).
     """
 
     def __init__(self):
@@ -44,7 +47,12 @@ class LocalTemporaryDirectory:
         shutil.rmtree(self.name, ignore_errors=True)
 
 
-tempfile.TemporaryDirectory = LocalTemporaryDirectory
+def setUpModule():
+    tempfile.TemporaryDirectory = LocalTemporaryDirectory
+
+
+def tearDownModule():
+    tempfile.TemporaryDirectory = _ORIG_TEMPORARY_DIRECTORY
 
 
 class LineImageDownloaderTests(unittest.TestCase):
