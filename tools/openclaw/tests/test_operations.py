@@ -451,6 +451,45 @@ class TestOpenClawOperations(unittest.TestCase):
         default_view = check_duplicates(self.db_path)["groups"]
         self.assertTrue(any(g["match_type"] == "image_sha256" for g in default_view))
 
+    def test_same_source_near_image_does_not_block_cross_source_offer(self):
+        # A near-phash pair within ONE source is source-filtered (never shown),
+        # so it must NOT claim its members — otherwise A's genuine cross-source
+        # offer duplicate with C would be missed.
+        with TravelIndex(self.db_path) as index:
+            insert_row(
+                index, "line-rpa/download/src-1/travel/a.jpg.json",
+                target_id="src-1", group_name="S1", countries=["越南"], months=[8],
+                regions=["峴港"], image_sha256="sha-A", image_phash="ffffffffffffffff",
+            )
+            insert_row(
+                index, "line-rpa/download/src-1/travel/b.jpg.json",
+                target_id="src-1", group_name="S1", countries=["越南"], months=[8],
+                regions=["峴港"], image_sha256="sha-B", image_phash="fffffffffffffffe",
+            )
+            insert_row(
+                index, "line-rpa/download/src-2/travel/c.jpg.json",
+                target_id="src-2", group_name="S2", countries=["越南"], months=[8],
+                regions=["峴港"], image_sha256="sha-C", image_phash="0000000000000000",
+            )
+            insert_departure(
+                index, "line-rpa/download/src-1/travel/a.jpg.json",
+                departure_date="2026-08-23", price_from=20900, duration_days=5,
+                target_id="src-1", group_name="S1",
+            )
+            insert_departure(
+                index, "line-rpa/download/src-2/travel/c.jpg.json",
+                departure_date="2026-08-23", price_from=20900, duration_days=5,
+                target_id="src-2", group_name="S2",
+            )
+        offers = [
+            g for g in check_duplicates(self.db_path)["groups"]
+            if g["match"].get("countries") == ["越南"]
+            and g["match"].get("departure_date") == "2026-08-23"
+        ]
+        self.assertEqual(len(offers), 1)
+        self.assertEqual(offers[0]["count"], 2)
+        self.assertEqual(set(offers[0]["sources"]), {"src-1", "src-2"})
+
     def test_check_duplicates_month_fallback_without_departures(self):
         # No extracted departure → fall back to month level: same destination +
         # month + duration + exact price groups; a different price does not.

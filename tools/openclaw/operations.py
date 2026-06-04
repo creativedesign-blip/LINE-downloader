@@ -733,11 +733,13 @@ def check_duplicates(
     for cluster in image_clusters:
         if len(cluster) < 2:
             continue
-        member_paths = _member_sidecar_paths(cluster)
-        claimed |= member_paths
         sources = _group_sources(cluster)
         if not include_same_source and len(sources) < 2:
+            # Same-source-only image cluster: never surfaced, so don't claim it
+            # either — its members must stay free to match a cross-source offer.
             continue
+        member_paths = _member_sidecar_paths(cluster)
+        claimed |= member_paths
         shas = {str(it.get("image_sha256") or "").strip() for it in cluster}
         identical = len(shas) == 1 and "" not in shas
         rep = cluster[0]
