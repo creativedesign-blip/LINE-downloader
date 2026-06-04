@@ -17,6 +17,19 @@ if (-not [Environment]::GetEnvironmentVariable("OPENCLAW_WEB_PASSWORD", "Process
   throw "OPENCLAW_WEB_PASSWORD is not set. Set it before starting internet mode."
 }
 
+foreach ($name in "OPENCLAW_WEB_USER", "OPENCLAW_WEB_PASSWORD") {
+  if (-not [Environment]::GetEnvironmentVariable($name, "Process")) {
+    $val = [Environment]::GetEnvironmentVariable($name, "User")
+    if (-not $val) { $val = [Environment]::GetEnvironmentVariable($name, "Machine") }
+    [Environment]::SetEnvironmentVariable($name, $val, "Process")
+  }
+}
+
+# Internet mode is served only over HTTPS via the Cloudflare tunnel, so force the
+# Secure attribute on the auth-session cookie instead of trusting the (spoofable)
+# X-Forwarded-Proto header. The launched server inherits this Process env var.
+[Environment]::SetEnvironmentVariable("OPENCLAW_WEB_SECURE_COOKIES", "1", "Process")
+
 if (-not (Test-Path $Cloudflared)) {
   $cmd = Get-Command cloudflared -ErrorAction SilentlyContinue
   if (-not $cmd -or -not (Test-Path $cmd.Source) -or (Get-Item $cmd.Source).Length -eq 0) {
