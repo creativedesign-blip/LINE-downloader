@@ -92,7 +92,14 @@ def save_image_seen_log(log: dict[str, dict[str, Any]], path: Path = IMAGE_SEEN_
 
 
 def relpath(path: Path) -> str:
-    return path.resolve().relative_to(PROJECT_ROOT).as_posix()
+    # Fall back to the absolute path when the file lives outside the repo (e.g. a
+    # save_root on another drive); relative_to() would otherwise raise ValueError
+    # and abort the whole group after a real image already landed on disk.
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return resolved.as_posix()
 
 
 def record_seen_image(

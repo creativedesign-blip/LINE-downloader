@@ -43,8 +43,10 @@ def content_deduped_itineraries_sql(where: str = "") -> str:
     The single SQL source of the same "same image" rule as
     operations._content_key: partition by COALESCE(image_sha256, sidecar_path)
     (rows with no hash fall back to their own sidecar so they don't collapse
-    together) and keep the most recently indexed row. ``rowid DESC`` tiebreaks
-    within one reindex transaction where every row shares an indexed_at second.
+    together) and keep the most complete row — a row that still carries a
+    perceptual hash wins over an otherwise-newer NULL-phash row, then most
+    recently indexed. ``rowid DESC`` tiebreaks within one reindex transaction
+    where every row shares an indexed_at second.
 
     Callers pass a ready ``WHERE ...`` clause (or "") and append their own outer
     ORDER BY / LIMIT — only the dedup window must stay identical across sites.
@@ -53,7 +55,7 @@ def content_deduped_itineraries_sql(where: str = "") -> str:
         "SELECT * FROM ("
         "  SELECT *, ROW_NUMBER() OVER ("
         "    PARTITION BY COALESCE(image_sha256, sidecar_path) "
-        "    ORDER BY indexed_at DESC, rowid DESC"
+        "    ORDER BY (image_phash IS NOT NULL) DESC, indexed_at DESC, rowid DESC"
         f"  ) AS _rn FROM itineraries {where}"
         ") WHERE _rn = 1"
     )

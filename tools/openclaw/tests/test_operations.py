@@ -532,6 +532,71 @@ class TestOpenClawOperations(unittest.TestCase):
         self.assertEqual(vietnam[0]["match"]["price_from"], 25000)
         self.assertNotIn("departure_date", vietnam[0]["match"])
 
+    def test_byte_identical_pair_grouped_when_one_copy_lacks_phash(self):
+        # A partial reindex can leave one copy with a NULL perceptual hash while
+        # its byte-identical twin has one. The exact-sha duplicate must still be
+        # caught as certain, not split into two singletons that fall out.
+        with TravelIndex(self.db_path) as index:
+            insert_row(
+                index, "line-rpa/download/src-p1/travel/p1.jpg.json",
+                target_id="src-p1", group_name="P1",
+                countries=["寮國"], months=[6], regions=["永珍"],
+                image_sha256="byteident-sha", image_phash="ffffffffffffffff",
+            )
+            insert_row(
+                index, "line-rpa/download/src-p2/travel/p2.jpg.json",
+                target_id="src-p2", group_name="P2",
+                countries=["寮國"], months=[6], regions=["永珍"],
+                image_sha256="byteident-sha", image_phash=None,
+            )
+        certain = [
+            g for g in check_duplicates(self.db_path)["groups"]
+            if g["match"].get("image_sha256") == "byteident-sha"
+        ]
+        self.assertEqual(len(certain), 1)
+        self.assertEqual(certain[0]["confidence"], "certain")
+        self.assertEqual(certain[0]["count"], 2)
+        self.assertEqual(set(certain[0]["sources"]), {"src-p1", "src-p2"})
+
+    def test_month_fallback_does_not_collapse_across_years(self):
+        # Year-less months: same destination/month/duration/price posted in
+        # different years are distinct departures and must NOT collapse.
+        with TravelIndex(self.db_path) as index:
+            insert_row(
+                index, "line-rpa/download/src-y1/travel/y1.jpg.json",
+                target_id="src-y1", group_name="Y1",
+                countries=["柬埔寨"], months=[3], regions=["金邊"],
+                price_from=33000, source_time="2026-01-15T08:00:00Z",
+            )
+            insert_row(
+                index, "line-rpa/download/src-y2/travel/y2.jpg.json",
+                target_id="src-y2", group_name="Y2",
+                countries=["柬埔寨"], months=[3], regions=["金邊"],
+                price_from=33000, source_time="2027-01-15T08:00:00Z",
+            )
+        cambodia = [
+            g for g in check_duplicates(self.db_path)["groups"]
+            if g["match"].get("countries") == ["柬埔寨"]
+        ]
+        self.assertEqual(cambodia, [])
+
+    def test_month_fallback_groups_within_same_year(self):
+        # Positive control: same month in the same posting year still groups.
+        with TravelIndex(self.db_path) as index:
+            for tid in ("src-z1", "src-z2"):
+                insert_row(
+                    index, f"line-rpa/download/{tid}/travel/{tid}.jpg.json",
+                    target_id=tid, group_name=tid,
+                    countries=["緬甸"], months=[3], regions=["仰光"],
+                    price_from=44000, source_time="2026-02-01T08:00:00Z",
+                )
+        myanmar = [
+            g for g in check_duplicates(self.db_path)["groups"]
+            if g["match"].get("countries") == ["緬甸"]
+        ]
+        self.assertEqual(len(myanmar), 1)
+        self.assertEqual(myanmar[0]["count"], 2)
+
     def test_check_duplicates_country_order_does_not_split_group(self):
         # Same multi-country product listed in different token order must stay
         # in one group thanks to normalized (sorted) keys.

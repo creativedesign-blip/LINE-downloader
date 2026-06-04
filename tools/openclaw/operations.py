@@ -550,6 +550,18 @@ def _normalized_month_key(values: Any) -> tuple[int, ...]:
     return tuple(sorted(months))
 
 
+def _source_year(item: dict[str, Any]) -> Optional[int]:
+    """Posting year from source_time (fallback indexed_at), or None if unknown.
+
+    Used to disambiguate the year-less month fallback so the same month in
+    different years is not treated as one deal."""
+    for key in ("source_time", "indexed_at"):
+        text = str(item.get(key) or "").strip()
+        if len(text) >= 4 and text[:4].isdigit():
+            return int(text[:4])
+    return None
+
+
 def _greedy_cluster(
     items: list[dict[str, Any]],
     close: Any,
@@ -713,21 +725,38 @@ def check_duplicates(
 
     # Phase 1 — image duplicates: "is this the same picture?". Cluster
     # phash-bearing items by perceptual hash (byte-identical copies fall in at
-    # distance 0, so an exact-sha group is never split); group the few
-    # phash-less items (undecodable / not yet re-enriched) by exact sha. A
-    # cluster is "certain" when every member shares one sha256 (byte-identical),
-    # otherwise "near" (same image, different encoding). Members are claimed so
-    # the metadata phase never re-reports them — no per-tier coverage sets.
+    # distance 0). A cluster is "certain" when every member shares one sha256
+    # (byte-identical), otherwise "near" (same image, different encoding).
+    # Members are claimed so the metadata phase never re-reports them — no
+    # per-tier coverage sets.
+    phash_items: list[dict[str, Any]] = [
+        item for item in items if str(item.get("image_phash") or "").strip()
+    ]
+    image_clusters = _cluster_by_phash(phash_items, max_distance=phash_max_distance)
+
+    # Fold each phash-less copy (undecodable / not yet re-enriched) into the
+    # cluster that already holds a byte-identical (same sha256) phash-bearing
+    # copy, so an exact-sha group is never split just because one copy's
+    # perceptual hash failed to decode. Copies whose sha has no phash-bearing
+    # twin form their own exact-sha group.
+    sha_to_cluster: dict[str, list[dict[str, Any]]] = {}
+    for cluster in image_clusters:
+        for member in cluster:
+            sha = str(member.get("image_sha256") or "").strip()
+            if sha:
+                sha_to_cluster.setdefault(sha, cluster)
     nophash_sha: dict[str, list[dict[str, Any]]] = {}
-    phash_items: list[dict[str, Any]] = []
     for item in items:
         if str(item.get("image_phash") or "").strip():
-            phash_items.append(item)
             continue
         sha = str(item.get("image_sha256") or "").strip()
-        if sha:
+        if not sha:
+            continue
+        existing = sha_to_cluster.get(sha)
+        if existing is not None:
+            existing.append(item)
+        else:
             nophash_sha.setdefault(sha, []).append(item)
-    image_clusters = _cluster_by_phash(phash_items, max_distance=phash_max_distance)
     image_clusters += list(nophash_sha.values())
 
     claimed: set[str] = set()
@@ -852,6 +881,10 @@ def check_duplicates(
         })
 
     # Tier 2 — month-level fallback for items with no usable departure.
+    # Bare months carry no year, so the posting year (source_time) is folded into
+    # the signature: same destination + same month in the same posting year is a
+    # likely repost, but the same month a year apart (e.g. Mar 2026 vs Mar 2027)
+    # is a distinct product and must not collapse into one keep-one group.
     month_groups: dict[tuple, dict[str, dict[str, Any]]] = {}
     for sidecar, item in sidecar_to_item.items():
         if sidecar in sidecars_with_offers:
@@ -861,11 +894,12 @@ def check_duplicates(
         price = item.get("price_from")
         if not countries or not months or price is None:
             continue
-        signature = (countries, _normalized_str_key(item.get("regions")), months,
+        year = _source_year(item)
+        signature = (countries, _normalized_str_key(item.get("regions")), year, months,
                      item.get("duration_days"), int(price))
         month_groups.setdefault(signature, {})[sidecar] = item
     for signature, members_by_sidecar in month_groups.items():
-        countries, regions, months, duration, price = signature
+        countries, regions, year, months, duration, price = signature
         _emit_likely(members_by_sidecar, ("month", *signature), {
             "countries": list(countries),
             "regions": list(regions),

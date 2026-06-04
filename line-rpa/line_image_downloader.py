@@ -934,6 +934,13 @@ class LineRpa:
                 else:
                     counts["skipped"] += 1
                     no_new_rounds += 1
+                    # A round where nothing downloaded is not a duplicate. Reset
+                    # the consecutive-duplicate counter so transient skips between
+                    # reposts (e.g. a new image whose save click failed once)
+                    # don't accumulate into a false early stop. Only a genuine run
+                    # of consecutive duplicates — the already-downloaded tail —
+                    # should stop the scan.
+                    consecutive_dups = 0
 
                 if no_new_rounds >= int(self.config.get("max_no_new_download_rounds", 8)):
                     break
@@ -1537,8 +1544,12 @@ def download_group_images(
     if reset_hash:
         index_path = image_index_path(save_root)
         image_index = load_image_index(index_path)
-        if group_name in image_index:
-            del image_index[group_name]
+        # The index is keyed by the sanitized folder id (see run_group), so the
+        # reset must look up the same key — deleting the raw group_name would
+        # silently no-op for any name altered by sanitize_folder_name.
+        index_key = sanitize_folder_name(group_name)
+        if index_key in image_index:
+            del image_index[index_key]
             save_image_index(index_path, image_index)
 
     LineRpa.set_dpi_awareness()

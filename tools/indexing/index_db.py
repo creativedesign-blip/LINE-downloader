@@ -295,6 +295,22 @@ class TravelIndex:
             "extractor_version": row["extractor_version"],
         }
 
+    def get_image_phash(self, sidecar_path: str) -> Optional[str]:
+        """Return the currently stored image_phash for a sidecar, or None.
+
+        Lets reindex preserve a previously computed perceptual hash when the
+        image can no longer be decoded (file_dhash returns None) instead of
+        overwriting it with NULL and losing near-duplicate coverage."""
+        cur = self.conn.execute(
+            "SELECT image_phash FROM itineraries WHERE sidecar_path = ?",
+            (sidecar_path,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        value = row["image_phash"]
+        return str(value) if value else None
+
     def list_sidecar_paths(self, target_ids: Optional[Iterable[str]] = None) -> set[str]:
         """All sidecar_path values currently in the index, optionally scoped
         to specific targets (used by reindex to detect deleted sidecars)."""

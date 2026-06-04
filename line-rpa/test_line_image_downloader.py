@@ -662,6 +662,55 @@ class LineImageDownloaderTests(unittest.TestCase):
             self.assertEqual(counts["duplicate"], 1)
             self.assertTrue((save_dir / ".duplicate_dropped" / "repost.png").exists())
 
+    def test_skip_round_resets_consecutive_duplicate_counter(self):
+        # A round where nothing downloads (a transient skip) sits between two
+        # already-seen reposts. The skip must reset the consecutive-duplicate
+        # counter so the reposts don't accumulate into a false early stop that
+        # abandons a new image waiting below them.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            save_dir = tmp_path / "group-a"
+            save_dir.mkdir()
+            index_path = tmp_path / "image_index.json"
+            dup1 = save_dir / "dup1.png"
+            dup1.write_bytes(b"seen-1")
+            dup2 = save_dir / "dup2.png"
+            dup2.write_bytes(b"seen-2")
+            app.save_image_index(index_path, {"group-a": [
+                app.LineRpa.file_sha256(dup1),
+                app.LineRpa.file_sha256(dup2),
+            ]})
+            new1 = save_dir / "new1.png"
+            new1.write_bytes(b"brand-new")
+
+            # Feed: dup, skip, dup, skip, new. With max_consecutive_duplicates=2
+            # a counter that ignored the skips would break at the 2nd dup, before
+            # new1; resetting on the skip lets the scan reach new1.
+            rounds = iter([[dup1], [], [dup2], [], [new1]])
+            rpa = app.LineRpa({
+                "wait_seconds": 0,
+                "max_images_per_group": 9,
+                "max_no_new_download_rounds": 3,
+                "max_consecutive_duplicates": 2,
+                "coordinates": app.DEFAULT_CONFIG["coordinates"],
+            })
+            rpa.find_media_window = lambda: 300
+            rpa.wait_for_viewer_window = lambda **_: 400
+            rpa.apply_window_layout = lambda *a, **k: None
+            rpa.double_click_window_ratio = lambda *a, **k: None
+            rpa.hover_window_ratio = lambda *a, **k: None
+            rpa.click_window_ratio = lambda *a, **k: None
+            rpa.recent_download_candidates = lambda: set()
+            rpa.handle_save_dialog = lambda target_dir: None
+            rpa.move_new_downloads = lambda before, target_dir: next(rounds, [])
+
+            with patch.object(app.time, "sleep"), \
+                 patch.object(app.win32gui, "IsWindow", return_value=True):
+                counts = rpa.download_all_visible_images(save_dir, "group-a", app.load_image_index(index_path), index_path)
+
+            self.assertEqual(counts["success"], 1)  # new1 reached despite the dups
+            self.assertEqual(counts["duplicate"], 2)
+
     def test_run_group_uses_actual_save_root_for_duplicate_index(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -823,6 +872,38 @@ class LineImageDownloaderTests(unittest.TestCase):
 
             with patch.object(app, "LineRpa", FakeRpa):
                 app.download_group_images("group-a", config_path=config_path, reset_hash=True, run_pipeline=False)
+
+            self.assertEqual(app.load_image_index(index_path), {"group-b": ["keep"]})
+
+    def test_download_group_images_reset_hash_uses_sanitized_key(self):
+        # The index is keyed by the sanitized folder id, so reset_hash must look
+        # up the sanitized key — a group name altered by sanitize_folder_name
+        # (e.g. containing "/") would otherwise leave the stale hashes in place
+        # and silently no-op the reset.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = tmp_path / "config.json"
+            save_root = tmp_path / "download"
+            index_path = save_root / "image_index.json"
+            config_path.write_text(json.dumps({"save_root": str(save_root)}), encoding="utf-8")
+            raw_name = "Tokyo/Osaka"
+            sanitized = app.sanitize_folder_name(raw_name)
+            self.assertNotEqual(raw_name, sanitized)
+            app.save_image_index(index_path, {sanitized: ["old"], "group-b": ["keep"]})
+
+            class FakeRpa:
+                @staticmethod
+                def set_dpi_awareness():
+                    pass
+
+                def __init__(self, config):
+                    pass
+
+                def run_group(self, group_name, save_dir):
+                    return app.GroupResult(group_name, "ok", "", 0, 0, 0, 0, 0, str(save_dir), "")
+
+            with patch.object(app, "LineRpa", FakeRpa):
+                app.download_group_images(raw_name, config_path=config_path, reset_hash=True, run_pipeline=False)
 
             self.assertEqual(app.load_image_index(index_path), {"group-b": ["keep"]})
 

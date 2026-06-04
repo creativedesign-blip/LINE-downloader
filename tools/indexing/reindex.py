@@ -159,6 +159,9 @@ def index_one(sidecar_path: Path, index: TravelIndex,
     sidecar_rel = relpath_from_root(sidecar_path)
     image_rel = relpath_from_root(orig_img)
     branded_rel = relpath_from_root(branded) if branded else None
+    # Capture any previously stored perceptual hash before the row is dropped, so
+    # a transiently undecodable image (file_dhash -> None) doesn't lose its phash.
+    prev_phash = index.get_image_phash(sidecar_rel)
     index.delete(sidecar_rel)
 
     index.upsert(
@@ -180,8 +183,9 @@ def index_one(sidecar_path: Path, index: TravelIndex,
         image_sha256=ocr.get("imageSha256"),
         # Prefer the sidecar-cached perceptual hash; compute on the fly for
         # sidecars enriched before the field existed so the column is never
-        # silently empty after a rebuild.
-        image_phash=ocr.get("imagePhash") or file_dhash(orig_img),
+        # silently empty after a rebuild. Fall back to the previously stored
+        # phash when the image can't be decoded now, rather than nulling it.
+        image_phash=ocr.get("imagePhash") or file_dhash(orig_img) or prev_phash,
     )
     if second_pass_products:
         for plan_no, product in enumerate(second_pass_products, 1):
