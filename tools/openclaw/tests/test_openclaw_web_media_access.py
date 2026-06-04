@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from http import HTTPStatus
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -94,6 +95,38 @@ class MediaAccessTests(unittest.TestCase):
         # %00 decodes to an embedded null byte; _resolve_project_file must return
         # None instead of letting Path.resolve() raise an unhandled 500.
         self.assertIsNone(openclaw_web._resolve_project_file("foo\x00.png"))
+
+
+class DbImagePathBatchTests(unittest.TestCase):
+    def setUp(self):
+        import gc
+        import shutil
+        from tools.indexing.index_db import TravelIndex
+        self._TravelIndex = TravelIndex
+        self.tmp = Path(tempfile.mkdtemp(dir=str(PROJECT_ROOT)))
+
+        def _cleanup():
+            gc.collect()
+            shutil.rmtree(self.tmp, ignore_errors=True)
+
+        self.addCleanup(_cleanup)
+        self.db_path = self.tmp / "idx.db"
+        patcher = patch.object(openclaw_web, "DEFAULT_DB_PATH", self.db_path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_batch_lookup_resolves_keys_in_one_pass(self):
+        with self._TravelIndex(self.db_path) as idx:
+            idx.upsert(sidecar_path="s/a.json", image_path="img/a.jpg", branded_path="brand/a.jpg")
+            idx.upsert(sidecar_path="s/b.json", image_path="img/b.jpg", branded_path=None)
+        result = openclaw_web._db_image_paths_for_keys(["s/a.json", "img/b.jpg", "missing"])
+        self.assertEqual(result["s/a.json"], "brand/a.jpg")  # branded preferred
+        self.assertEqual(result["img/b.jpg"], "img/b.jpg")   # falls back to image_path
+        self.assertNotIn("missing", result)
+
+    def test_batch_lookup_empty_input(self):
+        self.assertEqual(openclaw_web._db_image_paths_for_keys([]), {})
+        self.assertEqual(openclaw_web._db_image_paths_for_keys(["", ""]), {})
 
 
 if __name__ == "__main__":

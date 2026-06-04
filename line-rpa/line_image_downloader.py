@@ -212,6 +212,22 @@ def merge_save_image_index(path: Path, group_key: str, hashes) -> None:
         save_image_index(path, current)
 
 
+def merge_save_image_seen_log(path: Path, log: dict[str, dict]) -> None:
+    """Union this run's seen-image entries into image_seen_log.json under a lock.
+
+    The log is keyed by content digest and append-only within a run, so merging
+    (re-read disk, add any digests not already present) preserves entries added
+    by a concurrent run for a different group instead of clobbering them. The
+    in-memory log is updated to match so later writes stay cheap."""
+    with _index_file_lock(path):
+        disk = load_image_seen_log(path)
+        for digest, record in log.items():
+            if digest not in disk:
+                disk[digest] = record
+        save_image_seen_log(disk, path)
+        log.update(disk)
+
+
 def read_groups(excel_path: Path) -> list[str]:
     wb = load_workbook(excel_path, read_only=True, data_only=True)
     ws = wb.active
@@ -963,7 +979,7 @@ class LineRpa:
                             merge_save_image_index(index_path, group_name, seen_image_hashes)
                             pending_index_writes = 0
                     if image_seen_log is not None and seen_log_path is not None and seen_log_changed:
-                        save_image_seen_log(image_seen_log, seen_log_path)
+                        merge_save_image_seen_log(seen_log_path, image_seen_log)
                     # Don't stop at the FIRST already-seen image: a reposted
                     # image among new posts would otherwise break the scan and
                     # silently skip the newer images below it. Stop only after a

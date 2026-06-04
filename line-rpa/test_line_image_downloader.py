@@ -919,6 +919,18 @@ class LineImageDownloaderTests(unittest.TestCase):
                 {"group-a": ["aaa"], "group-b": ["bbb", "ccc"]},
             )
 
+    def test_merge_save_image_seen_log_preserves_other_entries(self):
+        # Union by content digest: a concurrent run's entries on disk must
+        # survive when this run merges its own.
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "image_seen_log.json"
+            app.save_image_seen_log({"d1": {"target_id": "a"}}, log_path)
+            app.merge_save_image_seen_log(log_path, {"d2": {"target_id": "b"}})
+            result = app.load_image_seen_log(log_path)
+            self.assertEqual(set(result), {"d1", "d2"})
+            self.assertEqual(result["d1"]["target_id"], "a")
+            self.assertEqual(result["d2"]["target_id"], "b")
+
     def test_pipeline_runs_after_all_groups_are_downloaded(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

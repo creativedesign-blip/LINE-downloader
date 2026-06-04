@@ -658,18 +658,52 @@ def _ensure_thumbnail(source: Path, width: int) -> Path:
     return target
 
 
+def _db_image_paths_for_keys(keys: list[str]) -> dict[str, str]:
+    """Map each decoded media key -> its newest itinerary image path (branded
+    preferred) in a single query, instead of opening one DB connection per id."""
+    unique = [k for k in dict.fromkeys(keys) if k]
+    if not unique:
+        return {}
+    placeholders = ",".join("?" * len(unique))
+    sql = (
+        "SELECT sidecar_path, image_path, branded_path FROM itineraries "
+        f"WHERE sidecar_path IN ({placeholders}) "
+        f"OR image_path IN ({placeholders}) "
+        f"OR branded_path IN ({placeholders}) "
+        "ORDER BY indexed_at DESC"
+    )
+    keyset = set(unique)
+    result: dict[str, str] = {}
+    with open_db(DEFAULT_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(sql, unique * 3).fetchall()
+    # Rows are newest-first, so the first time a key appears (in any column) is
+    # the newest match — mirrors the per-id "ORDER BY indexed_at DESC LIMIT 1".
+    for row in rows:
+        raw = row["branded_path"] or row["image_path"]
+        if not raw:
+            continue
+        for col in ("sidecar_path", "image_path", "branded_path"):
+            val = row[col]
+            if val in keyset and val not in result:
+                result[val] = raw
+    return result
+
+
 def _media_ids_to_files(media_ids: list[object]) -> list[Path]:
+    decoded: list[str] = []
+    for value in media_ids:
+        try:
+            decoded.append(_decode_media_id(str(value or "")))
+        except Exception:
+            decoded.append("")
+    lookup = _db_image_paths_for_keys(decoded)
     files: list[Path] = []
     seen: set[Path] = set()
-    for value in media_ids:
-        media_id = str(value or "")
-        raw = _db_image_path(media_id)
-        if not raw:
-            try:
-                raw = _decode_media_id(media_id)
-            except Exception:
-                raw = ""
-        candidate = _resolve_project_file(raw or "")
+    for key in decoded:
+        # Fall back to the decoded key itself as a path when it isn't a known
+        # DB image (matches the previous per-id behaviour).
+        candidate = _resolve_project_file(lookup.get(key) or key or "")
         if candidate is None or candidate in seen:
             continue
         seen.add(candidate)

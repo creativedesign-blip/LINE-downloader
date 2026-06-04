@@ -194,21 +194,18 @@ class TestRoundTrip(unittest.TestCase):
 
 
 class TestRealProjectPath(unittest.TestCase):
-    """Smoke test: the real project path contains '大都會' — make sure
-    imread_unicode works on it (if the actual metro sample exists)."""
+    """The real project path contains '大都會' — verify imread_unicode handles
+    that exact Chinese sequence. Self-contained (generates the image under a
+    matching path) so it runs everywhere, not only when a real sample exists."""
 
-    def test_reads_real_metro_sample_if_present(self):
-        sample = (
-            Path(__file__).resolve().parent.parent.parent.parent
-            / "downloads" / "metro" / "travel"
-            / "line_2026-04-21T19-14-32_0001_perf.jpg"
-        )
-        if not sample.exists():
-            self.skipTest(f"metro sample not present at {sample}")
-        img = imread_unicode(sample, cv2.IMREAD_COLOR)
-        self.assertIsNotNone(img,
-                             f"failed to read real Chinese path: {sample}")
-        self.assertEqual(img.ndim, 3)
+    def test_reads_image_under_metro_chinese_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "大都會" / "travel" / "line_sample_0001_perf.jpg"
+            written = imwrite_unicode(sample, np.zeros((8, 8, 3), dtype=np.uint8), ext=".jpg")
+            self.assertTrue(written, f"failed to write Chinese path: {sample}")
+            img = imread_unicode(sample, cv2.IMREAD_COLOR)
+            self.assertIsNotNone(img, f"failed to read Chinese path: {sample}")
+            self.assertEqual(img.ndim, 3)
 
 
 if __name__ == "__main__":
