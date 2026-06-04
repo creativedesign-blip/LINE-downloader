@@ -52,6 +52,10 @@ DEFAULT_CONFIG = {
     "pipeline_python": sys.executable,
     "max_images_per_group": 500,
     "max_no_new_download_rounds": 5,
+    # Stop scanning a group only after this many CONSECUTIVE already-seen
+    # images. Breaking at the very first duplicate would silently skip newer
+    # images sitting below an isolated repost in the feed.
+    "max_consecutive_duplicates": 8,
     "next_image_wait_seconds": 1.0,
     "stop_on_group_failure": False,
     # Retry a group whose only failure was LINE not being ready (main window in
@@ -824,6 +828,7 @@ class LineRpa:
         max_images = int(self.config.get("max_images_per_group", 500))
         next_image_wait = float(self.config.get("next_image_wait_seconds", 1.0))
         no_new_rounds = 0
+        consecutive_dups = 0
         seen_image_hashes: set[str] = set(image_index.get(group_name, [])) if image_index and group_name else set()
         seen_image_names: set[str] = set()
         media_hwnd = self.find_media_window()
@@ -916,8 +921,16 @@ class LineRpa:
                             pending_index_writes = 0
                     if image_seen_log is not None and seen_log_path is not None and seen_log_changed:
                         save_image_seen_log(image_seen_log, seen_log_path)
-                    if duplicate_found:
-                        break
+                    # Don't stop at the FIRST already-seen image: a reposted
+                    # image among new posts would otherwise break the scan and
+                    # silently skip the newer images below it. Stop only after a
+                    # run of consecutive duplicates (the already-downloaded tail).
+                    if unique_count:
+                        consecutive_dups = 0
+                    elif duplicate_found:
+                        consecutive_dups += 1
+                        if consecutive_dups >= int(self.config.get("max_consecutive_duplicates", 8)):
+                            break
                 else:
                     counts["skipped"] += 1
                     no_new_rounds += 1

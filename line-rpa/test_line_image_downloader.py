@@ -591,7 +591,7 @@ class LineImageDownloaderTests(unittest.TestCase):
             digest = app.LineRpa.file_sha256(duplicate)
             app.save_image_index(index_path, {"group-a": [digest]})
 
-            rpa = app.LineRpa({"wait_seconds": 0, "max_images_per_group": 3, "coordinates": app.DEFAULT_CONFIG["coordinates"]})
+            rpa = app.LineRpa({"wait_seconds": 0, "max_images_per_group": 3, "max_consecutive_duplicates": 1, "coordinates": app.DEFAULT_CONFIG["coordinates"]})
             calls = []
 
             rpa.find_media_window = lambda: 300
@@ -616,6 +616,51 @@ class LineImageDownloaderTests(unittest.TestCase):
             self.assertEqual(counts["success"], 0)
             self.assertFalse(duplicate.exists())
             self.assertTrue((save_dir / ".duplicate_dropped" / "downloaded.png").exists())
+
+    def test_download_does_not_stop_on_isolated_duplicate(self):
+        # A reposted (already-seen) image sitting BETWEEN new images must not
+        # break the scan — the newer images below it must still be downloaded.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            save_dir = tmp_path / "group-a"
+            save_dir.mkdir()
+            index_path = tmp_path / "image_index.json"
+            repost = save_dir / "repost.png"
+            repost.write_bytes(b"old-image")
+            old_digest = app.LineRpa.file_sha256(repost)
+            app.save_image_index(index_path, {"group-a": [old_digest]})
+            new1 = save_dir / "new1.png"
+            new1.write_bytes(b"new-image-1")
+            new2 = save_dir / "new2.png"
+            new2.write_bytes(b"new-image-2")
+
+            # Feed: new1, then the repost (already seen), then new2.
+            rounds = iter([[new1], [repost], [new2], [], [], []])
+            rpa = app.LineRpa({
+                "wait_seconds": 0,
+                "max_images_per_group": 6,
+                "max_no_new_download_rounds": 99,
+                "max_consecutive_duplicates": 8,
+                "coordinates": app.DEFAULT_CONFIG["coordinates"],
+            })
+            rpa.find_media_window = lambda: 300
+            rpa.wait_for_viewer_window = lambda **_: 400
+            rpa.apply_window_layout = lambda *a, **k: None
+            rpa.double_click_window_ratio = lambda *a, **k: None
+            rpa.hover_window_ratio = lambda *a, **k: None
+            rpa.click_window_ratio = lambda *a, **k: None
+            rpa.recent_download_candidates = lambda: set()
+            rpa.handle_save_dialog = lambda target_dir: None
+            rpa.move_new_downloads = lambda before, target_dir: next(rounds, [])
+
+            with patch.object(app.time, "sleep"), \
+                 patch.object(app.win32gui, "IsWindow", return_value=True):
+                counts = rpa.download_all_visible_images(save_dir, "group-a", app.load_image_index(index_path), index_path)
+
+            # Both new images counted despite the repost in the middle.
+            self.assertEqual(counts["success"], 2)
+            self.assertEqual(counts["duplicate"], 1)
+            self.assertTrue((save_dir / ".duplicate_dropped" / "repost.png").exists())
 
     def test_run_group_uses_actual_save_root_for_duplicate_index(self):
         with tempfile.TemporaryDirectory() as tmp:
