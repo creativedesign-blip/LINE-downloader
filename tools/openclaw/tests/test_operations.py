@@ -418,6 +418,28 @@ class TestOpenClawOperations(unittest.TestCase):
         after = check_duplicates(self.db_path, review_path=review_path)["groups"]
         self.assertEqual([g for g in after if g["match_type"] == "image_sha256"], [])
 
+    def test_auto_resolve_keeps_branded_copy(self):
+        # Keep the copy that actually has a branded image, even if the plain
+        # copy is otherwise a tiebreak winner — has_branded reflects the real
+        # branded column, not the image_path display fallback.
+        review_path = self.tmp_path / "reviews.json"
+        branded = "line-rpa/download/src-keep/travel/keep.jpg.json"
+        plain = "line-rpa/download/src-arch/travel/arch.jpg.json"
+        with TravelIndex(self.db_path) as index:
+            insert_row(
+                index, branded, target_id="src-keep", group_name="K",
+                countries=["日本"], months=[3], regions=["東京"], image_sha256="brand-dup",
+            )
+            insert_row(
+                index, plain, target_id="src-arch", group_name="A",
+                countries=["日本"], months=[3], regions=["東京"], image_sha256="brand-dup",
+                branded_path=None,
+            )
+        auto_resolve_image_duplicates(self.db_path, review_path=review_path)
+        entry = json.loads(review_path.read_text(encoding="utf-8"))["reviews"][0]
+        self.assertEqual(entry["kept_sidecar_path"], branded)
+        self.assertEqual(entry["archived_sidecar_paths"], [plain])
+
     def test_check_duplicates_include_certain_false_drops_sha_tier(self):
         # The review surface passes include_certain=False: sha-identical groups
         # (already collapsed by the query layer) are dropped, while phash and

@@ -167,6 +167,9 @@ def _row_to_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "sidecar_path": get("sidecar_path"),
         "image_path": get("image_path"),
         "branded_path": get("branded_path") or get("image_path"),
+        # branded_path above falls back to image_path for display; this records
+        # whether a real branded image exists (the raw column was non-empty).
+        "has_branded": bool(str(get("branded_path") or "").strip()),
         "image_sha256": get("image_sha256"),
         "image_phash": get("image_phash"),
         "target_id": get("target_id"),
@@ -885,7 +888,7 @@ def check_duplicates(
 def _keep_rank(item: dict[str, Any]) -> tuple:
     """Order key for choosing which copy to keep — prefer a branded image, then
     the most recently indexed, with sidecar_path as a deterministic tiebreak."""
-    has_branded = 1 if str(item.get("branded_path") or "").strip() else 0
+    has_branded = 1 if item.get("has_branded") else 0
     return (has_branded, str(item.get("indexed_at") or ""), str(item.get("sidecar_path") or ""))
 
 
