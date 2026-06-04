@@ -20,6 +20,9 @@ class FakeAuthHandler:
         self.body = body
         self.response = None
 
+    def _client_ip(self):
+        return "test-client"
+
     def _read_json_body(self):
         return self.body
 

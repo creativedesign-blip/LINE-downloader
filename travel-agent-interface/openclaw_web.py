@@ -80,6 +80,24 @@ AUTH_SESSION_TTL_SECONDS = 12 * 60 * 60
 AUTH_SESSION_TTL_REMEMBER_SECONDS = 30 * 24 * 60 * 60
 _AUTH_SECRET_LOCK = threading.Lock()
 _AUTH_SECRET_CACHE: bytes | None = None
+# Cap JSON request bodies so a lying/huge Content-Length can't exhaust RAM. The
+# multipart upload path keeps its own (larger) MAX_UPLOAD_TOTAL_BYTES limit.
+MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
+# Per-client-IP login throttle (sliding window) to blunt brute-force/credential
+# stuffing against the single shared credential now exposed on the internet.
+LOGIN_MAX_FAILURES = 10
+LOGIN_FAILURE_WINDOW_SECONDS = 300
+LOGIN_RATE_LOCK = threading.Lock()
+_LOGIN_FAILURES: dict[str, list[float]] = {}
+# CSRF: same-origin (Origin host == Host header) is always accepted. The known
+# public tunnel host is allowlisted explicitly so the check still passes if the
+# proxy rewrites the Host header; extra hosts can be added via the env var
+# (comma-separated).
+ALLOWED_ORIGIN_HOSTS = {"travel.quick-buyer.com"} | {
+    h.strip().lower()
+    for h in os.environ.get("OPENCLAW_WEB_ALLOWED_ORIGINS", "").split(",")
+    if h.strip()
+}
 SYSTEM_TAGS_CLEARED_SENTINEL = "__openclaw_system_tags_cleared__"
 _OPENCC_T2TW = OpenCC("s2tw") if OpenCC else None
 _OCR_TAG_FALLBACK_TRANSLATION = str.maketrans({
@@ -236,6 +254,33 @@ def _cookie_value(cookie_header: str, name: str) -> str:
         if key == name:
             return value
     return ""
+
+
+def _login_retry_after(ip: str) -> int:
+    """Seconds the caller must wait before another login attempt (0 = allowed).
+
+    Sliding window: at/over LOGIN_MAX_FAILURES recent failures the IP is blocked
+    until the oldest failure ages out of the window."""
+    now = time.time()
+    with LOGIN_RATE_LOCK:
+        fails = [t for t in _LOGIN_FAILURES.get(ip, []) if now - t < LOGIN_FAILURE_WINDOW_SECONDS]
+        _LOGIN_FAILURES[ip] = fails
+        if len(fails) >= LOGIN_MAX_FAILURES:
+            return int(LOGIN_FAILURE_WINDOW_SECONDS - (now - min(fails))) + 1
+        return 0
+
+
+def _record_login_failure(ip: str) -> None:
+    now = time.time()
+    with LOGIN_RATE_LOCK:
+        fails = [t for t in _LOGIN_FAILURES.get(ip, []) if now - t < LOGIN_FAILURE_WINDOW_SECONDS]
+        fails.append(now)
+        _LOGIN_FAILURES[ip] = fails
+
+
+def _clear_login_failures(ip: str) -> None:
+    with LOGIN_RATE_LOCK:
+        _LOGIN_FAILURES.pop(ip, None)
 
 
 def _as_int(value: object, default: int | None = None) -> int | None:
@@ -2598,9 +2643,53 @@ class Handler(SimpleHTTPRequestHandler):
         self._json({"ok": False, "error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
         return False
 
+    def _client_ip(self) -> str:
+        # Behind the Cloudflare tunnel the real client is in CF-Connecting-IP;
+        # fall back to the first X-Forwarded-For hop, then the socket peer.
+        cf = self.headers.get("CF-Connecting-IP")
+        if cf:
+            return cf.strip()
+        xff = self.headers.get("X-Forwarded-For")
+        if xff:
+            return xff.split(",")[0].strip()
+        return self.client_address[0] if self.client_address else "?"
+
+    def _csrf_ok(self) -> bool:
+        # State-changing requests must be same-origin. A cross-site forged
+        # request carries the attacker's Origin, which won't match our Host.
+        # Requests without an Origin header (non-browser/programmatic clients)
+        # are allowed through.
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        host = (urlparse(origin).hostname or "").lower()
+        if not host:
+            return False
+        request_host = (self.headers.get("Host", "").rsplit(":", 1)[0] or "").lower()
+        return host == request_host or host in ALLOWED_ORIGIN_HOSTS
+
+    def _reject_csrf(self) -> None:
+        self._json({"ok": False, "error": "cross-origin request blocked"}, HTTPStatus.FORBIDDEN)
+
+    @staticmethod
+    def _static_path_is_public(path: str) -> bool:
+        # Only the SPA shell and hashed build assets load before login; every
+        # other static path requires auth, so source files are never served
+        # unauthenticated even if dist/ is missing and WEB_DIR falls back to the
+        # application source directory.
+        if path in ("/", "/index.html", "/favicon.ico"):
+            return True
+        return path.startswith("/assets/")
+
     def _read_json_body(self) -> dict:
-        length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length).decode("utf-8") if length else "{}"
+        length = _as_int(self.headers.get("Content-Length", "0"), 0) or 0
+        if length > MAX_JSON_BODY_BYTES:
+            # Refuse oversized bodies before reading them (memory-exhaustion
+            # DoS). Drop the connection so the unread body can't desync the
+            # next keep-alive request.
+            self.close_connection = True
+            raise ValueError("request body too large")
+        raw = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
         data = json.loads(raw)
         return data if isinstance(data, dict) else {}
 
@@ -2644,17 +2733,27 @@ class Handler(SimpleHTTPRequestHandler):
                     HTTPStatus.SERVICE_UNAVAILABLE,
                 )
                 return
+            ip = self._client_ip()
+            retry_after = _login_retry_after(ip)
+            if retry_after > 0:
+                self._json_auth_response(
+                    {"ok": False, "error": "登入嘗試過於頻繁，請稍後再試。", "retry_after": retry_after},
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                )
+                return
             data = self._read_json_body()
             username = str(data.get("username") or "").strip()
             password = str(data.get("password") or "")
             valid = hmac.compare_digest(username, AUTH_USERNAME) and hmac.compare_digest(password, AUTH_PASSWORD)
             if not valid:
+                _record_login_failure(ip)
                 self._json_auth_response(
                     {"ok": False, "error": "帳號或密碼不正確"},
                     HTTPStatus.UNAUTHORIZED,
                 )
                 return
 
+            _clear_login_failures(ip)
             remember = bool(data.get("remember"))
             ttl = AUTH_SESSION_TTL_REMEMBER_SECONDS if remember else AUTH_SESSION_TTL_SECONDS
             token = _encode_auth_session(username, ttl_seconds=ttl)
@@ -2663,9 +2762,12 @@ class Handler(SimpleHTTPRequestHandler):
                 {"ok": True, "authenticated": True, "username": username, "remember": remember},
                 cookie=cookie,
             )
-        except Exception as exc:
+        except Exception:
+            # Log the real cause server-side; never leak exception text/class to
+            # the (pre-auth, public) client.
+            logger.error("login handler failed\n%s", traceback.format_exc())
             self._json_auth_response(
-                {"ok": False, "error": str(exc), "type": exc.__class__.__name__},
+                {"ok": False, "error": "internal server error"},
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
 
@@ -2698,10 +2800,15 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self._handle_media(parse_qs(parsed.query))
             return
+        if not self._static_path_is_public(parsed.path) and not self._require_auth():
+            return
         super().do_GET()
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if not self._csrf_ok():
+            self._reject_csrf()
+            return
         if parsed.path == "/api/auth/login":
             self._handle_auth_login()
             return
@@ -2741,6 +2848,9 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
+        if not self._csrf_ok():
+            self._reject_csrf()
+            return
         if parsed.path.startswith("/api/uploads/") and not self._require_auth():
             return
         if parsed.path.startswith("/api/uploads/"):
@@ -2750,6 +2860,9 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_PATCH(self) -> None:
         parsed = urlparse(self.path)
+        if not self._csrf_ok():
+            self._reject_csrf()
+            return
         if parsed.path.startswith("/api/uploads/") and not self._require_auth():
             return
         if parsed.path.startswith("/api/uploads/"):
@@ -2858,7 +2971,7 @@ class Handler(SimpleHTTPRequestHandler):
 
             self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
         except Exception as exc:
-            self._json({"error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._json({"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _handle_settings_update(self) -> None:
         try:
@@ -2868,7 +2981,7 @@ class Handler(SimpleHTTPRequestHandler):
                 settings["line_auto_enabled"] = bool(data.get("line_auto_enabled"))
             self._json({"ok": True, "settings": _write_openclaw_settings(settings)})
         except Exception as exc:
-            self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._json({"ok": False, "error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _handle_item_detail_update(self) -> None:
         try:
@@ -2923,7 +3036,7 @@ class Handler(SimpleHTTPRequestHandler):
             _save_item_annotation("line", detail["sidecar_path"], patch)
             self._json({"ok": True, "detail": _line_item_detail(str(detail["sidecar_path"]))})
         except Exception as exc:
-            self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._json({"ok": False, "error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _start_upload_pipeline(self, folder: dict[str, object], *, trigger_source: str = "upload") -> dict[str, object]:
         latest = _latest_job_snapshot()
@@ -2966,7 +3079,7 @@ class Handler(SimpleHTTPRequestHandler):
 
             self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
         except Exception as exc:
-            self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._json({"ok": False, "error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _handle_uploads_post(self, path: str) -> None:
         try:
@@ -3129,7 +3242,7 @@ class Handler(SimpleHTTPRequestHandler):
 
             self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
         except Exception as exc:
-            self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._json({"ok": False, "error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _handle_uploads_delete(self, path: str) -> None:
         try:
@@ -3178,7 +3291,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
         except Exception as exc:
-            self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._json({"ok": False, "error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _handle_uploads_patch(self, path: str) -> None:
         try:
@@ -3219,16 +3332,14 @@ class Handler(SimpleHTTPRequestHandler):
 
             self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
         except Exception as exc:
-            self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._json({"ok": False, "error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _handle_chat(self) -> None:
         started = time.perf_counter()
         message = ""
         status = HTTPStatus.OK
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length).decode("utf-8") if length else "{}"
-            data = json.loads(raw)
+            data = self._read_json_body()
             message = str(data.get("message") or "").strip()
             # Default raised from 12 to 100: with limit=12 + indexed_at-DESC
             # ordering, popular country queries (e.g. "日本", "韓國") routinely
@@ -3241,9 +3352,10 @@ class Handler(SimpleHTTPRequestHandler):
                 payload = {"kind": "empty", "message": "請輸入要交給 Agent 的旅遊任務。"}
             else:
                 payload = _chat_payload(message, limit, include_archived=include_archived)
-        except Exception as exc:
+        except Exception:
+            logger.error("chat handler failed\n%s", traceback.format_exc())
             status = HTTPStatus.INTERNAL_SERVER_ERROR
-            payload = {"error": str(exc), "type": exc.__class__.__name__}
+            payload = {"error": "internal server error"}
 
         duration_ms = int((time.perf_counter() - started) * 1000)
         count = int(payload.get("count") or 0) if isinstance(payload, dict) else 0
@@ -3291,16 +3403,14 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _handle_clipboard(self) -> None:
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length).decode("utf-8") if length else "{}"
-            data = json.loads(raw)
+            data = self._read_json_body()
             media_ids = data.get("media_ids") or []
             if isinstance(media_ids, str):
                 media_ids = [media_ids]
             files = _media_ids_to_files(list(media_ids))
             self._json(_copy_files_to_windows_clipboard(files))
         except Exception as exc:
-            self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._json({"ok": False, "error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _send_download_zip(self, files: list[Path]) -> None:
         if not files:
@@ -3318,22 +3428,18 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _handle_download(self) -> None:
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length).decode("utf-8") if length else "{}"
-            data = json.loads(raw)
+            data = self._read_json_body()
             media_ids = data.get("media_ids") or []
             if isinstance(media_ids, str):
                 media_ids = [media_ids]
             files = _media_ids_to_files(list(media_ids))
             self._send_download_zip(files)
         except Exception as exc:
-            self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._json({"ok": False, "error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _handle_duplicate_review(self) -> None:
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length).decode("utf-8") if length else "{}"
-            data = json.loads(raw)
+            data = self._read_json_body()
             action = str(data.get("action") or "keep_one")
             group_id = str(data.get("group_id") or "").strip()
             keep = data.get("keep_sidecar_paths") or []
@@ -3358,7 +3464,7 @@ class Handler(SimpleHTTPRequestHandler):
             )
             self._json(result)
         except Exception as exc:
-            self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._json({"ok": False, "error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _handle_run(self) -> None:
         try:
@@ -3415,7 +3521,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "message": "已手動觸發抓取+OCR+組圖，完成前前端會顯示 LINE圖片處理中。",
             })
         except Exception as exc:
-            self._json({"ok": False, "error": str(exc), "type": exc.__class__.__name__}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._json({"ok": False, "error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _handle_media(self, params: dict[str, list[str]], *, thumbnail: bool = False) -> None:
         media_id = _first(params, "id")
