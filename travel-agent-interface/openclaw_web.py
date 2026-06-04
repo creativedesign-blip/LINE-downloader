@@ -98,6 +98,21 @@ ALLOWED_ORIGIN_HOSTS = {"travel.quick-buyer.com"} | {
     for h in os.environ.get("OPENCLAW_WEB_ALLOWED_ORIGINS", "").split(",")
     if h.strip()
 }
+# Force the Secure attribute on the auth cookie regardless of the (spoofable)
+# X-Forwarded-Proto header. Set OPENCLAW_WEB_SECURE_COOKIES=1 for internet mode
+# (HTTPS-only tunnel); leave unset for plain-HTTP LAN mode so the cookie is
+# still sent. Set by start-internet.ps1 in practice.
+FORCE_SECURE_COOKIES = os.environ.get("OPENCLAW_WEB_SECURE_COOKIES", "").strip().lower() in {"1", "true", "yes", "on"}
+# Bulk-download guards: bound how much a single /api/openclaw/download or
+# /clipboard request can pull so it can't build an unbounded in-memory ZIP.
+MAX_DOWNLOAD_FILE_COUNT = 300
+MAX_DOWNLOAD_TOTAL_BYTES = 500 * 1024 * 1024
+# Serialize upload pipeline launches (atomic busy-check + claim) and per-folder
+# file writes so concurrent uploads can't double-launch or clobber each other.
+UPLOAD_LAUNCH_LOCK = threading.Lock()
+UPLOAD_WRITE_LOCK = threading.Lock()
+_UPLOAD_ACTIVE_LOCK = threading.Lock()
+_upload_active_count = 0
 SYSTEM_TAGS_CLEARED_SENTINEL = "__openclaw_system_tags_cleared__"
 _OPENCC_T2TW = OpenCC("s2tw") if OpenCC else None
 _OCR_TAG_FALLBACK_TRANSLATION = str.maketrans({
@@ -378,7 +393,26 @@ def _latest_job_snapshot() -> dict[str, object] | None:
     return latest
 
 
+def _mark_upload_launched() -> None:
+    global _upload_active_count
+    with _UPLOAD_ACTIVE_LOCK:
+        _upload_active_count += 1
+
+
+def _mark_upload_finished() -> None:
+    global _upload_active_count
+    with _UPLOAD_ACTIVE_LOCK:
+        if _upload_active_count > 0:
+            _upload_active_count -= 1
+
+
 def _upload_pipeline_is_busy() -> bool:
+    # A just-launched pipeline isn't reflected in latest_job.json until its
+    # subprocess writes it, so consult the synchronous in-process launch counter
+    # first to close the check-then-launch race.
+    with _UPLOAD_ACTIVE_LOCK:
+        if _upload_active_count > 0:
+            return True
     latest = _latest_job_snapshot()
     current = _manual_job_snapshot()
     return bool(current.get("running") or _is_recent_run_lock() or (latest and latest.get("status") == "running"))
@@ -940,9 +974,29 @@ def _upload_item_detail(image_id: int) -> dict[str, object] | None:
     }
 
 
+def _is_indexed_sidecar(sidecar_rel: str) -> bool:
+    """True only if sidecar_rel is a real LINE DM sidecar present in the travel
+    index. Confines item-detail reads to indexed sidecars so an attacker can't
+    coax it into reading arbitrary .json under the repo (settings/state files)."""
+    if not sidecar_rel:
+        return False
+    try:
+        with open_db(DEFAULT_DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM itineraries WHERE sidecar_path = ? LIMIT 1",
+                (sidecar_rel,),
+            ).fetchone()
+        return row is not None
+    except Exception:
+        return False
+
+
 def _line_item_detail(sidecar_path: str, params: dict[str, list[str]] | None = None) -> dict[str, object] | None:
     sidecar = _resolve_project_file(sidecar_path)
     if sidecar is None:
+        return None
+    sidecar_rel = sidecar.relative_to(PROJECT_ROOT).as_posix()
+    if not _is_indexed_sidecar(sidecar_rel):
         return None
     try:
         payload = json.loads(sidecar.read_text(encoding="utf-8"))
@@ -950,7 +1004,7 @@ def _line_item_detail(sidecar_path: str, params: dict[str, list[str]] | None = N
         payload = {}
     source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
     item = {
-        "sidecar_path": sidecar.relative_to(PROJECT_ROOT).as_posix(),
+        "sidecar_path": sidecar_rel,
         "image_path": _first(params or {}, "image_path"),
         "target_id": _first(params or {}, "target_id") or str(source.get("targetId") or source.get("target_id") or ""),
         "group_name": _first(params or {}, "group_name") or str(source.get("groupName") or source.get("group_name") or ""),
@@ -1074,6 +1128,11 @@ SUPPORTED_UPLOAD_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_UPLOAD_FILE_BYTES = 15 * 1024 * 1024
 MAX_UPLOAD_TOTAL_BYTES = 200 * 1024 * 1024
 MAX_UPLOAD_FILE_COUNT = 50
+# Reject decompression bombs: a small highly-compressed file can decode to a
+# huge pixel array and exhaust RAM in the OCR/compose pipeline. Bound the
+# declared dimensions (read from the header, before any pixel decode).
+MAX_UPLOAD_IMAGE_EDGE_PX = 12000
+MAX_UPLOAD_IMAGE_PIXELS = 80_000_000
 MIN_UPLOAD_IMAGE_EDGE_PX = 50
 FALLBACK_MIN_UPLOAD_IMAGE_WIDTH_PX = 620
 UPLOAD_FOLDER_STALE_AFTER_SECONDS = 60 * 60
@@ -1131,6 +1190,12 @@ def _validate_upload_image_dimensions(content: bytes) -> str | None:
             image.verify()
     except Exception:
         return "圖片無法讀取或格式損壞"
+
+    if width > MAX_UPLOAD_IMAGE_EDGE_PX or height > MAX_UPLOAD_IMAGE_EDGE_PX or (width * height) > MAX_UPLOAD_IMAGE_PIXELS:
+        return (
+            f"圖片尺寸過大：{width}x{height}px。請上傳正常的 LINE 截圖"
+            f"（單邊上限 {MAX_UPLOAD_IMAGE_EDGE_PX}px）。"
+        )
 
     min_width, min_edge = _upload_image_size_requirement()
     if width < min_edge or height < min_edge or width < min_width:
@@ -2521,25 +2586,33 @@ def _launch_upload_pipeline(folder: dict[str, object], *, trigger_source: str = 
         current_step="ocr",
         step_statuses={"upload": "success", "ocr": "pending", "compose": "pending", "index": "pending"},
     )
-    process = _spawn_logged(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(RUN_UPLOAD_SCRIPT),
-            "-Target",
-            str(folder["folder_slug"]),
-            "-FolderId",
-            str(folder["id"]),
-            "-TriggerSource",
-            trigger_source,
-        ],
-        log_name="upload_subprocess.log",
-        cwd=str(PROJECT_ROOT),
-        creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
-    )
+    # Mark busy synchronously (before the subprocess can write latest_job.json)
+    # so a concurrent request observes the running pipeline; the watcher clears
+    # it when the process exits.
+    _mark_upload_launched()
+    try:
+        process = _spawn_logged(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(RUN_UPLOAD_SCRIPT),
+                "-Target",
+                str(folder["folder_slug"]),
+                "-FolderId",
+                str(folder["id"]),
+                "-TriggerSource",
+                trigger_source,
+            ],
+            log_name="upload_subprocess.log",
+            cwd=str(PROJECT_ROOT),
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+        )
+    except Exception:
+        _mark_upload_finished()
+        raise
     # Without this watcher, queued upload jobs would only drain when the next
     # browser GET /api/uploads/* fired _start_pending_upload_pipeline_if_idle.
     # Closing the tab while a job was running could strand later uploads.
@@ -2552,6 +2625,8 @@ def _watch_upload_pipeline(process: subprocess.Popen) -> None:
         process.wait()
     except Exception:
         pass
+    finally:
+        _mark_upload_finished()
     try:
         _start_pending_upload_pipeline_if_idle()
     except Exception:
@@ -2559,18 +2634,21 @@ def _watch_upload_pipeline(process: subprocess.Popen) -> None:
 
 
 def _start_pending_upload_pipeline_if_idle() -> dict[str, object] | None:
-    if _upload_pipeline_is_busy():
-        return None
-    with PENDING_UPLOAD_LOCK:
-        jobs = _read_pending_upload_jobs()
-        while jobs:
-            job = jobs.pop(0)
-            _write_pending_upload_jobs(jobs)
-            folder = get_folder(int(job.get("folder_id") or 0))
-            if not folder:
-                continue
-            result = _launch_upload_pipeline(folder, trigger_source=str(job.get("trigger_source") or "upload"))
-            return {"job": job, "result": result}
+    # Hold the launch lock across the busy-check and the launch so two callers
+    # can't both observe "idle" and double-start. Lock order: LAUNCH -> PENDING.
+    with UPLOAD_LAUNCH_LOCK:
+        if _upload_pipeline_is_busy():
+            return None
+        with PENDING_UPLOAD_LOCK:
+            jobs = _read_pending_upload_jobs()
+            while jobs:
+                job = jobs.pop(0)
+                _write_pending_upload_jobs(jobs)
+                folder = get_folder(int(job.get("folder_id") or 0))
+                if not folder:
+                    continue
+                result = _launch_upload_pipeline(folder, trigger_source=str(job.get("trigger_source") or "upload"))
+                return {"job": job, "result": result}
     return None
 
 
@@ -2626,7 +2704,7 @@ class Handler(SimpleHTTPRequestHandler):
             "SameSite=Lax",
             f"Max-Age={max_age}",
         ]
-        if self._is_secure_request():
+        if FORCE_SECURE_COOKIES or self._is_secure_request():
             parts.append("Secure")
         return "; ".join(parts)
 
@@ -3041,16 +3119,19 @@ class Handler(SimpleHTTPRequestHandler):
     def _start_upload_pipeline(self, folder: dict[str, object], *, trigger_source: str = "upload") -> dict[str, object]:
         latest = _latest_job_snapshot()
         current = _manual_job_snapshot()
-        if _upload_pipeline_is_busy():
-            _queue_pending_upload_job(folder, trigger_source=trigger_source)
-            return {
-                "ok": True,
-                "started": False,
-                "queued": True,
-                "job": latest or current,
-                "message": "pipeline is busy; upload processing has been queued",
-            }
-        return _launch_upload_pipeline(folder, trigger_source=trigger_source)
+        # Atomic busy-check + claim: hold the launch lock so two concurrent
+        # uploads can't both see "not busy" and start duplicate pipelines.
+        with UPLOAD_LAUNCH_LOCK:
+            if _upload_pipeline_is_busy():
+                _queue_pending_upload_job(folder, trigger_source=trigger_source)
+                return {
+                    "ok": True,
+                    "started": False,
+                    "queued": True,
+                    "job": latest or current,
+                    "message": "pipeline is busy; upload processing has been queued",
+                }
+            return _launch_upload_pipeline(folder, trigger_source=trigger_source)
 
     def _handle_uploads_get(self, path: str, params: dict[str, list[str]]) -> None:
         try:
@@ -3166,29 +3247,34 @@ class Handler(SimpleHTTPRequestHandler):
                 target_inbox.mkdir(parents=True, exist_ok=True)
                 added = []
                 rejected = []
-                next_index = int(folder.get("image_count") or 0) + 1
-                for file_item in files:
-                    filename = str(file_item["filename"])
-                    content = bytes(file_item["content"])
-                    suffix = Path(filename).suffix.lower()
-                    if suffix not in SUPPORTED_UPLOAD_EXT:
-                        rejected.append(f"{filename}: unsupported format")
-                        continue
-                    if len(content) > MAX_UPLOAD_FILE_BYTES:
-                        rejected.append(f"{filename}: file too large")
-                        continue
-                    size_error = _validate_upload_image_dimensions(content)
-                    if size_error:
-                        rejected.append(f"{filename}: {size_error}")
-                        continue
-                    while True:
-                        target = target_inbox / safe_stored_filename(filename, next_index)
-                        if not target.exists() and not stored_path_is_registered(target):
-                            break
-                        next_index += 1
-                    target.write_bytes(content)
-                    added.append(add_image(int(folder["id"]), target, filename))
+                # Serialize filename allocation + write + register so two
+                # concurrent uploads to the same folder can't pick the same index
+                # (clobbering a file / hitting the UNIQUE(stored_path) constraint).
+                with UPLOAD_WRITE_LOCK:
+                    next_index = int(get_folder(int(folder["id"])) or folder).get("image_count") or 0
                     next_index += 1
+                    for file_item in files:
+                        filename = str(file_item["filename"])
+                        content = bytes(file_item["content"])
+                        suffix = Path(filename).suffix.lower()
+                        if suffix not in SUPPORTED_UPLOAD_EXT:
+                            rejected.append(f"{filename}: unsupported format")
+                            continue
+                        if len(content) > MAX_UPLOAD_FILE_BYTES:
+                            rejected.append(f"{filename}: file too large")
+                            continue
+                        size_error = _validate_upload_image_dimensions(content)
+                        if size_error:
+                            rejected.append(f"{filename}: {size_error}")
+                            continue
+                        while True:
+                            target = target_inbox / safe_stored_filename(filename, next_index)
+                            if not target.exists() and not stored_path_is_registered(target):
+                                break
+                            next_index += 1
+                        target.write_bytes(content)
+                        added.append(add_image(int(folder["id"]), target, filename))
+                        next_index += 1
                 if not added:
                     detail = "; ".join(rejected) if rejected else "no supported image files uploaded"
                     self._json({"ok": False, "error": detail}, HTTPStatus.BAD_REQUEST)
@@ -3407,6 +3493,9 @@ class Handler(SimpleHTTPRequestHandler):
             media_ids = data.get("media_ids") or []
             if isinstance(media_ids, str):
                 media_ids = [media_ids]
+            if len(media_ids) > MAX_DOWNLOAD_FILE_COUNT:
+                self._json({"ok": False, "error": f"too many media ids; maximum is {MAX_DOWNLOAD_FILE_COUNT}"}, HTTPStatus.BAD_REQUEST)
+                return
             files = _media_ids_to_files(list(media_ids))
             self._json(_copy_files_to_windows_clipboard(files))
         except Exception as exc:
@@ -3415,6 +3504,18 @@ class Handler(SimpleHTTPRequestHandler):
     def _send_download_zip(self, files: list[Path]) -> None:
         if not files:
             self._json({"ok": False, "error": "no files"}, HTTPStatus.BAD_REQUEST)
+            return
+        if len(files) > MAX_DOWNLOAD_FILE_COUNT:
+            self._json({"ok": False, "error": f"too many files; maximum is {MAX_DOWNLOAD_FILE_COUNT}"}, HTTPStatus.BAD_REQUEST)
+            return
+        total = 0
+        for path in files:
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+        if total > MAX_DOWNLOAD_TOTAL_BYTES:
+            self._json({"ok": False, "error": "download too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             return
 
         body = _zip_bytes_for_files(files)
@@ -3432,6 +3533,9 @@ class Handler(SimpleHTTPRequestHandler):
             media_ids = data.get("media_ids") or []
             if isinstance(media_ids, str):
                 media_ids = [media_ids]
+            if len(media_ids) > MAX_DOWNLOAD_FILE_COUNT:
+                self._json({"ok": False, "error": f"too many media ids; maximum is {MAX_DOWNLOAD_FILE_COUNT}"}, HTTPStatus.BAD_REQUEST)
+                return
             files = _media_ids_to_files(list(media_ids))
             self._send_download_zip(files)
         except Exception as exc:

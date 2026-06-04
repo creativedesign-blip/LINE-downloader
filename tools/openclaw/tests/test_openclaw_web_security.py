@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import tempfile
 import unittest
 from http import HTTPStatus
 from pathlib import Path
@@ -135,6 +136,108 @@ class LoginRateLimitTests(unittest.TestCase):
             openclaw_web.Handler._handle_auth_login(ok)
             self.assertEqual(ok.response["status"], HTTPStatus.OK)
             self.assertNotIn(ip, openclaw_web._LOGIN_FAILURES)
+
+
+class FakeCookieHandler:
+    def __init__(self, secure_request: bool):
+        self._secure = secure_request
+
+    def _is_secure_request(self):
+        return self._secure
+
+
+class SecureCookieTests(unittest.TestCase):
+    def _has_secure(self, *, force, secure_request):
+        with patch.object(openclaw_web, "FORCE_SECURE_COOKIES", force):
+            header = openclaw_web.Handler._auth_cookie_header(
+                FakeCookieHandler(secure_request), "tok", max_age=100
+            )
+        return "Secure" in header.split("; ")
+
+    def test_force_flag_sets_secure_even_without_https_header(self):
+        self.assertTrue(self._has_secure(force=True, secure_request=False))
+
+    def test_https_request_sets_secure(self):
+        self.assertTrue(self._has_secure(force=False, secure_request=True))
+
+    def test_plain_http_without_force_omits_secure(self):
+        self.assertFalse(self._has_secure(force=False, secure_request=False))
+
+
+class FakeJsonHandler:
+    def __init__(self):
+        self.json_calls = []
+
+    def _json(self, payload, status=HTTPStatus.OK):
+        self.json_calls.append((payload, status))
+
+
+class DownloadCapTests(unittest.TestCase):
+    def test_too_many_files_rejected(self):
+        handler = FakeJsonHandler()
+        files = [Path("nonexistent.jpg")] * (openclaw_web.MAX_DOWNLOAD_FILE_COUNT + 1)
+        openclaw_web.Handler._send_download_zip(handler, files)
+        self.assertEqual(handler.json_calls[-1][1], HTTPStatus.BAD_REQUEST)
+
+    def test_empty_files_rejected(self):
+        handler = FakeJsonHandler()
+        openclaw_web.Handler._send_download_zip(handler, [])
+        self.assertEqual(handler.json_calls[-1][1], HTTPStatus.BAD_REQUEST)
+
+
+class DecompressionBombTests(unittest.TestCase):
+    def _png(self, w, h):
+        buf = io.BytesIO()
+        openclaw_web.Image.new("RGB", (w, h)).save(buf, format="PNG")
+        return buf.getvalue()
+
+    def test_oversized_dimensions_rejected(self):
+        err = openclaw_web._validate_upload_image_dimensions(
+            self._png(openclaw_web.MAX_UPLOAD_IMAGE_EDGE_PX + 100, 8)
+        )
+        self.assertIsNotNone(err)
+        self.assertIn("過大", err)
+
+    def test_normal_image_passes_dimension_guard(self):
+        self.assertIsNone(openclaw_web._validate_upload_image_dimensions(self._png(800, 600)))
+
+
+class ItemDetailContainmentTests(unittest.TestCase):
+    def setUp(self):
+        import gc
+        import shutil
+        from tools.indexing.index_db import TravelIndex
+        self._TravelIndex = TravelIndex
+        self.tmp = Path(tempfile.mkdtemp(dir=str(PROJECT_ROOT)))
+
+        def _cleanup():
+            gc.collect()  # drop lingering sqlite connections so Windows can unlink
+            shutil.rmtree(self.tmp, ignore_errors=True)
+
+        self.addCleanup(_cleanup)
+        self.db_path = self.tmp / "idx.db"
+        with TravelIndex(self.db_path):
+            pass  # create an empty index
+        patcher = patch.object(openclaw_web, "DEFAULT_DB_PATH", self.db_path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _make_sidecar(self):
+        p = self.tmp / "x.jpg.json"
+        p.write_text('{"source": {}}', encoding="utf-8")
+        return p.relative_to(PROJECT_ROOT).as_posix()
+
+    def test_unindexed_sidecar_is_refused(self):
+        rel = self._make_sidecar()
+        self.assertIsNone(openclaw_web._line_item_detail(rel))
+
+    def test_indexed_sidecar_is_served(self):
+        rel = self._make_sidecar()
+        with self._TravelIndex(self.db_path) as idx:
+            idx.upsert(sidecar_path=rel, image_path=rel[:-5])
+        detail = openclaw_web._line_item_detail(rel)
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["sidecar_path"], rel)
 
 
 if __name__ == "__main__":
