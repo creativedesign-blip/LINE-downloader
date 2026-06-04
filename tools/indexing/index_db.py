@@ -101,16 +101,6 @@ CREATE INDEX IF NOT EXISTS idx_dep_date     ON itinerary_departures(departure_da
 CREATE INDEX IF NOT EXISTS idx_dep_weekday  ON itinerary_departures(weekday);
 CREATE INDEX IF NOT EXISTS idx_dep_month    ON itinerary_departures(month);
 CREATE INDEX IF NOT EXISTS idx_dep_target   ON itinerary_departures(target_id);
-
--- Upload-only searchable annotations (manual tags, display name, reference
--- text, note...) keyed by image content sha256. Unlike the tables above this
--- is NOT rebuilt from sidecars; it is synced from upload_catalog and is
--- intentionally left untouched by reindex/clear so a rebuild never wipes it.
-CREATE TABLE IF NOT EXISTS image_annotations (
-    image_sha256  TEXT PRIMARY KEY,
-    search_text   TEXT NOT NULL DEFAULT '',
-    updated_at    TEXT NOT NULL
-);
 """
 
 
@@ -400,33 +390,6 @@ class TravelIndex:
         self.conn.execute("DELETE FROM itinerary_plans")
         self.conn.execute("DELETE FROM itineraries")
         self._maybe_commit()
-
-    def replace_image_annotations(self, rows: Iterable[tuple[str, str]]) -> int:
-        """Replace the whole image_annotations table (sha256 -> search_text).
-
-        Synced from upload_catalog; a full replace keeps it idempotent and in
-        step with the current set of non-archived annotations. Returns the
-        number of rows written.
-        """
-        now = _iso_now()
-        payload = [
-            (str(sha).strip(), str(text or ""), now)
-            for sha, text in rows
-            if str(sha or "").strip()
-        ]
-        self.conn.execute("DELETE FROM image_annotations")
-        if payload:
-            self.conn.executemany(
-                "INSERT OR REPLACE INTO image_annotations "
-                "(image_sha256, search_text, updated_at) VALUES (?, ?, ?)",
-                payload,
-            )
-        self._maybe_commit()
-        return len(payload)
-
-    def annotation_count(self) -> int:
-        cur = self.conn.execute("SELECT COUNT(*) FROM image_annotations")
-        return int(cur.fetchone()[0])
 
     # -- reads ---------------------------------------------------------------
 
