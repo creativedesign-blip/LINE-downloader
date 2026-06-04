@@ -35,3 +35,25 @@ def open_db(path: "str | Path", *, timeout: float = DEFAULT_TIMEOUT) -> sqlite3.
     conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)}")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
+
+
+def content_deduped_itineraries_sql(where: str = "") -> str:
+    """Inner SELECT keeping one `itineraries` row per image content, newest first.
+
+    The single SQL source of the same "same image" rule as
+    operations._content_key: partition by COALESCE(image_sha256, sidecar_path)
+    (rows with no hash fall back to their own sidecar so they don't collapse
+    together) and keep the most recently indexed row. ``rowid DESC`` tiebreaks
+    within one reindex transaction where every row shares an indexed_at second.
+
+    Callers pass a ready ``WHERE ...`` clause (or "") and append their own outer
+    ORDER BY / LIMIT — only the dedup window must stay identical across sites.
+    """
+    return (
+        "SELECT * FROM ("
+        "  SELECT *, ROW_NUMBER() OVER ("
+        "    PARTITION BY COALESCE(image_sha256, sidecar_path) "
+        "    ORDER BY indexed_at DESC, rowid DESC"
+        f"  ) AS _rn FROM itineraries {where}"
+        ") WHERE _rn = 1"
+    )

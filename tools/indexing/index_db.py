@@ -17,10 +17,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
-from tools.common.db import open_db
+from tools.common.db import content_deduped_itineraries_sql, open_db
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS itineraries (
@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS itineraries (
     indexed_at          TEXT NOT NULL,
     sidecar_mtime       REAL,
     extractor_version   TEXT,
-    image_sha256        TEXT
+    image_sha256        TEXT,
+    image_phash         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_image_sha256 ON itineraries(image_sha256);
 CREATE INDEX IF NOT EXISTS idx_country  ON itineraries(country_csv);
@@ -109,7 +110,7 @@ COLUMNS = (
     "airline_csv", "region_csv", "duration_days", "features_csv",
     "source_time", "indexed_at",
     "sidecar_mtime", "extractor_version",
-    "image_sha256",
+    "image_sha256", "image_phash",
 )
 _INSERT_SQL = (
     f"INSERT OR REPLACE INTO itineraries ({', '.join(COLUMNS)}) "
@@ -252,6 +253,7 @@ class TravelIndex:
         sidecar_mtime: Optional[float] = None,
         extractor_version: Optional[str] = None,
         image_sha256: Optional[str] = None,
+        image_phash: Optional[str] = None,
     ) -> None:
         """Insert or replace a row, keyed by sidecar_path."""
         row = (
@@ -272,6 +274,7 @@ class TravelIndex:
             float(sidecar_mtime) if sidecar_mtime is not None else None,
             extractor_version,
             image_sha256,
+            image_phash,
         )
         self.conn.execute(_INSERT_SQL, row)
         self._maybe_commit()
@@ -466,23 +469,8 @@ class TravelIndex:
             params.append(target_id)
 
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        # Dedupe by image_sha256 — RPA-side dedup is fragile (group rename
-        # mid-history, image_index.json corruption, manual file moves all
-        # bypass it), so the same image content can land in multiple rows.
-        # Keep the most recently indexed row per hash; rows with NULL hash
-        # (pre-schema-v5) fall back to per-sidecar grouping so they
-        # don't all collapse into one bucket.
-        sql = (
-            f"SELECT * FROM ("
-            f"  SELECT *, ROW_NUMBER() OVER ("
-            f"    PARTITION BY COALESCE(image_sha256, sidecar_path) "
-            # rowid DESC tiebreaks within a single reindex transaction
-            # where every row gets the same indexed_at down to the second.
-            f"    ORDER BY indexed_at DESC, rowid DESC"
-            f"  ) AS _rn FROM itineraries {where}"
-            f") WHERE _rn = 1 "
-            f"ORDER BY indexed_at DESC LIMIT ?"
-        )
+        # One row per image content (shared dedup window — see db helper).
+        sql = content_deduped_itineraries_sql(where) + " ORDER BY indexed_at DESC LIMIT ?"
         params.append(int(limit))
 
         cur = self.conn.execute(sql, params)

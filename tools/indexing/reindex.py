@@ -31,6 +31,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from tools.branding.io_utils import image_of_sidecar
+from tools.common.image_seen import file_dhash
 from tools.common.targets import (
     DOWNLOADS_DIR, PROJECT_ROOT, TRAVEL_INDEX_DB_PATH, load_target_ids, relpath_from_root,
 )
@@ -177,6 +178,10 @@ def index_one(sidecar_path: Path, index: TravelIndex,
         sidecar_mtime=sidecar_mtime,
         extractor_version=EXTRACTOR_VERSION,
         image_sha256=ocr.get("imageSha256"),
+        # Prefer the sidecar-cached perceptual hash; compute on the fly for
+        # sidecars enriched before the field existed so the column is never
+        # silently empty after a rebuild.
+        image_phash=ocr.get("imagePhash") or file_dhash(orig_img),
     )
     if second_pass_products:
         for plan_no, product in enumerate(second_pass_products, 1):

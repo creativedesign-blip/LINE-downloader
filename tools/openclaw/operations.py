@@ -25,8 +25,8 @@ if __package__ in (None, ""):
 from tools.common.targets import (
     DOWNLOADS_DIR, PROJECT_ROOT, TRAVEL_INDEX_DB_PATH, load_target_ids, relpath_from_root,
 )
-from tools.common.image_seen import first_seen_for_path, load_image_seen_log
-from tools.common.db import open_db
+from tools.common.image_seen import first_seen_for_path, hamming_distance, load_image_seen_log
+from tools.common.db import content_deduped_itineraries_sql, open_db
 
 
 DEFAULT_DB_PATH = TRAVEL_INDEX_DB_PATH
@@ -84,6 +84,49 @@ def _filter_archived_items(
     return [item for item in items if str(item.get("sidecar_path") or "") not in archived]
 
 
+def _content_key(item: dict[str, Any], sha_by_sidecar: Optional[dict[str, str]] = None) -> str:
+    """The single notion of "same underlying image" shared across dedup paths.
+
+    Byte-identical images collapse on their sha256; rows with no hash (pre-v5
+    sidecars) fall back to their own sidecar path so they never merge with each
+    other. This is the Python counterpart of the SQL
+    ``COALESCE(image_sha256, sidecar_path)`` partition in TravelIndex.query and
+    upload_catalog.query_image_search_index — keep the three in sync.
+    """
+    sidecar = str(item.get("sidecar_path") or "").strip()
+    sha = str(item.get("image_sha256") or "").strip()
+    if not sha and sha_by_sidecar is not None:
+        sha = str(sha_by_sidecar.get(sidecar) or "").strip()
+    if sha:
+        return f"sha:{sha}"
+    return f"sidecar:{sidecar}" if sidecar else ""
+
+
+def _dedupe_by_content_and_source(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse byte-identical rows from the *same* source to one (newest first).
+
+    The same file re-indexed under a new sidecar (group rename, manual move,
+    re-OCR) yields several identical rows; the query layer already hides these,
+    so the review surface must not present them as duplicates to act on. Genuine
+    cross-source reposts survive (one row per source) and still form a group.
+    Assumes items are pre-ordered newest-first.
+    """
+    seen: set[tuple[str, str]] = set()
+    out: list[dict[str, Any]] = []
+    for item in items:
+        key = _content_key(item)
+        if not key:
+            out.append(item)
+            continue
+        source = item.get("target_id") or item.get("group_name") or ""
+        marker = (key, source)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        out.append(item)
+    return out
+
+
 def _dedupe_items_by_image_sha(
     items: list[dict[str, Any]],
     image_sha_by_sidecar: dict[str, str],
@@ -91,9 +134,7 @@ def _dedupe_items_by_image_sha(
     seen: set[str] = set()
     deduped: list[dict[str, Any]] = []
     for item in items:
-        sidecar = str(item.get("sidecar_path") or "").strip()
-        sha = str(image_sha_by_sidecar.get(sidecar) or "").strip()
-        key = f"sha:{sha}" if sha else f"sidecar:{sidecar}" if sidecar else ""
+        key = _content_key(item, image_sha_by_sidecar)
         if key and key in seen:
             continue
         if key:
@@ -126,6 +167,8 @@ def _row_to_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "sidecar_path": get("sidecar_path"),
         "image_path": get("image_path"),
         "branded_path": get("branded_path") or get("image_path"),
+        "image_sha256": get("image_sha256"),
+        "image_phash": get("image_phash"),
         "target_id": get("target_id"),
         "group_name": get("group_name"),
         "countries": _csv_tokens(get("country_csv")),
@@ -434,18 +477,12 @@ def query_itineraries(
         params.append(target_id)
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-    # Dedup by image_sha256 — RPA-side hash dedup leaks (group rename,
-    # corrupt image_index.json, etc.) sometimes land the same image bytes
-    # in multiple rows. Mirror the rule from index_db.TravelIndex.query
-    # so this code path doesn't surface duplicates either.
+    # One row per image content (shared dedup window — see db helper). The
+    # source_time secondary sort and the overfetch below are specific to this
+    # query and stay here; only the dedup window is shared with index_db.
     sql = (
-        f"SELECT * FROM ("
-        f"  SELECT *, ROW_NUMBER() OVER ("
-        f"    PARTITION BY COALESCE(image_sha256, sidecar_path) "
-        f"    ORDER BY indexed_at DESC, rowid DESC"
-        f"  ) AS _rn FROM itineraries {where}"
-        f") WHERE _rn = 1 "
-        "ORDER BY indexed_at DESC, source_time DESC LIMIT ?"
+        content_deduped_itineraries_sql(where)
+        + " ORDER BY indexed_at DESC, source_time DESC LIMIT ?"
     )
     sql_limit = int(limit) if include_archived else max(int(limit) * 5, int(limit), 100)
     params.append(sql_limit)
@@ -494,23 +531,104 @@ def _price_bucket(price: Any, bucket_size: int) -> Optional[int]:
         return None
 
 
-def _duplicate_key(item: dict[str, Any], price_bucket_size: int) -> Optional[tuple]:
-    countries = tuple(item["countries"])
-    months = tuple(item["months"])
-    if not countries or not months:
-        return None
-    return (
-        countries,
-        tuple(item["regions"]),
-        months,
-        item["duration_days"],
-        _price_bucket(item["price_from"], price_bucket_size),
-    )
+def _normalized_str_key(values: Any) -> tuple[str, ...]:
+    """Order-insensitive, deduped tuple of non-empty string tokens."""
+    return tuple(sorted({str(v).strip() for v in (values or []) if str(v).strip()}))
+
+
+def _normalized_month_key(values: Any) -> tuple[int, ...]:
+    """Order-insensitive, deduped tuple of month integers."""
+    months: set[int] = set()
+    for value in values or []:
+        try:
+            months.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    return tuple(sorted(months))
+
+
+def _greedy_cluster(
+    items: list[dict[str, Any]],
+    close: Any,
+) -> list[list[dict[str, Any]]]:
+    """Greedy complete-linkage clustering over a pre-ordered item list.
+
+    An item joins an existing cluster only when ``close(item, member)`` holds
+    for *every* current member, so a cluster never spreads beyond the closeness
+    bound. This avoids the transitive chaining of single-linkage, where a run
+    of items each close to its neighbour but far from the ends would collapse
+    into one oversized group. Caller controls determinism via the input order.
+    """
+    clusters: list[list[dict[str, Any]]] = []
+    for item in items:
+        for cluster in clusters:
+            if all(close(item, member) for member in cluster):
+                cluster.append(item)
+                break
+        else:
+            clusters.append([item])
+    return clusters
+
+
+def _cluster_by_phash(
+    items: list[dict[str, Any]],
+    *,
+    max_distance: int,
+) -> list[list[dict[str, Any]]]:
+    """Cluster items whose perceptual hashes are within ``max_distance`` bits.
+
+    Catches the same DM reposted in a different encoding (so sha256 differs).
+    Complete-linkage keeps a cluster's pairwise Hamming distance bounded, so a
+    chain of progressively-drifting images can't merge into one blob.
+    """
+    def sort_key(item: dict[str, Any]) -> tuple:
+        return (str(item.get("image_phash") or ""), str(item.get("sidecar_path") or ""))
+
+    def close(a: dict[str, Any], b: dict[str, Any]) -> bool:
+        distance = hamming_distance(a.get("image_phash"), b.get("image_phash"))
+        return distance is not None and distance <= max_distance
+
+    return _greedy_cluster(sorted(items, key=sort_key), close)
 
 
 def _duplicate_group_id(key: tuple) -> str:
     payload = json.dumps(key, ensure_ascii=False, sort_keys=True, default=str)
     return "dup_" + hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _member_sidecar_paths(items: list[dict[str, Any]]) -> frozenset[str]:
+    return frozenset(
+        str(item.get("sidecar_path") or "").strip()
+        for item in items
+        if str(item.get("sidecar_path") or "").strip()
+    )
+
+
+def _group_sources(items: list[dict[str, Any]]) -> set[str]:
+    sources = {item.get("target_id") or item.get("group_name") or "" for item in items}
+    sources.discard("")
+    return sources
+
+
+def _reviewed_path_sets(review_path: Path = DEFAULT_REVIEW_PATH) -> list[frozenset[str]]:
+    """Sidecar-path sets that have already been reviewed.
+
+    Lets us treat a group as reviewed when its members are fully covered by a
+    past review, so review state survives group_id drift from key changes.
+    """
+    data = _load_duplicate_reviews(review_path)
+    path_sets: list[frozenset[str]] = []
+    for entry in data.get("reviews", []):
+        if not isinstance(entry, dict):
+            continue
+        paths: set[str] = set()
+        for key in ("keep_sidecar_paths", "archived_sidecar_paths"):
+            for value in entry.get(key) or []:
+                if value:
+                    paths.add(str(value))
+        if paths:
+            path_sets.append(frozenset(paths))
+    return path_sets
 
 
 def check_duplicates(
@@ -521,79 +639,307 @@ def check_duplicates(
     include_same_source: bool = False,
     include_reviewed: bool = False,
     review_path: Path = DEFAULT_REVIEW_PATH,
+    phash_max_distance: int = 8,
+    include_certain: bool = True,
 ) -> dict[str, Any]:
-    """Find likely duplicate itinerary products across sources.
+    """Find duplicate itinerary products across sources.
 
-    Basic v1 rule: country + month are required; region, duration, and rounded
-    price bucket strengthen the grouping. By default, groups must include more
-    than one source target/group.
+    Three signals, strongest first:
+      * image_sha256 — byte-identical image reposted across sources is a
+        *certain* duplicate (confidence="certain").
+      * image_phash — same image re-encoded/resized (so sha256 differs) but
+        within phash_max_distance bits is a *near* duplicate (confidence="near").
+      * metadata — a *likely* duplicate (confidence="likely") is the SAME deal
+        posted by more than one source, by exact match (no tolerance) on
+        destination + duration + price plus a date. When the itinerary has an
+        extracted departure it matches on the exact departure date + the
+        per-departure price (itinerary_departures); otherwise it falls back to
+        the itinerary's month set + price. Stable signature group id.
+
+    By default groups must span more than one source target/group. Pass
+    include_certain=False to drop the byte-identical (image_sha256) tier from
+    the result — the query layer already collapses those to one copy, so they
+    add nothing to a human review list; limit_groups then applies to the
+    remaining near/likely tiers.
     """
+    rule = {
+        "required": ["countries", "price_from"],
+        "grouped_by": ["image_sha256", "image_phash", "countries", "regions",
+                       "departure_date|months", "duration_days", "price_from"],
+        "price_bucket_size": int(price_bucket_size),
+        "phash_max_distance": int(phash_max_distance),
+        "include_same_source": bool(include_same_source),
+        "include_reviewed": bool(include_reviewed),
+        "include_certain": bool(include_certain),
+    }
     with _connect(db_path) as conn:
         if not _has_itineraries_table(conn):
             return {
                 "count": 0,
                 "groups": [],
-                "rule": {
-                    "required": ["countries", "months"],
-                    "grouped_by": ["countries", "regions", "months", "duration_days", "price_bucket"],
-                    "price_bucket_size": int(price_bucket_size),
-                    "include_same_source": bool(include_same_source),
-                },
+                "rule": rule,
                 "warning": "travel_index.db is not initialized; run the fixed pipeline first",
             }
         rows = conn.execute(
             "SELECT * FROM itineraries ORDER BY indexed_at DESC"
         ).fetchall()
+        # Departure offers (date + per-departure price) live in a child table.
+        departure_rows = (
+            conn.execute(
+                "SELECT sidecar_path, departure_date, duration_days, price_from "
+                "FROM itinerary_departures "
+                "WHERE departure_date IS NOT NULL AND departure_date <> '' "
+                "AND price_from IS NOT NULL"
+            ).fetchall()
+            if _has_table(conn, "itinerary_departures")
+            else []
+        )
 
-    groups: dict[tuple, list[dict[str, Any]]] = {}
-    for row in rows:
-        item = _row_to_public(row)
-        key = _duplicate_key(item, price_bucket_size)
-        if key is None:
-            continue
-        groups.setdefault(key, []).append(item)
+    # Same-source byte-identical rows are re-index artifacts, not reviewable
+    # duplicates — collapse them the way the query layer does, leaving one row
+    # per source so cross-source reposts still group.
+    items = _dedupe_by_content_and_source([_row_to_public(row) for row in rows])
 
-    duplicate_groups: list[dict[str, Any]] = []
     reviewed_group_ids = set() if include_reviewed else _reviewed_duplicate_group_ids(review_path)
-    for key, items in groups.items():
-        if len(items) < 2:
+    reviewed_path_sets = [] if include_reviewed else _reviewed_path_sets(review_path)
+
+    def is_reviewed(group_id: str, member_paths: frozenset[str]) -> bool:
+        if group_id in reviewed_group_ids:
+            return True
+        return bool(member_paths) and any(member_paths <= reviewed for reviewed in reviewed_path_sets)
+
+    # Phase 1 — image duplicates: "is this the same picture?". Cluster
+    # phash-bearing items by perceptual hash (byte-identical copies fall in at
+    # distance 0, so an exact-sha group is never split); group the few
+    # phash-less items (undecodable / not yet re-enriched) by exact sha. A
+    # cluster is "certain" when every member shares one sha256 (byte-identical),
+    # otherwise "near" (same image, different encoding). Members are claimed so
+    # the metadata phase never re-reports them — no per-tier coverage sets.
+    nophash_sha: dict[str, list[dict[str, Any]]] = {}
+    phash_items: list[dict[str, Any]] = []
+    for item in items:
+        if str(item.get("image_phash") or "").strip():
+            phash_items.append(item)
             continue
-        sources = {
-            item.get("target_id") or item.get("group_name") or ""
-            for item in items
-        }
-        sources.discard("")
+        sha = str(item.get("image_sha256") or "").strip()
+        if sha:
+            nophash_sha.setdefault(sha, []).append(item)
+    image_clusters = _cluster_by_phash(phash_items, max_distance=phash_max_distance)
+    image_clusters += list(nophash_sha.values())
+
+    claimed: set[str] = set()
+    certain_groups: list[dict[str, Any]] = []
+    near_groups: list[dict[str, Any]] = []
+    for cluster in image_clusters:
+        if len(cluster) < 2:
+            continue
+        member_paths = _member_sidecar_paths(cluster)
+        claimed |= member_paths
+        sources = _group_sources(cluster)
         if not include_same_source and len(sources) < 2:
             continue
-        group_id = _duplicate_group_id(key)
-        if group_id in reviewed_group_ids:
-            continue
-        duplicate_groups.append({
+        shas = {str(it.get("image_sha256") or "").strip() for it in cluster}
+        identical = len(shas) == 1 and "" not in shas
+        rep = cluster[0]
+        match = {
+            "countries": list(_normalized_str_key(rep.get("countries"))),
+            "regions": list(_normalized_str_key(rep.get("regions"))),
+            "months": list(_normalized_month_key(rep.get("months"))),
+            "duration_days": rep.get("duration_days"),
+            "price_bucket": _price_bucket(rep.get("price_from"), price_bucket_size),
+        }
+        if identical:
+            sha = next(iter(shas))
+            group_id = _duplicate_group_id(("image_sha256", sha))
+            if is_reviewed(group_id, member_paths):
+                continue
+            match["image_sha256"] = sha
+            certain_groups.append({
+                "group_id": group_id,
+                "match_type": "image_sha256",
+                "confidence": "certain",
+                "match": match,
+                "count": len(cluster),
+                "sources": sorted(sources),
+                "items": cluster,
+            })
+        else:
+            group_id = _duplicate_group_id(("image_phash", *sorted(member_paths)))
+            if is_reviewed(group_id, member_paths):
+                continue
+            match["image_phash"] = rep.get("image_phash")
+            near_groups.append({
+                "group_id": group_id,
+                "match_type": "image_phash",
+                "confidence": "near",
+                "match": match,
+                "count": len(cluster),
+                "sources": sorted(sources),
+                "items": cluster,
+            })
+
+    # Phase 2 — duplicate offers (likely): the SAME deal posted by more than
+    # one source, by exact match on destination + duration + price plus a date.
+    # Runs only over items not claimed by an image group. Two tiers:
+    #   * offer  — uses the exact departure date + per-departure price from
+    #              itinerary_departures (the precise signal); and
+    #   * month  — fallback for itineraries with no usable departure: same
+    #              destination + month + duration + the itinerary's price.
+    sidecar_to_item: dict[str, dict[str, Any]] = {}
+    for item in items:
+        sidecar = str(item.get("sidecar_path") or "").strip()
+        if sidecar and sidecar not in claimed:
+            sidecar_to_item[sidecar] = item
+
+    likely_groups: list[dict[str, Any]] = []
+
+    def _emit_likely(members_by_sidecar: dict[str, dict[str, Any]], group_id_key: tuple,
+                     match: dict[str, Any]) -> None:
+        members = list(members_by_sidecar.values())
+        if len(members) < 2:
+            return
+        member_paths = _member_sidecar_paths(members)
+        sources = _group_sources(members)
+        if not include_same_source and len(sources) < 2:
+            return
+        # The signature is the group identity: stable across runs, unique per
+        # deal (review continuity on drift handled by reviewed path sets).
+        group_id = _duplicate_group_id(group_id_key)
+        if is_reviewed(group_id, member_paths):
+            return
+        likely_groups.append({
             "group_id": group_id,
-            "match": {
-                "countries": list(key[0]),
-                "regions": list(key[1]),
-                "months": list(key[2]),
-                "duration_days": key[3],
-                "price_bucket": key[4],
-            },
-            "count": len(items),
+            "match_type": "metadata",
+            "confidence": "likely",
+            "match": match,
+            "count": len(members),
             "sources": sorted(sources),
-            "items": items,
+            "items": members,
         })
 
-    duplicate_groups.sort(key=lambda g: (g["count"], len(g["sources"])), reverse=True)
-    duplicate_groups = duplicate_groups[:int(limit_groups)]
+    # Tier 1 — exact departure offers.
+    offer_groups: dict[tuple, dict[str, dict[str, Any]]] = {}
+    sidecars_with_offers: set[str] = set()
+    for dep in departure_rows:
+        sidecar = str(dep["sidecar_path"] or "").strip()
+        item = sidecar_to_item.get(sidecar)
+        if item is None:
+            continue
+        countries = _normalized_str_key(item.get("countries"))
+        if not countries:
+            continue
+        date = str(dep["departure_date"] or "").strip()
+        price = dep["price_from"]
+        if not date or price is None:
+            continue
+        sidecars_with_offers.add(sidecar)
+        duration = dep["duration_days"] if dep["duration_days"] is not None else item.get("duration_days")
+        signature = (countries, _normalized_str_key(item.get("regions")), date, duration, int(price))
+        offer_groups.setdefault(signature, {})[sidecar] = item
+    for signature, members_by_sidecar in offer_groups.items():
+        countries, regions, date, duration, price = signature
+        _emit_likely(members_by_sidecar, ("offer", *signature), {
+            "countries": list(countries),
+            "regions": list(regions),
+            "departure_date": date,
+            "duration_days": duration,
+            "price_from": price,
+        })
+
+    # Tier 2 — month-level fallback for items with no usable departure.
+    month_groups: dict[tuple, dict[str, dict[str, Any]]] = {}
+    for sidecar, item in sidecar_to_item.items():
+        if sidecar in sidecars_with_offers:
+            continue
+        countries = _normalized_str_key(item.get("countries"))
+        months = _normalized_month_key(item.get("months"))
+        price = item.get("price_from")
+        if not countries or not months or price is None:
+            continue
+        signature = (countries, _normalized_str_key(item.get("regions")), months,
+                     item.get("duration_days"), int(price))
+        month_groups.setdefault(signature, {})[sidecar] = item
+    for signature, members_by_sidecar in month_groups.items():
+        countries, regions, months, duration, price = signature
+        _emit_likely(members_by_sidecar, ("month", *signature), {
+            "countries": list(countries),
+            "regions": list(regions),
+            "months": list(months),
+            "duration_days": duration,
+            "price_from": price,
+        })
+
+    for tier in (certain_groups, near_groups, likely_groups):
+        tier.sort(key=lambda g: (g["count"], len(g["sources"])), reverse=True)
+    visible = (certain_groups if include_certain else []) + near_groups + likely_groups
+    duplicate_groups = visible[:int(limit_groups)]
     return {
         "count": len(duplicate_groups),
         "groups": duplicate_groups,
-        "rule": {
-            "required": ["countries", "months"],
-            "grouped_by": ["countries", "regions", "months", "duration_days", "price_bucket"],
-            "price_bucket_size": int(price_bucket_size),
-            "include_same_source": bool(include_same_source),
-            "include_reviewed": bool(include_reviewed),
-        },
+        "rule": rule,
+    }
+
+
+def _keep_rank(item: dict[str, Any]) -> tuple:
+    """Order key for choosing which copy to keep — prefer a branded image, then
+    the most recently indexed, with sidecar_path as a deterministic tiebreak."""
+    has_branded = 1 if str(item.get("branded_path") or "").strip() else 0
+    return (has_branded, str(item.get("indexed_at") or ""), str(item.get("sidecar_path") or ""))
+
+
+def auto_resolve_image_duplicates(
+    db_path: Path = DEFAULT_DB_PATH,
+    *,
+    review_path: Path = DEFAULT_REVIEW_PATH,
+    include_same_source: bool = False,
+    phash_max_distance: int = 8,
+    resolve_near: bool = True,
+    reviewer: str = "auto",
+) -> dict[str, Any]:
+    """Auto keep-one the high-confidence image duplicates so the human review
+    list is left with only the uncertain (metadata) tier.
+
+    For each certain (image_sha256) — and, when resolve_near, near (image_phash)
+    — group it keeps the best copy (branded, then newest) and logically archives
+    the rest via a keep_one review. Archiving moves/deletes nothing: it is
+    recorded in the review file, hidden from queries by default, and reversible
+    with include_archived=True. Idempotent — already-reviewed groups are not
+    returned by check_duplicates, so a second run is a no-op.
+    """
+    wanted = {"image_sha256"} | ({"image_phash"} if resolve_near else set())
+    result = check_duplicates(
+        db_path,
+        limit_groups=1_000_000,
+        include_same_source=include_same_source,
+        phash_max_distance=phash_max_distance,
+        review_path=review_path,
+    )
+    resolved_groups = 0
+    archived_images = 0
+    for group in result["groups"]:
+        if group.get("match_type") not in wanted:
+            continue
+        items = [it for it in (group.get("items") or []) if str(it.get("sidecar_path") or "").strip()]
+        if len(items) < 2:
+            continue
+        keep = max(items, key=_keep_rank)
+        keep_path = str(keep.get("sidecar_path"))
+        archive_paths = [str(it.get("sidecar_path")) for it in items if it is not keep]
+        record_duplicate_review(
+            group["group_id"],
+            [keep_path],
+            review_path,
+            action="keep_one",
+            archived_sidecar_paths=archive_paths,
+            reviewer=reviewer,
+            note=f"auto-resolved {group.get('match_type')}",
+        )
+        resolved_groups += 1
+        archived_images += len(archive_paths)
+    return {
+        "resolved_groups": resolved_groups,
+        "archived_images": archived_images,
+        "resolved_match_types": sorted(wanted),
     }
 
 

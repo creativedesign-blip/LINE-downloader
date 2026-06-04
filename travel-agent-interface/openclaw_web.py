@@ -2406,7 +2406,11 @@ def _chat_payload(message: str, limit: int, *, include_archived: bool = False) -
         return payload
 
     if any(token in message for token in ["重複", "相同", "去重"]) or "duplicate" in lower:
-        payload = _filter_archived_upload_items(check_duplicates(limit_groups=min(limit, 30), include_same_source=True))
+        # Match the dashboard review surface: sha-identical copies are already
+        # collapsed by the query layer, so leave them out of the human list.
+        payload = _filter_archived_upload_items(check_duplicates(
+            limit_groups=min(limit, 30), include_same_source=True, include_certain=False,
+        ))
         payload = _with_media_urls(payload)
         payload["kind"] = "duplicates"
         payload["message"] = f"Agent 找到 {payload.get('count', 0)} 組可能重複圖片。"
@@ -2832,6 +2836,10 @@ class Handler(SimpleHTTPRequestHandler):
                     limit_groups=limit,
                     include_same_source=include_same_source,
                     include_reviewed=include_reviewed,
+                    # sha-identical copies are already collapsed by the query
+                    # layer (one shown everywhere), so they don't belong in the
+                    # human review list; phash + metadata tiers remain.
+                    include_certain=False,
                 )))
                 return
 
