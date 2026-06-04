@@ -20,7 +20,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from tools.branding.io_utils import load_sidecar, save_sidecar
-from tools.common.image_seen import file_sha256
+from tools.common.image_seen import file_dhash, file_sha256
 from tools.common.rapidocr_adapter import create_rapidocr, rapidocr_lines
 from tools.common.targets import DOWNLOADS_DIR, load_target_ids
 from tools.domains.travel.policy import apply_sidecar_metadata
@@ -164,6 +164,7 @@ def enrich_one(
         "text": text,
         "engine": engine_name,
         "imageSha256": image_hash,
+        "imagePhash": file_dhash(image_path),
     })
     if price_text:
         ocr["priceOcr"] = {

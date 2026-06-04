@@ -959,17 +959,31 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       const items = Array.isArray(group.items) ? group.items : [];
       const dms = items.map((item, itemIndex) => normalizeAgentItem(item, itemIndex));
       const match = group.match || {};
+      const imageBadge =
+        group.match_type === "image_sha256" ? "同圖"
+        : group.match_type === "image_phash" ? "近似圖"
+        : "";
+      const durationLabel = match.duration_days != null ? `${match.duration_days}天` : "";
+      // Offer groups carry an exact departure_date + price_from; image groups
+      // carry aggregate months + a price_bucket. Show whichever is present.
+      const dateLabel = match.departure_date
+        ? String(match.departure_date)
+        : (Array.isArray(match.months) && match.months.length ? `${match.months.join(", ")}月` : "");
+      const priceValue = match.price_from != null ? match.price_from : match.price_bucket;
+      const priceLabel = priceValue != null ? `NT$ ${Number(priceValue).toLocaleString()}` : "";
       const keyParts = [
         ...(match.countries || []),
         ...(match.regions || []),
-        Array.isArray(match.months) && match.months.length ? `${match.months.join(", ")}月` : "",
-        match.duration_days ? `${match.duration_days}天` : "",
-        match.price_bucket ? `NT$ ${Number(match.price_bucket).toLocaleString()}` : "",
+        dateLabel,
+        durationLabel,
+        priceLabel,
       ].filter(Boolean);
 
       return {
-        key: keyParts.join(" · ") || `重複圖片 ${groupIndex + 1}`,
+        key: (imageBadge ? `${imageBadge} · ` : "") + (keyParts.join(" · ") || `重複圖片 ${groupIndex + 1}`),
         groupId: group.group_id || "",
+        matchType: group.match_type || "metadata",
+        confidence: group.confidence || "likely",
         count: group.count || dms.length,
         images: dms.map((dm) => ({
           dm,
@@ -1457,6 +1471,9 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
       .filter((_, index) => index !== keepIndex)
       .map((item) => item?.dm?.raw?.sidecar_path || item?.dm?.id)
       .filter(Boolean);
+    const memberPaths = images
+      .map((item) => item?.dm?.raw?.sidecar_path || item?.dm?.id)
+      .filter(Boolean);
     if (!group?.groupId) {
       window.alert("缺少重複圖片群組 ID，請重新整理後再試。");
       return false;
@@ -1472,7 +1489,10 @@ export default function TravelAgent({ sessionUser = "admin_dadova", onLogout } =
         body: JSON.stringify({
           group_id: group.groupId,
           action,
-          keep_sidecar_paths: action === "keep_one" ? [keepPath] : [],
+          // For "ignore" we still record every member path (not just the
+          // kept one) so the review keeps the group hidden even if its
+          // group_id later drifts. Nothing is archived for ignore.
+          keep_sidecar_paths: action === "keep_one" ? [keepPath] : memberPaths,
           archived_sidecar_paths: action === "keep_one" ? archivePaths : [],
         }),
       });

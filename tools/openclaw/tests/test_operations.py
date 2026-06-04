@@ -8,6 +8,7 @@ from pathlib import Path
 from tools.indexing.index_db import TravelIndex
 from tools.common.targets import DOWNLOADS_DIR, PROJECT_ROOT
 from tools.openclaw.operations import (
+    auto_resolve_image_duplicates,
     check_duplicates,
     processing_status,
     query_itineraries,
@@ -57,6 +58,26 @@ def insert_plan(index: TravelIndex, sidecar: str, plan_no: int, price_from: int,
     index.upsert_plan(**data)
 
 
+def insert_departure(index: TravelIndex, sidecar: str, *, departure_date: str,
+                     price_from: int, duration_days: int = 5,
+                     target_id: str = "source-a", group_name: str = "Source A",
+                     plan_no: int = 1):
+    index.upsert_departure(
+        departure_id=f"{sidecar}#dep:{departure_date}",
+        plan_id=f"{sidecar}#plan:{plan_no}",
+        sidecar_path=sidecar,
+        image_path=sidecar[:-5],
+        target_id=target_id,
+        group_name=group_name,
+        departure_date=departure_date,
+        month=int(departure_date[5:7]),
+        day=int(departure_date[8:10]),
+        weekday=0,
+        price_from=price_from,
+        duration_days=duration_days,
+    )
+
+
 class TestOpenClawOperations(unittest.TestCase):
     def setUp(self):
         test_name = self._testMethodName.replace("/", "_").replace("\\", "_")
@@ -94,6 +115,18 @@ class TestOpenClawOperations(unittest.TestCase):
             insert_plan(index, "line-rpa/download/source-a/travel/a.jpg.json", 1, 39900)
             insert_plan(index, "line-rpa/download/source-a/travel/a.jpg.json", 2, 49900)
             insert_plan(index, "line-rpa/download/source-b/travel/b.jpg.json", 1, 41000)
+            # a and b are the same deal: same destination, departure date,
+            # duration and exact price (per-departure price, not the image min).
+            insert_departure(
+                index, "line-rpa/download/source-a/travel/a.jpg.json",
+                departure_date="2026-08-23", price_from=20900, duration_days=5,
+                target_id="source-a", group_name="Source A",
+            )
+            insert_departure(
+                index, "line-rpa/download/source-b/travel/b.jpg.json",
+                departure_date="2026-08-23", price_from=20900, duration_days=5,
+                target_id="source-b", group_name="Source B",
+            )
 
     def tearDown(self):
         shutil.rmtree(self.tmp_path, ignore_errors=True)
@@ -239,7 +272,9 @@ class TestOpenClawOperations(unittest.TestCase):
         self.assertEqual(group["count"], 2)
         self.assertEqual(set(group["sources"]), {"source-a", "source-b"})
         self.assertEqual(group["match"]["countries"], ["泰國"])
-        self.assertEqual(group["match"]["months"], [7])
+        self.assertEqual(group["match"]["departure_date"], "2026-08-23")
+        self.assertEqual(group["match"]["duration_days"], 5)
+        self.assertEqual(group["match"]["price_from"], 20900)
 
     def test_record_duplicate_review(self):
         review_path = self.tmp_path / "reviews.json"
@@ -294,6 +329,364 @@ class TestOpenClawOperations(unittest.TestCase):
 
         latest = query_latest_results(self.db_path, limit=10, review_path=review_path)
         self.assertNotIn("source-b", {item["target_id"] for item in latest["items"]})
+
+    def test_check_duplicates_flags_identical_image_as_certain(self):
+        # Two sources sharing the same image_sha256 but otherwise unrelated
+        # metadata must still be caught as a certain duplicate.
+        with TravelIndex(self.db_path) as index:
+            insert_row(
+                index,
+                "line-rpa/download/source-x/travel/x.jpg.json",
+                target_id="source-x",
+                group_name="Source X",
+                countries=["越南"],
+                months=[11],
+                regions=["峴港"],
+                price_from=22900,
+                image_sha256="shared-image-hash",
+            )
+            insert_row(
+                index,
+                "line-rpa/download/source-y/travel/y.jpg.json",
+                target_id="source-y",
+                group_name="Source Y",
+                countries=["越南"],
+                months=[12],
+                regions=["富國島"],
+                price_from=88000,
+                duration_days=8,
+                image_sha256="shared-image-hash",
+            )
+        groups = check_duplicates(self.db_path)["groups"]
+        certain = [g for g in groups if g["match_type"] == "image_sha256"]
+        self.assertEqual(len(certain), 1)
+        self.assertEqual(certain[0]["confidence"], "certain")
+        self.assertEqual(certain[0]["count"], 2)
+        self.assertEqual(certain[0]["match"]["image_sha256"], "shared-image-hash")
+        self.assertEqual(set(certain[0]["sources"]), {"source-x", "source-y"})
+
+    def test_check_duplicates_requires_same_price_for_offer(self):
+        # The offer signature includes the exact price: same destination,
+        # departure date and duration but different prices are different deals
+        # and must NOT group.
+        with TravelIndex(self.db_path) as index:
+            for tid, price in (("source-p", 38000), ("source-q", 80000)):
+                sidecar = f"line-rpa/download/{tid}/travel/{tid}.jpg.json"
+                insert_row(
+                    index, sidecar, target_id=tid, group_name=tid,
+                    countries=["韓國"], months=[9], regions=["首爾"],
+                )
+                insert_departure(
+                    index, sidecar, departure_date="2026-09-01",
+                    price_from=price, duration_days=5, target_id=tid, group_name=tid,
+                )
+        korea = [
+            g for g in check_duplicates(self.db_path)["groups"]
+            if g["match"].get("countries") == ["韓國"]
+        ]
+        self.assertEqual(korea, [])
+
+    def test_auto_resolve_image_duplicates_removes_image_tier_from_review(self):
+        # Image-tier duplicates are confident enough to resolve without a human:
+        # auto keep-one logically archives the extras, and they no longer show
+        # up in the (metadata-only) human review list.
+        review_path = self.tmp_path / "reviews.json"
+        with TravelIndex(self.db_path) as index:
+            insert_row(
+                index,
+                "line-rpa/download/src-ia/travel/img-a.jpg.json",
+                target_id="src-ia",
+                group_name="Image A",
+                countries=["日本"],
+                months=[3],
+                regions=["東京"],
+                image_sha256="img-dup",
+            )
+            insert_row(
+                index,
+                "line-rpa/download/src-ib/travel/img-b.jpg.json",
+                target_id="src-ib",
+                group_name="Image B",
+                countries=["日本"],
+                months=[3],
+                regions=["東京"],
+                image_sha256="img-dup",
+            )
+        summary = auto_resolve_image_duplicates(self.db_path, review_path=review_path)
+        self.assertEqual(summary["resolved_groups"], 1)
+        self.assertEqual(summary["archived_images"], 1)
+        after = check_duplicates(self.db_path, review_path=review_path)["groups"]
+        self.assertEqual([g for g in after if g["match_type"] == "image_sha256"], [])
+
+    def test_check_duplicates_include_certain_false_drops_sha_tier(self):
+        # The review surface passes include_certain=False: sha-identical groups
+        # (already collapsed by the query layer) are dropped, while phash and
+        # metadata tiers remain.
+        with TravelIndex(self.db_path) as index:
+            insert_row(
+                index,
+                "line-rpa/download/src-ja/travel/ja.jpg.json",
+                target_id="src-ja",
+                group_name="JA",
+                countries=["日本"],
+                months=[3],
+                regions=["東京"],
+                image_sha256="rev-dup",
+            )
+            insert_row(
+                index,
+                "line-rpa/download/src-jb/travel/jb.jpg.json",
+                target_id="src-jb",
+                group_name="JB",
+                countries=["日本"],
+                months=[3],
+                regions=["東京"],
+                image_sha256="rev-dup",
+            )
+        review_view = check_duplicates(self.db_path, include_certain=False)["groups"]
+        self.assertEqual([g for g in review_view if g["match_type"] == "image_sha256"], [])
+        # setUp's a/b offer group is metadata and must still be present.
+        self.assertTrue(any(g["match_type"] == "metadata" for g in review_view))
+        # The default still surfaces the certain tier.
+        default_view = check_duplicates(self.db_path)["groups"]
+        self.assertTrue(any(g["match_type"] == "image_sha256" for g in default_view))
+
+    def test_check_duplicates_month_fallback_without_departures(self):
+        # No extracted departure → fall back to month level: same destination +
+        # month + duration + exact price groups; a different price does not.
+        with TravelIndex(self.db_path) as index:
+            for tid, price in (("source-v1", 25000), ("source-v2", 25000), ("source-v3", 30000)):
+                insert_row(
+                    index, f"line-rpa/download/{tid}/travel/{tid}.jpg.json",
+                    target_id=tid, group_name=tid,
+                    countries=["越南"], months=[10], regions=["峴港"], price_from=price,
+                )
+        vietnam = [
+            g for g in check_duplicates(self.db_path)["groups"]
+            if g["match"].get("countries") == ["越南"]
+        ]
+        self.assertEqual(len(vietnam), 1)
+        self.assertEqual(vietnam[0]["count"], 2)
+        self.assertEqual(vietnam[0]["match"]["months"], [10])
+        self.assertEqual(vietnam[0]["match"]["price_from"], 25000)
+        self.assertNotIn("departure_date", vietnam[0]["match"])
+
+    def test_check_duplicates_country_order_does_not_split_group(self):
+        # Same multi-country product listed in different token order must stay
+        # in one group thanks to normalized (sorted) keys.
+        with TravelIndex(self.db_path) as index:
+            insert_row(
+                index,
+                "line-rpa/download/source-m/travel/m.jpg.json",
+                target_id="source-m",
+                group_name="Source M",
+                countries=["日本", "韓國"],
+                months=[5],
+                regions=["大阪", "首爾"],
+            )
+            insert_row(
+                index,
+                "line-rpa/download/source-n/travel/n.jpg.json",
+                target_id="source-n",
+                group_name="Source N",
+                countries=["韓國", "日本"],
+                months=[5],
+                regions=["首爾", "大阪"],
+            )
+            insert_departure(
+                index, "line-rpa/download/source-m/travel/m.jpg.json",
+                departure_date="2026-05-10", price_from=55000, duration_days=5,
+                target_id="source-m", group_name="Source M",
+            )
+            insert_departure(
+                index, "line-rpa/download/source-n/travel/n.jpg.json",
+                departure_date="2026-05-10", price_from=55000, duration_days=5,
+                target_id="source-n", group_name="Source N",
+            )
+        groups = check_duplicates(self.db_path)["groups"]
+        combo = [g for g in groups if set(g["match"].get("countries", [])) == {"日本", "韓國"}]
+        self.assertEqual(len(combo), 1)
+        self.assertEqual(combo[0]["count"], 2)
+
+    def test_review_survives_group_id_drift(self):
+        # A review recorded against the current group_id should keep hiding the
+        # same items even if the group_id later changes (e.g. key formula tweak),
+        # because the members are covered by the reviewed path set.
+        review_path = self.tmp_path / "reviews.json"
+        record_duplicate_review(
+            "stale-group-id-that-no-longer-matches",
+            ["line-rpa/download/source-a/travel/a.jpg.json"],
+            review_path,
+            archived_sidecar_paths=["line-rpa/download/source-b/travel/b.jpg.json"],
+        )
+        self.assertEqual(check_duplicates(self.db_path, review_path=review_path)["count"], 0)
+        self.assertEqual(
+            check_duplicates(self.db_path, review_path=review_path, include_reviewed=True)["count"],
+            1,
+        )
+
+    def test_ignore_review_survives_group_id_drift(self):
+        # An "ignore" review now records every member path, so it keeps hiding
+        # the group even when the group_id no longer matches.
+        review_path = self.tmp_path / "reviews.json"
+        record_duplicate_review(
+            "stale-id-after-key-change",
+            [
+                "line-rpa/download/source-a/travel/a.jpg.json",
+                "line-rpa/download/source-b/travel/b.jpg.json",
+            ],
+            review_path,
+            action="ignore",
+        )
+        self.assertEqual(check_duplicates(self.db_path, review_path=review_path)["count"], 0)
+
+    def test_check_duplicates_collapses_same_source_identical_rows(self):
+        # The same file re-indexed under two sidecars in ONE source is a re-index
+        # artifact, not a reviewable duplicate: it must not surface on its own,
+        # and a genuine second source still forms a 2-source certain group.
+        with TravelIndex(self.db_path) as index:
+            insert_row(
+                index,
+                "line-rpa/download/source-dup/travel/first.jpg.json",
+                target_id="source-dup",
+                group_name="Dup Source",
+                countries=["馬來西亞"],
+                months=[8],
+                regions=["吉隆坡"],
+                image_sha256="collapse-sha",
+            )
+            insert_row(
+                index,
+                "line-rpa/download/source-dup/travel/second.jpg.json",
+                target_id="source-dup",
+                group_name="Dup Source",
+                countries=["馬來西亞"],
+                months=[8],
+                regions=["吉隆坡"],
+                image_sha256="collapse-sha",
+            )
+        # Same source only → collapsed away, nothing to review.
+        my_groups = [
+            g for g in check_duplicates(self.db_path, include_same_source=True)["groups"]
+            if g["match"].get("countries") == ["馬來西亞"]
+        ]
+        self.assertEqual(my_groups, [])
+        # Add a second source with the same image → one 2-source certain group.
+        with TravelIndex(self.db_path) as index:
+            insert_row(
+                index,
+                "line-rpa/download/source-other/travel/third.jpg.json",
+                target_id="source-other",
+                group_name="Other Source",
+                countries=["馬來西亞"],
+                months=[8],
+                regions=["吉隆坡"],
+                image_sha256="collapse-sha",
+            )
+        groups = [
+            g for g in check_duplicates(self.db_path)["groups"]
+            if g["match"].get("countries") == ["馬來西亞"]
+        ]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["match_type"], "image_sha256")
+        self.assertEqual(groups[0]["count"], 2)
+        self.assertEqual(set(groups[0]["sources"]), {"source-dup", "source-other"})
+
+    def test_check_duplicates_flags_near_duplicate_by_phash(self):
+        # Same picture re-encoded: sha256 differs, but the perceptual hashes are
+        # 1 bit apart, so it must surface as a "near" duplicate.
+        with TravelIndex(self.db_path) as index:
+            insert_row(
+                index,
+                "line-rpa/download/source-na/travel/na.jpg.json",
+                target_id="source-na",
+                group_name="Near A",
+                countries=["寮國"],
+                months=[3],
+                regions=["永珍"],
+                image_sha256="sha-near-a",
+                image_phash="ffffffffffffffff",
+            )
+            insert_row(
+                index,
+                "line-rpa/download/source-nb/travel/nb.jpg.json",
+                target_id="source-nb",
+                group_name="Near B",
+                countries=["寮國"],
+                months=[3],
+                regions=["永珍"],
+                image_sha256="sha-near-b",
+                image_phash="fffffffffffffffe",
+            )
+        groups = check_duplicates(self.db_path)["groups"]
+        near = [g for g in groups if g["match_type"] == "image_phash"]
+        self.assertEqual(len(near), 1)
+        self.assertEqual(near[0]["confidence"], "near")
+        self.assertEqual(near[0]["count"], 2)
+        self.assertEqual(set(near[0]["sources"]), {"source-na", "source-nb"})
+        # The metadata phase must not re-report the same pair.
+        laos_meta = [
+            g for g in groups
+            if g["match_type"] == "metadata" and g["match"].get("countries") == ["寮國"]
+        ]
+        self.assertEqual(laos_meta, [])
+
+    def test_exact_sha_not_double_reported_as_phash_near(self):
+        # Byte-identical images (same sha) with near phashes must appear once,
+        # as a certain (image_sha256) group — never also as a phash-near group.
+        with TravelIndex(self.db_path) as index:
+            insert_row(
+                index,
+                "line-rpa/download/source-ea/travel/ea.jpg.json",
+                target_id="source-ea",
+                group_name="Exact A",
+                countries=["柬埔寨"],
+                months=[2],
+                regions=["金邊"],
+                image_sha256="same-sha-x",
+                image_phash="aaaaaaaaaaaaaaaa",
+            )
+            insert_row(
+                index,
+                "line-rpa/download/source-eb/travel/eb.jpg.json",
+                target_id="source-eb",
+                group_name="Exact B",
+                countries=["柬埔寨"],
+                months=[2],
+                regions=["金邊"],
+                image_sha256="same-sha-x",
+                image_phash="aaaaaaaaaaaaaaab",
+            )
+        cambodia = [
+            g for g in check_duplicates(self.db_path)["groups"]
+            if g["match"].get("countries") == ["柬埔寨"]
+        ]
+        self.assertEqual(len(cambodia), 1)
+        self.assertEqual(cambodia[0]["match_type"], "image_sha256")
+
+    def test_check_duplicates_splits_by_duration(self):
+        # Duration is part of the offer signature: same destination, date and
+        # price but a different trip length is a different deal. Two 5-day
+        # offers group; the 8-day one stays separate.
+        with TravelIndex(self.db_path) as index:
+            for idx, days in enumerate((5, 5, 8)):
+                tid = f"source-sg-{idx}"
+                sidecar = f"line-rpa/download/{tid}/travel/sg-{idx}.jpg.json"
+                insert_row(
+                    index, sidecar, target_id=tid, group_name=tid,
+                    countries=["新加坡"], months=[6], regions=["市區"],
+                )
+                insert_departure(
+                    index, sidecar, departure_date="2026-06-15",
+                    price_from=30000, duration_days=days, target_id=tid, group_name=tid,
+                )
+        groups = [
+            g for g in check_duplicates(self.db_path)["groups"]
+            if g["match"].get("countries") == ["新加坡"]
+        ]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["count"], 2)
+        self.assertEqual(groups[0]["match"]["duration_days"], 5)
 
     def test_processing_status_counts_folders_and_index(self):
         target_dir = DOWNLOADS_DIR / "__status_test__"

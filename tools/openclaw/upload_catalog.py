@@ -847,6 +847,15 @@ def query_image_search_index(
         params.append(f"%{term}%")
 
     params.append(max(1, min(int(limit), 200)))
+    # Keep one row per underlying image, newest first — the upload-catalog
+    # counterpart of operations._content_key / TravelIndex.query. Same "sha
+    # first" rule, but the longer COALESCE tail is DELIBERATE, not drift:
+    # uploaded_images.sha256 is NOT NULL (always populated by file_sha256), so
+    # the partition virtually always resolves to the hash. The branded/image/
+    # sidecar paths here are nullable, so they can't be the sole fallback like
+    # itineraries' sidecar_path PK; image_id (PK) is the final guarantee that a
+    # degenerate empty-sha row partitions to itself rather than merging with an
+    # unrelated row. Different table/columns — cannot share the itineraries SQL.
     sql = (
         "SELECT * FROM ("
         "  SELECT s.*, i.original_filename, i.display_name, i.uploaded_at, i.sha256, "

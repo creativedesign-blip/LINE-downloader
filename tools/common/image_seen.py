@@ -32,6 +32,52 @@ def file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def file_dhash(path: Path, hash_size: int = 8) -> Optional[str]:
+    """Perceptual difference-hash of an image, as a zero-padded hex string.
+
+    Where file_sha256 only matches byte-identical files, dHash stays stable
+    across re-compression, resize and minor edits, so the *same* DM reposted
+    in a different encoding still hashes close (compare via hamming_distance).
+    Returns None when the image can't be decoded (caller falls back to sha256).
+
+    Implemented with Pillow only (no imagehash dependency): reduce to a small
+    grayscale image, then emit one bit per horizontal neighbour comparison.
+    """
+    try:
+        from PIL import Image
+
+        resample = getattr(Image, "Resampling", Image).LANCZOS
+        with Image.open(path) as img:
+            small = img.convert("L").resize((hash_size + 1, hash_size), resample)
+            pixels = list(small.getdata())
+    except Exception:
+        return None
+
+    width = hash_size + 1
+    bits = 0
+    for row in range(hash_size):
+        for col in range(hash_size):
+            left = pixels[row * width + col]
+            right = pixels[row * width + col + 1]
+            bits = (bits << 1) | (1 if left > right else 0)
+    hex_len = (hash_size * hash_size + 3) // 4
+    return format(bits, f"0{hex_len}x")
+
+
+def hamming_distance(a: Optional[str], b: Optional[str]) -> Optional[int]:
+    """Number of differing bits between two equal-length hex hashes.
+
+    Returns None when either side is missing, unparseable, or a different
+    length — callers treat None as "not comparable" (i.e. not a match).
+    """
+    if not a or not b or len(a) != len(b):
+        return None
+    try:
+        return bin(int(a, 16) ^ int(b, 16)).count("1")
+    except ValueError:
+        return None
+
+
 def load_image_seen_log(path: Path = IMAGE_SEEN_LOG_PATH) -> dict[str, dict[str, Any]]:
     raw = load_json_dict(path)
     return {
