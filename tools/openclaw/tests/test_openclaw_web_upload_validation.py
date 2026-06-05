@@ -1,6 +1,8 @@
 import importlib.util
 import io
+import tempfile
 import unittest
+from http import HTTPStatus
 from pathlib import Path
 from unittest.mock import patch
 
@@ -174,6 +176,70 @@ class UploadRecoveryStateTests(unittest.TestCase):
 
         self.assertTrue(allowed)
         self.assertEqual(reason, "")
+
+
+class UploadHandlerMultipartRegressionTests(unittest.TestCase):
+    """Drive the real /api/uploads/folders/{id}/images handler with a real
+    multipart body and assert it answers 200, not 500.
+
+    Regression guard for the bug where the stored-file index was computed as
+    ``int(get_folder(...) or folder).get("image_count")`` — the closing paren
+    was misplaced so ``int()`` received the folder *dict* and raised
+    ``TypeError: int() argument must be ... not 'dict'``, which the handler's
+    blanket except turned into "internal server error" on *every* upload. The
+    folder here carries an ``image_count`` so the buggy expression runs.
+    """
+
+    def _make_handler(self, body: bytes, content_type: str):
+        handler = openclaw_web.Handler.__new__(openclaw_web.Handler)
+        handler.headers = {"Content-Type": content_type, "Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler.command = "POST"
+        handler.path = "/api/uploads/folders/123/images"
+        captured: dict = {}
+
+        def fake_json(payload, status=HTTPStatus.OK):
+            captured["payload"] = payload
+            captured["status"] = status
+
+        # Instance attributes shadow the bound methods so we don't open a socket
+        # or launch the real OCR/branding/index pipeline.
+        handler._json = fake_json
+        handler._start_upload_pipeline = lambda folder, trigger_source="upload": {"ok": True, "started": False}
+        return handler, captured
+
+    def test_multipart_upload_returns_200_not_500(self):
+        boundary = "----regression-boundary"
+        png = make_png(700, 900)
+        body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="files"; filename="01.png"\r\n'
+            "Content-Type: image/png\r\n\r\n"
+        ).encode("utf-8") + png + f"\r\n--{boundary}--\r\n".encode("utf-8")
+        content_type = f"multipart/form-data; boundary={boundary}"
+
+        folder = {
+            "id": 123,
+            "image_count": 2,
+            "status": "pending",
+            "current_step": "upload",
+            "folder_slug": "regression-folder",
+        }
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(openclaw_web, "get_folder", return_value=folder), \
+                patch.object(openclaw_web, "folder_target_path", return_value=Path(tmp)), \
+                patch.object(openclaw_web, "stored_path_is_registered", return_value=False), \
+                patch.object(openclaw_web, "add_image", return_value={"id": 405, "original_filename": "01.png"}) as add_image_mock, \
+                patch.object(openclaw_web, "_upload_image_size_requirement", return_value=(620, 50)):
+            handler, captured = self._make_handler(body, content_type)
+            handler._handle_uploads_post("/api/uploads/folders/123/images")
+
+        self.assertEqual(captured["status"], HTTPStatus.OK)
+        self.assertTrue(captured["payload"].get("ok"))
+        self.assertEqual(len(captured["payload"].get("images") or []), 1)
+        self.assertEqual(captured["payload"].get("rejected"), [])
+        add_image_mock.assert_called_once()
 
 
 if __name__ == "__main__":
