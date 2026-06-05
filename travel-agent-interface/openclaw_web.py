@@ -3285,7 +3285,7 @@ class Handler(SimpleHTTPRequestHandler):
                 # concurrent uploads to the same folder can't pick the same index
                 # (clobbering a file / hitting the UNIQUE(stored_path) constraint).
                 with UPLOAD_WRITE_LOCK:
-                    next_index = int(get_folder(int(folder["id"])) or folder).get("image_count") or 0
+                    next_index = int((get_folder(int(folder["id"])) or folder).get("image_count") or 0)
                     next_index += 1
                     for file_item in files:
                         filename = str(file_item["filename"])
