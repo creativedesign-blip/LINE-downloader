@@ -5,12 +5,21 @@ import json
 import re
 import shutil
 import sqlite3
+import sys
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from openpyxl import load_workbook
+
+# Allow running as a script-by-path (run_uploaded_images.ps1 invokes
+# `python tools/openclaw/upload_catalog.py update-folder ...`): put the project
+# root on sys.path so the `from tools.common...` imports below resolve. Without
+# this the script-by-path invocation died with ModuleNotFoundError, so every
+# upload folder status update silently failed and folders looked stuck.
+# Mirrors tools/pipeline/process_downloads.py.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools.common.image_seen import file_sha256
 from tools.common.targets import DOWNLOADS_DIR, PROJECT_ROOT, relpath_from_root

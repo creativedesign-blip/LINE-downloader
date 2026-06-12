@@ -1,0 +1,438 @@
+================================================================================
+ CRM CHATBOT  <->  MYSQL  QUERY INTEGRATION : COMPLETE TECHNICAL HANDOFF
+================================================================================
+For      : The CRM chatbot team (the GPT-API chatbot that answers customers).
+Purpose  : Explain, in full, how the chatbot reads travel data from MySQL and
+           answers customers. SELF-CONTAINED — a fresh session with NO prior
+           memory can implement from this file alone.
+Audience : Developers who may be new to this data pipeline. Plain-language where
+           possible; a glossary is at the END (section 15).
+
+Companion doc (the OTHER side — how data gets INTO MySQL, owned by the DB/data
+team): docs/DB_TO_CRM_SYNC_PLAN.txt. You usually do NOT need it; the only overlap
+is "which columns get synced" (section 12 here).
+
+================================================================================
+ 1. THE BIG PICTURE (where the chatbot fits)
+================================================================================
+Three segments, three owners:
+
+  [Desktop SQLite]  --(1) auto-sync-->  [Your MySQL on GCP]  --(2) query-->  [Chatbot answers]
+   (travel data source)                  (a near-live mirror)                 (GPT + your code)
+        DB/data team                      filled by DB team                   YOUR TEAM
+                                          read by YOUR team
+
+- Segment (1): DB/data team copies the travel data into YOUR MySQL every few
+  minutes. NOT your concern beyond agreeing on columns.
+- Segment (2): YOUR job. The chatbot reads from MySQL and answers customers.
+  THIS DOCUMENT IS ABOUT SEGMENT (2).
+
+KEY FACTS you must internalize:
+- The data ALREADY lands in YOUR OWN MySQL. Reading it is a normal database
+  query (SELECT) — NOT calling an external/3rd-party API. There is NO API on the
+  DB team's side for you to call. The MySQL table IS the handoff point.
+- The data is READ-ONLY for you. Only the sync writes to these tables. If your
+  bot writes/edits them, the next sync overwrites it. Store chatbot-owned data
+  (chat logs, sessions) in SEPARATE tables you create.
+- Freshness: a change on the desktop shows up in your MySQL within a few minutes
+  (near-real-time, not millisecond-live). Fine for a travel chatbot.
+
+================================================================================
+ 2. DO I NEED TO BUILD AN "API"?  (the recurring question, answered once)
+================================================================================
+The word "API" means two different things; do not mix them up:
+
+  (A) A WEB API = an HTTP endpoint/URL you call, e.g. GET /search?country=日本.
+  (B) A DATABASE DRIVER = a code library your program uses to talk to MySQL,
+      e.g. pymysql (Python) / mysql2 (Node). People do NOT usually call this
+      "an API".
+
+The step "go to MySQL and run the query" is (B): your backend program connects
+to MySQL and runs SQL directly. It is NOT a web API. There is nothing to "call"
+on anyone else's server.
+
+When (and only when) you ALSO build a web API (A):
+  - Your bot logic and your DB access run as SEPARATE services/servers, OR
+  - Multiple apps must share the same query logic, OR
+  - You want an extra isolation/security boundary.
+If your chatbot is ONE backend program, you do NOT need a web API — connect to
+MySQL directly. Any web API you build would be YOUR OWN internal wrapper around
+YOUR OWN MySQL, still not a call to the DB team.
+
+ALSO CRITICAL: GPT does NOT touch the database and does NOT call any API itself.
+In "function calling" GPT only OUTPUTS a JSON like {country:"日本"}; YOUR code
+reads that and runs the actual query. "GPT queries the DB" is a metaphor — your
+code always does the real query.
+
+================================================================================
+ 3. RECOMMENDED ARCHITECTURE : GPT FUNCTION CALLING + DIRECT SQL
+================================================================================
+Flow of a single customer message:
+
+  customer message
+     -> (your code) send message history + a "search tool" definition to GPT
+     -> GPT decides: is this a travel-search intent?
+          - NO  (small talk)  -> GPT just replies normally. No DB hit.
+          - YES               -> GPT returns a tool call with extracted params,
+                                  e.g. {country:"日本", keywords:["大阪","賞櫻"]}
+     -> (your code) run a parameterized SQL SELECT on MySQL with those params
+     -> (your code) send the rows back to GPT as a "tool result"
+     -> GPT writes the final natural-language answer USING ONLY those rows
+     -> reply to customer
+
+Why this beats naive keyword matching:
+  - GPT decides WHEN to query (won't fire on "I went to Japan last year, it was
+    fun"); won't miss rephrasings/synonyms/typos.
+  - GPT extracts structured params for you (country, month, budget) AND free-text
+    keywords for things that have no dedicated column.
+  - You write LESS glue code than hand-rolled keyword rules.
+
+Alternatives considered (and why not, for your case):
+  - Pure keyword rules -> SQL : brittle, over/under-triggers. Difficulty: low,
+    quality: poor.
+  - Text-to-SQL (GPT writes raw SQL) : flexible but risky (can generate wrong or
+    unsafe SQL, injection/permission concerns). Difficulty: high. Avoid for now.
+  - RAG / vector semantic search : great for "find similar / by vibe", but your
+    queries have hard filters (country, month, price) better served by SQL.
+    Overkill now; can add later for fuzzy discovery.
+
+================================================================================
+ 4. THE DATA YOU WILL QUERY (tables, columns, business meaning)
+================================================================================
+NOTE: The EXACT columns present depend on what the DB team agrees to sync
+(section 12). Below is the FULL available schema from the source so you know what
+CAN be provided. Confirm the final synced subset with the DB team.
+
+PRODUCT / BUSINESS TABLES (from data/travel_index.db):
+
+  itineraries  -- the main travel-product master. PK = sidecar_path
+    sidecar_path   (unique id of the product, text)
+    image_path     (image file path)
+    branded_path   (branded image path)
+    target_id      (internal target/source id)
+    group_name     (product/group display name -- often the title-ish field)
+    country_csv    (countries; SPECIAL FORMAT, see 4.1)
+    region_csv     (regions; SPECIAL FORMAT)
+    months_csv     (departure months 1-12; SPECIAL FORMAT)
+    airline_csv    (airlines; SPECIAL FORMAT)
+    features_csv   (features/themes e.g. 賞櫻/溫泉; SPECIAL FORMAT)  <-- theme search
+    price_from     (lowest price, integer)
+    duration_days  (trip length in days, integer)
+    source_time    (source timestamp, text)
+    indexed_at     (when this row was indexed, text ISO8601)
+    image_sha256   (image hash)
+
+  itinerary_plans  -- plans under an itinerary. PK = plan_id
+    plan_id, sidecar_path, target_id, group_name, plan_no, title, raw_text,
+    country_csv, region_csv, airline_csv, features_csv, months_csv,
+    price_from, duration_days, indexed_at
+    (title + raw_text hold the richest free text -- good for keyword search if synced)
+
+  itinerary_departures  -- concrete departure dates + prices. PK = departure_id
+    departure_id, plan_id, sidecar_path, target_id, group_name,
+    departure_date (YYYY-MM-DD-ish text), date_text, month, day, weekday,
+    price_from, duration_days, indexed_at
+    (use this when the customer asks about specific dates / "出發日")
+
+UPLOADED-CONTENT TABLES (from logs/openclaw/upload_catalog.db):
+
+  upload_folders   -- upload batches. PK = id (UNIQUE folder_slug)
+    id, folder_slug, display_name, note, source, status, current_step,
+    image_count, line_groups, captured_at, job_id, archived_at, archived_by,
+    delete_after, created_at, updated_at
+  uploaded_images  -- individual images. PK = id (UNIQUE stored_path)
+    id, folder_id, original_filename, stored_path, sha256, display_name,
+    ocr_tags_override, reference_text, manual_note, archived_at, updated_at,
+    updated_by, uploaded_at, ocr_status, compose_status
+  manual_tags      -- tags on images. PK = id
+    id, image_id, tag, note, created_by, created_at
+
+For a TRAVEL CHATBOT, you will mostly query the itinerary tables. The uploaded-
+content tables matter only if the bot needs to surface specific uploaded images.
+
+4.1 *** SPECIAL COLUMN FORMAT (must read) ***
+Columns ending in "_csv" can hold MULTIPLE values and are stored COMMA-WRAPPED:
+    country_csv = ",日本,韓國,"      months_csv = ",6,7,8,"
+To test membership, DO NOT use "= '日本'". Use a wrapped LIKE:
+    country_csv LIKE '%,日本,%'      months_csv LIKE '%,7,%'
+The leading/trailing commas make it an EXACT token match (so "日本" won't wrongly
+match "日本海"). Always wrap your search value as '%,VALUE,%' for these columns.
+
+================================================================================
+ 5. KEYWORD -> COLUMN MAPPING (the real-world nuance)
+================================================================================
+Customer words map to the DB in three different ways. Plan for all three.
+
+  Customer says   ->  How to match
+  --------------------------------------------------------------------------
+  日本 (country)  ->  has a column: country_csv LIKE '%,日本,%'   (precise)
+  7月 (month)     ->  has a column: months_csv LIKE '%,7,%'
+  五萬以內(budget)->  has a column: price_from <= 50000
+  5天(duration)   ->  has a column: duration_days <= 5  (or =)
+  大阪 (city)     ->  NO city column. Search free text: group_name / region_csv /
+                      features_csv / (title, raw_text if synced) LIKE '%大阪%'
+  賞櫻 (theme)    ->  usually in features_csv (or title/raw_text). LIKE '%賞櫻%'
+  優惠 (promo)    ->  NO field today. See section 6.
+
+RULE OF THUMB:
+  - Words that have a column  -> add a precise WHERE condition.
+  - Words that don't         -> push into a "keywords" list and LIKE-search across
+                                the text columns.
+GPT (via function calling) should output BOTH: structured params AND a keywords[]
+array. Your query builder then handles each appropriately (see section 8).
+
+================================================================================
+ 6. THE "優惠 / PROMOTION" PROBLEM (decide with the DB team)
+================================================================================
+There is currently NO discount/promotion field in the data. Options:
+  (a) Treat "優惠" as "show the cheapest" -> ORDER BY price_from ASC, return top N.
+  (b) Ask the DB team to ADD a promo field (e.g. is_promo / promo_price) to the
+      sync, then filter on it precisely. (Cleanest long-term.)
+  (c) Ignore the word as a filter.
+Pick one. Until a real field exists, (a) is the pragmatic default.
+
+================================================================================
+ 7. PREREQUISITES / WHAT YOU NEED FROM THE DB TEAM
+================================================================================
+  1. CONNECTION INFO to the MySQL: host, port (3306), database name.
+     NOTE: MySQL is bound to 127.0.0.1 on the GCP VM and reached by the sync via
+     an SSH tunnel. For YOUR chatbot to read it, confirm with the DB team HOW you
+     connect from where your bot runs:
+       - If your bot runs ON the same VM -> connect to 127.0.0.1:3306 directly.
+       - If your bot runs ELSEWHERE -> you need a network path (private VPC IP,
+         Cloud SQL, an SSH tunnel of your own, or the DB team exposes a read
+         replica). Agree this explicitly; do NOT expose 3306 to the public net.
+  2. A READ-ONLY MySQL USER (SELECT only) for the chatbot. Never use root.
+  3. The FINAL LIST OF SYNCED COLUMNS (section 12) so you know what you can query.
+  4. Decision on the 優惠 field (section 6).
+
+================================================================================
+ 8. IMPLEMENTATION (Python; Node equivalents noted)
+================================================================================
+Stack assumed: Python + OpenAI GPT API + pymysql. (Node: use `mysql2` + the
+OpenAI Node SDK; the logic is identical.)
+
+8.1 DB CONNECTION (read-only user)
+--------------------------------------------------------------------------------
+  import pymysql
+  conn = pymysql.connect(
+      host="<MYSQL_HOST>", port=3306,
+      user="<READONLY_USER>", password="<PASSWORD>",
+      database="<DB_NAME>", charset="utf8mb4",
+      cursorclass=pymysql.cursors.DictCursor,  # rows come back as dicts
+      autocommit=True,
+  )
+  # In production, use a CONNECTION POOL (e.g. DBUtils PooledDB) and read creds
+  # from environment variables, never hard-coded. (Node: mysql2 createPool.)
+
+8.2 THE QUERY BUILDER (structured filters + free-text keywords)
+--------------------------------------------------------------------------------
+  def search_itineraries(country=None, month=None, price_max=None,
+                         duration_max=None, keywords=None, promo=False, limit=10):
+      sql = """SELECT sidecar_path, group_name, country_csv, region_csv,
+                      months_csv, features_csv, price_from, duration_days
+               FROM itineraries WHERE 1=1"""
+      params = []
+      if country:                                   # column exists -> precise
+          sql += " AND country_csv LIKE %s"; params.append(f"%,{country},%")
+      if month:
+          sql += " AND months_csv LIKE %s";  params.append(f"%,{int(month)},%")
+      if price_max:
+          sql += " AND price_from <= %s";    params.append(int(price_max))
+      if duration_max:
+          sql += " AND duration_days <= %s"; params.append(int(duration_max))
+      for kw in (keywords or []):                   # no column -> scan text cols
+          sql += (" AND (group_name LIKE %s OR features_csv LIKE %s"
+                  " OR region_csv LIKE %s)")
+          like = f"%{kw}%"; params += [like, like, like]
+      # "promo" has no real field yet -> approximate as cheapest-first (option a)
+      sql += " ORDER BY price_from ASC" if promo else " ORDER BY price_from ASC"
+      sql += " LIMIT %s"; params.append(int(limit))
+      with conn.cursor() as cur:
+          cur.execute(sql, params)                  # ALWAYS parameterized (%s)
+          return cur.fetchall()
+
+  *** SECURITY: never build SQL by string-concatenating user input. Always pass
+      values through %s placeholders + params (prevents SQL injection). ***
+
+  KEYWORD SEMANTICS NOTE: the loop ANDs every keyword (all must match) -> precise
+  but can return 0 rows for many keywords. If you get 0 results, consider a second
+  pass that relaxes (OR the keywords, or drop the least important) and tell the
+  customer you broadened the search.
+
+8.3 DEFINE THE TOOL FOR GPT (function calling)
+--------------------------------------------------------------------------------
+  tools = [{
+    "type": "function",
+    "function": {
+      "name": "search_itineraries",
+      "description": ("查旅遊行程資料庫。當客人想找行程(提到國家、城市、主題、"
+                      "月份、天數、預算、優惠等)時呼叫。閒聊時不要呼叫。"),
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "country":      {"type": "string",  "description": "國家,如 日本"},
+          "month":        {"type": "integer", "description": "出發月份 1-12"},
+          "price_max":    {"type": "integer", "description": "每人預算上限(台幣)"},
+          "duration_max": {"type": "integer", "description": "天數上限"},
+          "keywords":     {"type": "array", "items": {"type": "string"},
+                           "description": "無專屬欄位的自由詞,如 大阪、賞櫻、溫泉"},
+          "promo":        {"type": "boolean", "description": "客人是否想要優惠/便宜"}
+        }
+      }
+    }
+  }]
+
+8.4 THE CONVERSATION LOOP (extract -> query -> answer)
+--------------------------------------------------------------------------------
+  import json
+  from openai import OpenAI
+  client = OpenAI()  # reads OPENAI_API_KEY from env
+
+  SYSTEM = ("你是旅遊客服助理。需要找行程時呼叫 search_itineraries。"
+            "回答只能根據工具回傳的資料;沒有資料就誠實說沒有,不要自己編造"
+            "行程或價格。")
+
+  def handle(messages):  # messages = full chat history (list of role/content)
+      messages = [{"role": "system", "content": SYSTEM}] + messages
+      r1 = client.chat.completions.create(
+              model="gpt-4o", messages=messages, tools=tools)
+      m = r1.choices[0].message
+      if not m.tool_calls:
+          return m.content                       # small talk -> direct reply
+      # GPT asked to search:
+      call = m.tool_calls[0]
+      args = json.loads(call.function.arguments) # the params GPT extracted
+      rows = search_itineraries(**args)          # YOUR code hits MySQL
+      messages.append(m)                          # record GPT's tool call
+      messages.append({"role": "tool", "tool_call_id": call.id,
+                       "content": json.dumps(rows, ensure_ascii=False)})
+      r2 = client.chat.completions.create(model="gpt-4o", messages=messages)
+      return r2.choices[0].message.content       # final answer to customer
+
+  Notes:
+   - Pass the WHOLE message history so multi-turn context works
+     ("那再便宜一點的呢?" relies on the previous turn).
+   - GPT may request MULTIPLE tool calls; loop over m.tool_calls if you support
+     more than one tool.
+   - Keep the returned row set small (LIMIT 10) so you don't blow the token budget
+     when feeding rows back to GPT.
+
+================================================================================
+ 9. EXAMPLE END-TO-END
+================================================================================
+Customer: "有沒有優惠的日本大阪賞櫻行程,七月出發,五萬以內?"
+GPT tool call (extracted):
+  {country:"日本", month:7, price_max:50000, keywords:["大阪","賞櫻"], promo:true}
+Resulting SQL (conceptually):
+  SELECT ... FROM itineraries
+  WHERE country_csv LIKE '%,日本,%'
+    AND months_csv  LIKE '%,7,%'
+    AND price_from <= 50000
+    AND (group_name LIKE '%大阪%' OR features_csv LIKE '%大阪%' OR region_csv LIKE '%大阪%')
+    AND (group_name LIKE '%賞櫻%' OR features_csv LIKE '%賞櫻%' OR region_csv LIKE '%賞櫻%')
+  ORDER BY price_from ASC LIMIT 10;
+Your code runs it, gets rows, hands them back to GPT, GPT writes the reply using
+only those rows.
+
+================================================================================
+ 10. EDGE CASES & UX
+================================================================================
+- ZERO results: don't dead-end. Re-query with relaxed filters (drop a keyword,
+  widen month) and tell the customer you broadened it; or ask a clarifying
+  question ("要不要看其他月份?").
+- HALLUCINATION GUARD: the system prompt must force "answer only from tool data".
+  Optionally double-check that any price/itinerary the bot mentions exists in the
+  returned rows before sending.
+- PRESENTATION: decide how many to show (e.g. top 3-5), what fields (name, price,
+  duration), and whether to link an image (image_path/branded_path -> you must
+  host/serve those; raw filesystem paths are not web URLs).
+- DEDUP: itineraries vs plans vs departures can describe the same trip at
+  different granularity. Decide which table is your primary search target
+  (usually itineraries for "find a trip", departures for "find a date").
+
+================================================================================
+ 11. SECURITY & PERFORMANCE CHECKLIST
+================================================================================
+- [ ] Read-only MySQL user (SELECT only). Never root.
+- [ ] Credentials from environment variables / secret manager, never in code/git.
+- [ ] ALL queries parameterized (%s + params). No string concatenation of input.
+- [ ] Do NOT expose MySQL 3306 to the public internet (use private network/tunnel).
+- [ ] Connection pooling for concurrency (don't open a new connection per message).
+- [ ] LIMIT every query; never SELECT * without a cap.
+- [ ] The DB team maintains indexes on country_csv/months_csv/price_from/etc.
+      (they exist in the source); confirm they're present on the MySQL side too
+      so filtered queries stay fast.
+- [ ] Cache hot/repeated queries if traffic is high (optional).
+
+================================================================================
+ 12. WHAT TO HAND BACK TO THE DB TEAM : COLUMN CHECKLIST
+================================================================================
+For keyword/theme search to work, the columns containing those words MUST be
+synced. Tell the DB team you need AT LEAST these on the MySQL side:
+
+  itineraries:  sidecar_path (PK), group_name, country_csv, region_csv,
+                months_csv, features_csv, price_from, duration_days,
+                image_path, branded_path, indexed_at
+  itinerary_plans (if you want richer text/title search):
+                plan_id (PK), sidecar_path, group_name, title, features_csv,
+                country_csv, region_csv, months_csv, price_from, duration_days
+                (and raw_text ONLY if you need full-text theme matching -- it's
+                 large; confirm need)
+  itinerary_departures (if you answer date-specific questions):
+                departure_id (PK), plan_id, sidecar_path, departure_date, month,
+                day, weekday, price_from, duration_days
+
+Also decide together: the 優惠/promo field (section 6) — add a real promo column
+or not.
+
+================================================================================
+ 13. DIFFICULTY / EFFORT ESTIMATE
+================================================================================
+If you already have a working GPT-API chatbot, adding DB-backed answers is
+MEDIUM-LOW difficulty. The four pieces: (1) connect to MySQL, (2) define the GPT
+tool, (3) write the query builder, (4) feed results back to GPT. A competent dev:
+~1-3 days for a usable v1. The time sinks are NOT the tech but the details:
+keyword->column mapping, the 優惠 case, zero-result UX, result formatting, and
+hallucination guarding.
+
+================================================================================
+ 14. OPEN QUESTIONS FOR YOUR TEAM TO ANSWER (carry these into the new window)
+================================================================================
+  Q1. Is your chatbot ONE backend program, or split into multiple services?
+      -> ONE: connect to MySQL directly (no web API needed).
+      -> SPLIT: you may add YOUR OWN internal web API in front of the DB query.
+  Q2. WHERE does your bot run relative to the MySQL VM (same VM? elsewhere?)
+      -> determines the network path to reach MySQL (section 7).
+  Q3. Which final columns will be synced? (settle section 12 with the DB team)
+  Q4. How to treat 優惠 — cheapest-first, a real promo field, or ignore? (sec 6)
+  Q5. What language/runtime is the bot? (Python/Node/other) -> pick the DB driver.
+
+================================================================================
+ 15. PLAIN-LANGUAGE GLOSSARY
+================================================================================
+- MySQL          : the database that holds the travel data you query. It's YOURS;
+                   the sync just fills it.
+- SQL / SELECT   : the query language; SELECT = "read/fetch rows".
+- Database driver: a code library (pymysql / mysql2) your program uses to talk to
+                   MySQL. Not a "web API".
+- Web API        : an HTTP endpoint (a URL) you call over the network. You do NOT
+                   need one to read your own MySQL.
+- Function calling / tool use : a GPT feature where GPT, instead of answering
+                   directly, outputs "I want to call search_itineraries with
+                   these arguments". YOUR code runs the real query. GPT never
+                   touches the DB.
+- Parameterized query : passing user values via %s placeholders instead of
+                   gluing them into the SQL string -> prevents SQL injection.
+- SQL injection  : an attack where malicious input changes your query; prevented
+                   by parameterized queries.
+- Hallucination  : when the LLM makes up facts (e.g. a fake itinerary/price);
+                   prevented by "answer only from the returned data".
+- _csv column    : a column storing multiple comma-wrapped values (",日本,韓國,");
+                   match with LIKE '%,VALUE,%'.
+- Near-real-time : changes appear within a few minutes, not instantly.
+- RAG / vector search : semantic "find similar" search; not needed for your
+                   structured filters, optional future enhancement.
+================================================================================
+ END
+================================================================================

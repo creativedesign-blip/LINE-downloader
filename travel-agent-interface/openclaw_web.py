@@ -172,6 +172,7 @@ from tools.indexing.extractor import (  # noqa: E402
     extract_region,
 )
 from tools.indexing.number_parse import parse_price_bounds  # noqa: E402
+from tools.sync.trigger import trigger_crm_sync  # noqa: E402
 
 
 def _first(params: dict[str, list[str]], key: str, default: str = "") -> str:
@@ -514,6 +515,7 @@ def _status_with_manual_job(*, target_id: str | None = None) -> dict:
 
 
 def _watch_manual_process(process: subprocess.Popen) -> None:
+    should_sync = False
     try:
         returncode = process.wait()
         time.sleep(0.2)
@@ -531,6 +533,7 @@ def _watch_manual_process(process: subprocess.Popen) -> None:
             )
         if returncode == 0:
             _prewarm_latest_thumbnails()
+            should_sync = True
     except Exception as exc:
         _set_manual_job(
             running=False,
@@ -543,10 +546,13 @@ def _watch_manual_process(process: subprocess.Popen) -> None:
         # The RPA run has exited and released the shared lock; start any upload
         # queued while it ran. Without this, RPA->upload never chains and the
         # queued upload waits for a stray browser request to drain it.
+        pending = None
         try:
-            _start_pending_upload_pipeline_if_idle()
+            pending = _start_pending_upload_pipeline_if_idle()
         except Exception:
             pass
+        if should_sync and pending is None:
+            trigger_crm_sync("travel_index_reindex_completed", logger=logger)
 
 
 def _parse_search(text: str) -> dict[str, object]:
@@ -1162,6 +1168,11 @@ SUPPORTED_UPLOAD_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_UPLOAD_FILE_BYTES = 15 * 1024 * 1024
 MAX_UPLOAD_TOTAL_BYTES = 200 * 1024 * 1024
 MAX_UPLOAD_FILE_COUNT = 50
+# Refuse uploads when the disk is nearly full: accepting them would write files
+# and then silently stall the OCR/compose/index pipeline (it can't write
+# sidecars/branded output), leaving folders stuck "running". Better to reject up
+# front with a clear message. Override with OPENCLAW_MIN_FREE_DISK_GB.
+MIN_FREE_DISK_BYTES = int(float(os.environ.get("OPENCLAW_MIN_FREE_DISK_GB", "3")) * 1024 ** 3)
 # Reject decompression bombs: a small highly-compressed file can decode to a
 # huge pixel array and exhaust RAM in the OCR/compose pipeline. Bound the
 # declared dimensions (read from the header, before any pixel decode).
@@ -2655,16 +2666,20 @@ def _launch_upload_pipeline(folder: dict[str, object], *, trigger_source: str = 
 
 
 def _watch_upload_pipeline(process: subprocess.Popen) -> None:
+    returncode: int | None = None
     try:
-        process.wait()
+        returncode = process.wait()
     except Exception:
         pass
     finally:
         _mark_upload_finished()
+    pending = None
     try:
-        _start_pending_upload_pipeline_if_idle()
+        pending = _start_pending_upload_pipeline_if_idle()
     except Exception:
         pass
+    if returncode == 0 and pending is None:
+        trigger_crm_sync("upload_pipeline_completed", logger=logger)
 
 
 def _start_pending_upload_pipeline_if_idle() -> dict[str, object] | None:
@@ -3126,6 +3141,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if "manual_tags" in data:
                     _replace_upload_manual_tags(int(image_id), _manual_tag_values(data.get("manual_tags")))
                 _refresh_upload_search_index_for_same_sha_images(int(image_id))
+                trigger_crm_sync("manual_edit_search_index_refreshed", logger=logger)
                 self._json({"ok": True, "detail": _upload_item_detail(int(image_id))})
                 return
 
@@ -3277,6 +3293,18 @@ class Handler(SimpleHTTPRequestHandler):
                 if len(files) > MAX_UPLOAD_FILE_COUNT:
                     self._json({"ok": False, "error": f"too many files; maximum is {MAX_UPLOAD_FILE_COUNT}"}, HTTPStatus.BAD_REQUEST)
                     return
+                # Disk-space guard: reject up front instead of writing files and
+                # then stalling the OCR/compose/index pipeline on a full disk.
+                try:
+                    free_bytes = shutil.disk_usage(str(PROJECT_ROOT)).free
+                except OSError:
+                    free_bytes = -1
+                if 0 <= free_bytes < MIN_FREE_DISK_BYTES:
+                    self._json(
+                        {"ok": False, "error": "磁碟空間不足，請先清理磁碟後再上傳"},
+                        HTTPStatus.INSUFFICIENT_STORAGE,
+                    )
+                    return
                 target_inbox = folder_target_path(folder) / "inbox"
                 target_inbox.mkdir(parents=True, exist_ok=True)
                 added = []
@@ -3357,6 +3385,7 @@ class Handler(SimpleHTTPRequestHandler):
                     created_by=str(data.get("created_by") or "web"),
                 )
                 _refresh_upload_search_index_for_same_sha_images(int(match.group(1)))
+                trigger_crm_sync("manual_edit_search_index_refreshed", logger=logger)
                 self._json({"ok": True, "tag": tag})
                 return
 
@@ -3407,6 +3436,7 @@ class Handler(SimpleHTTPRequestHandler):
                 ok = delete_manual_tag(int(match.group(1)))
                 if ok and image_id is not None:
                     _refresh_upload_search_index_for_same_sha_images(image_id)
+                    trigger_crm_sync("manual_edit_search_index_refreshed", logger=logger)
                 self._json({"ok": ok})
                 return
             self._json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
@@ -3432,6 +3462,7 @@ class Handler(SimpleHTTPRequestHandler):
                     self._json({"ok": False, "error": "image not found"}, HTTPStatus.NOT_FOUND)
                     return
                 _refresh_upload_search_index_for_same_sha_images(int(match.group(1)))
+                trigger_crm_sync("manual_edit_search_index_refreshed", logger=logger)
                 self._json({"ok": True, "image": image})
                 return
 
@@ -3447,6 +3478,7 @@ class Handler(SimpleHTTPRequestHandler):
                     self._json({"ok": False, "error": "tag not found"}, HTTPStatus.NOT_FOUND)
                     return
                 _refresh_upload_search_index_for_same_sha_images(int(tag["image_id"]))
+                trigger_crm_sync("manual_edit_search_index_refreshed", logger=logger)
                 self._json({"ok": True, "tag": tag})
                 return
 

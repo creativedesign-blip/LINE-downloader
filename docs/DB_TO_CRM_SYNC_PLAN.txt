@@ -1,0 +1,596 @@
+================================================================================
+ LOCAL SQLite  ->  GCP CRM MySQL  SYNC : COMPLETE TECHNICAL HANDOFF
+================================================================================
+Project : LINE-downloader  (C:\Users\user\Desktop\LINE-downloader-main)
+Purpose : A CRM running on a GCP GCE VM (self-hosted MySQL) needs business data
+          that currently lives only in this app's LOCAL SQLite DBs on the user's
+          real desktop. This document is a SELF-CONTAINED handoff so a fresh
+          Claude Code session can pick the work up with no prior conversation.
+
+A companion plan file also exists at:
+  C:\Users\user\.claude\plans\whimsical-bubbling-ember.md
+(This TXT supersedes/expands it and is the authoritative handoff.)
+
+================================================================================
+ 0. TL;DR (the decided design in one paragraph)
+================================================================================
+Push ONE-WAY (local -> CRM), near-real-time. Desktop is behind NAT (outbound
+only), so the desktop PUSHES out over an EPHEMERAL SSH TUNNEL (built-in ssh.exe)
+to the GCE VM, where MySQL listens only on 127.0.0.1. Every sync run uses ONE
+unified mechanism for BOTH source DBs: "snapshot reconciliation" — read all
+local rows, hash each, diff against a local SHADOW of what was last pushed,
+UPSERT changed rows and DELETE rows that disappeared, then update the shadow.
+MySQL is a pure write target (no read-back). Empty shadow = first run = full
+backfill automatically. Implemented as a new self-contained package tools/sync/
+that does NOT modify the app's existing DB schemas. Triggered after each
+RPA/upload run + a periodic safety-net thread + a CLI entrypoint.
+
+================================================================================
+ 1. CONFIRMED REQUIREMENTS / DECISIONS (from the user, do not re-litigate)
+================================================================================
+- Direction        : ONE-WAY, local -> CRM only. CRM never writes back. CRM must
+                     treat the synced tables as a READ-ONLY MIRROR.
+- Freshness        : near-real-time (within minutes). NOT strict-realtime/CDC.
+- Both DBs in scope: travel_index.db AND upload_catalog.db (the user said "both").
+- Delete handling  : deletes MUST propagate (user delegated the "how" -> handled
+                     uniformly by the reconciliation mechanism, see section 4).
+- MySQL type       : self-hosted MySQL on a GCE VM (NOT Cloud SQL managed).
+- Connection       : user delegated -> decided NATIVE SSH TUNNEL via ssh.exe.
+- Sync mechanism   : user chose UNIFIED SNAPSHOT RECONCILIATION (drop the
+                     outbox+trigger design that was considered earlier).
+- Optimizations    : user said "fold ALL of them in" (observability, SSH
+                     hardening, preflight, small fixes — see section 9).
+
+================================================================================
+ 2. ENVIRONMENT / HARD CONSTRAINTS
+================================================================================
+- Source of truth = LOCAL SQLite files on the user's REAL desktop (Windows 11).
+  * data/travel_index.db                 (itineraries / plans / departures)
+  * logs/openclaw/upload_catalog.db       (folders / images / tags + caches)
+  Opened via tools/common/db.py open_db() : WAL journal, busy_timeout=30s,
+  Row factory, PRAGMA foreign_keys left OFF (deliberate, documented in db.py).
+- SQLite is a LOCAL FILE, not a network DB -> CRM cannot "connect in" to query it.
+- Desktop is behind NAT / dynamic home IP -> do NOT expose any inbound port.
+  -> The only safe pattern is the desktop PUSHING OUTBOUND.
+- Cloudflare tunnel context (unrelated to this feature, but lives on same box):
+  site is served by a local "travel" cloudflared tunnel (http2, TCP 7844).
+- IMPORTANT (sandbox vs real desktop): Claude Code's shell here runs on a
+  SANDBOX desktop, a DIFFERENT environment from the user's real desktop where the
+  RPA / web app / DBs actually live. Network/file tests run by the assistant do
+  NOT necessarily reflect the real machine. Live steps must run on the real box
+  (user can run `! <cmd>` to execute in-session on the real desktop).
+- No dependency manifest exists in the repo (no requirements.txt / pyproject).
+  PyMySQL must be added (see section 8 + 11).
+
+================================================================================
+ 3. OPTIONS CONSIDERED AT EACH DECISION POINT (with trade-offs + what was chosen)
+================================================================================
+Keep these so the new session understands WHY, and can revisit if constraints
+change.
+
+3.1 TRANSPORT / DIRECTION
+  (A) Periodic ETL push (dump -> GCS -> BigQuery/Cloud SQL). Simple, decoupled,
+      but not near-real-time and lands in a separate store.
+  (B) Incremental push to a CRM ingest API. Near-real-time, needs an API on GCP.
+  (C) SQLite replica to cloud (Litestream -> GCS). Good as backup; CRM can't
+      easily query a SQLite file -> rejected.
+  (D) Reverse-expose the desktop DB (tunnel/VPN so CRM pulls). Fragile, security
+      risk on a home box -> rejected.
+  CHOSEN DIRECTION: PUSH outbound from desktop (variant of B). Fits existing
+  scheduler; no NAT/inbound exposure.
+
+3.2 MYSQL TYPE (informs the connection method)
+  - GCE VM self-hosted  <-- ACTUAL (user confirmed "該機器 mysql")
+  - Cloud SQL for MySQL  (not used; would have used cloud-sql-python-connector)
+
+3.3 CONNECTION METHOD (desktop -> VM MySQL)
+  (1) Native ssh.exe SSH tunnel  <-- CHOSEN. Already installed
+      (C:\Windows\System32\OpenSSH\ssh.exe and Git's ssh). No GCP deploy. Auth by
+      SSH key. VM already has sshd:22.
+  (2) gcloud IAP TCP forwarding. More secure (no public 22, Google IAM auth) but
+      gcloud is NOT installed on the box; requires SDK + service account. Noted as
+      a future hardening upgrade — only the "open tunnel" step changes.
+  (3) Ingest API in front (Cloud Run/Function). Most decoupled; extra service to
+      build/maintain + VPC wiring to reach the VM's MySQL -> overkill for scale.
+  RULE: NEVER expose MySQL 3306 to the public internet. MySQL stays bound to
+  127.0.0.1 on the VM; reach it only through the tunnel.
+
+3.4 SYNC MECHANISM (how to know what changed)
+  (i)   Watermark only (updated_at/indexed_at > last). Simplest but MISSES hard
+        deletes; manual_tags has no updated_at.
+  (ii)  Outbox table + SQLite triggers (AFTER I/U/D) on catalog tables; watermark
+        + key-set reconciliation on the rebuilt index DB. Event-driven & precise,
+        but: must edit the app's init_db(), maintain triggers, and handle the
+        FK-cascade/foreign_keys=OFF caveat. Considered, then REJECTED as
+        over-engineered for the data volume.
+  (iii) UNIFIED SNAPSHOT RECONCILIATION  <-- CHOSEN. One mechanism for both DBs;
+        no triggers; does not touch app schema; handles deletes; backfill == empty
+        shadow. Cost: reads full tables each run to hash (fine at current scale,
+        thousands of rows, sub-second).
+  DECISION FACTS that make (iii) safe re: the index DB rebuild — verified in code:
+    * tools/indexing/index_db.py TravelIndex.__init__: on PRAGMA user_version
+      mismatch with migrate=True it DROPs+recreates the 3 itinerary tables.
+    * tools/indexing/reindex.py: normal path = per-sidecar index.upsert(); the
+      `--rebuild` path does index.clear() + re-insert INSIDE a single
+      index.transaction() (commit once at end).
+    * Because clear+reinsert is ONE transaction and the DBs are WAL, a separate
+      read connection (the sync) only ever sees a COMPLETE committed snapshot
+      (pre- or post-rebuild), NEVER the empty mid-state. So reconciliation will
+      not "delete everything" mid-rebuild. A 0-row delete GUARD is still added as
+      insurance against a future non-atomic change.
+
+3.5 SHADOW / STATE STORAGE
+  - Earlier (trigger design) idea: keep state in catalog.db. With reconciliation,
+    chosen approach is a DEDICATED, fully-decoupled metadata DB:
+      logs/openclaw/sync_meta.db   (holds the shadow + run status)
+    Source DBs are opened SELECT-ONLY; their schema is never modified.
+
+================================================================================
+ 4. FINAL ARCHITECTURE
+================================================================================
+  SQLite (source of truth, read-only)                 GCE VM
+    travel_index.db  ----,                              sshd:22
+    upload_catalog.db ---+--> tools/sync/ run_once()      |
+                              |  diff vs shadow            | ssh.exe -N -L
+   sync_meta.db (shadow,     |  (sync_meta.db)            | 13306:127.0.0.1:3306
+   status) <-----------------+  open ephemeral tunnel ----v
+                              |  PyMySQL upsert/delete --> MySQL (CRM mirror, 127.0.0.1)
+                              |  on commit: update shadow + status
+   TRIGGERS: (a) after each RPA run  (b) after each upload run
+             (c) periodic safety-net thread  (d) CLI / Task Scheduler
+
+Per-table reconciliation algorithm (the heart of it):
+  1. SELECT mapped columns for all rows of the source table (batched ~500).
+  2. row_hash = sha256(canonical encoding of mapped column values) per row.
+  3. Load shadow {pk -> row_hash} for this table from sync_meta.db.
+  4. UPSERTS = rows whose pk is new OR whose hash changed.
+     DELETES = pks present in shadow but absent locally.
+     (GUARD: if local row count == 0 but shadow non-empty, SKIP deletes + warn.)
+  5. writer.upsert(upserts); writer.delete(deletes)  (per-batch transactions).
+  6. On MySQL commit success, write the new full snapshot to shadow.
+Principles: NON-FATAL (never breaks an RPA/upload run), IDEMPOTENT (safe to
+re-run), SERIALIZED (a non-blocking lock prevents post-run + timer overlap).
+
+================================================================================
+ 5. NEW PACKAGE LAYOUT : tools/sync/
+================================================================================
+Reuse open_db() (tools/common/db.py) and path constants in tools/common/targets.py
+(PROJECT_ROOT, TRAVEL_INDEX_DB_PATH). Catalog path = CATALOG_DB_PATH in
+tools/openclaw/upload_catalog.py (PROJECT_ROOT/logs/openclaw/upload_catalog.db).
+
+  tools/sync/__init__.py        package marker
+  tools/sync/config.py          load()->SyncConfig (validate env, list missing);
+                                is_enabled()->bool
+  tools/sync/mappings.py        TABLES: list of dicts, the SINGLE SOURCE OF TRUTH
+                                {db, source_table, mysql_table, pk, columns[]}
+  tools/sync/tunnel.py          class SSHTunnel (context manager) + _wait_for_port
+  tools/sync/mysql_writer.py    connect(); preflight(tables); upsert(...);
+                                delete(...)
+  tools/sync/meta.py            owns sync_meta.db: ensure_tables();
+                                load_shadow(table); save_shadow(table, snapshot);
+                                read_status(); write_status(...)
+  tools/sync/reconcile.py       row_hash(row, columns);
+                                reconcile_table(src_conn, mapping, writer, meta)
+                                  -> TableSummary
+  tools/sync/runner.py          run_once(cfg)->Summary (lock+orchestrate+retry,
+                                non-fatal); main() for `python -m tools.sync.runner`
+  tools/sync/tests/             pytest, fakes (FakeWriter / FakeTunnel), temp SQLite
+
+Suggested function signatures (Python):
+  # config.py
+  @dataclass(frozen=True)
+  class SyncConfig:
+      ssh_host:str; ssh_port:int; ssh_user:str; ssh_key:str; known_hosts:str
+      local_port:int; remote_mysql_port:int
+      mysql_user:str; mysql_password:str; mysql_db:str
+      interval_seconds:int
+  def load() -> SyncConfig: ...      # raises ValueError listing missing vars
+  def is_enabled() -> bool: ...      # SYNC_ENABLED == "1"
+
+  # tunnel.py
+  class SSHTunnel:
+      def __init__(self, cfg: SyncConfig): ...
+      def __enter__(self) -> "SSHTunnel": ...   # spawn ssh, wait for local port
+      def __exit__(self, *exc) -> None: ...      # terminate()->kill(), guaranteed
+
+  # mysql_writer.py
+  class MySQLWriter:
+      def connect(self) -> None: ...
+      def preflight(self, tables) -> None: ...   # raises on schema mismatch
+      def upsert(self, table, pk, columns, rows) -> None: ...
+      def delete(self, table, pk, keys) -> None: ...
+      def close(self) -> None: ...
+
+  # reconcile.py
+  def row_hash(row: Mapping, columns: Sequence[str]) -> str: ...
+  def reconcile_table(src_conn, mapping, writer, meta) -> TableSummary: ...
+
+  # runner.py
+  def run_once(cfg: SyncConfig | None = None) -> Summary: ...
+
+================================================================================
+ 6. sync_meta.db SCHEMA (owned by tools/sync/meta.py; NOT an app DB)
+================================================================================
+  CREATE TABLE IF NOT EXISTS sync_shadow (
+    source_table TEXT NOT NULL,
+    pk           TEXT NOT NULL,
+    row_hash     TEXT NOT NULL,
+    PRIMARY KEY (source_table, pk)
+  );
+  CREATE TABLE IF NOT EXISTS sync_status (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_run_at      TEXT,
+    last_success_at  TEXT,
+    last_error       TEXT,
+    last_error_at    TEXT,
+    last_counts_json TEXT
+  );
+
+================================================================================
+ 7. SOURCE DB SCHEMAS (verbatim, for reference) + PRIMARY KEYS
+================================================================================
+--- data/travel_index.db  (tools/indexing/index_db.py, SCHEMA_VERSION=5) ---
+itineraries  (PK: sidecar_path)
+  sidecar_path TEXT PK, image_path TEXT NOT NULL, target_id TEXT, group_name TEXT,
+  branded_path TEXT, country_csv TEXT, months_csv TEXT, price_from INTEGER,
+  airline_csv TEXT, region_csv TEXT, duration_days INTEGER, features_csv TEXT,
+  source_time TEXT, indexed_at TEXT NOT NULL, sidecar_mtime REAL,
+  extractor_version TEXT, image_sha256 TEXT
+itinerary_plans  (PK: plan_id)
+  plan_id TEXT PK, sidecar_path TEXT NOT NULL, image_path TEXT NOT NULL,
+  branded_path TEXT, target_id TEXT, group_name TEXT, plan_no INTEGER NOT NULL,
+  title TEXT, raw_text TEXT, country_csv TEXT, region_csv TEXT, airline_csv TEXT,
+  features_csv TEXT, months_csv TEXT, price_from INTEGER, duration_days INTEGER,
+  indexed_at TEXT NOT NULL
+itinerary_departures  (PK: departure_id)
+  departure_id TEXT PK, plan_id TEXT NOT NULL, sidecar_path TEXT NOT NULL,
+  image_path TEXT NOT NULL, branded_path TEXT, target_id TEXT, group_name TEXT,
+  departure_date TEXT NOT NULL, date_text TEXT, month INTEGER NOT NULL,
+  day INTEGER NOT NULL, weekday INTEGER NOT NULL, price_from INTEGER,
+  duration_days INTEGER, indexed_at TEXT NOT NULL
+
+--- logs/openclaw/upload_catalog.db  (tools/openclaw/upload_catalog.py) ---
+upload_folders  (PK: id; UNIQUE: folder_slug)
+  id INTEGER PK AUTOINCREMENT, folder_slug TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL, note TEXT DEFAULT '', source TEXT DEFAULT 'upload',
+  status TEXT DEFAULT 'pending', current_step TEXT DEFAULT 'upload',
+  step_statuses TEXT DEFAULT '{}', image_count INTEGER DEFAULT 0,
+  line_groups TEXT DEFAULT '[]', captured_at TEXT, job_id TEXT, archived_at TEXT,
+  archived_by TEXT, delete_after TEXT, created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+uploaded_images  (PK: id; UNIQUE: stored_path; FK folder_id -> upload_folders.id)
+  id INTEGER PK AUTOINCREMENT, folder_id INTEGER NOT NULL,
+  original_filename TEXT NOT NULL, stored_path TEXT NOT NULL UNIQUE,
+  sha256 TEXT NOT NULL, display_name TEXT DEFAULT '',
+  ocr_tags_override TEXT DEFAULT '[]', reference_text TEXT DEFAULT '',
+  manual_note TEXT DEFAULT '', archived_at TEXT, updated_at TEXT,
+  updated_by TEXT DEFAULT 'web', uploaded_at TEXT NOT NULL,
+  ocr_status TEXT DEFAULT 'pending', compose_status TEXT DEFAULT 'pending'
+manual_tags  (PK: id; FK image_id -> uploaded_images.id)
+  id INTEGER PK AUTOINCREMENT, image_id INTEGER NOT NULL, tag TEXT NOT NULL,
+  note TEXT DEFAULT '', created_by TEXT DEFAULT 'web', created_at TEXT NOT NULL
+
+EXCLUDED from sync (internal/cache): uploaded_image_search_index, learning_candidates.
+
+================================================================================
+ 8. PROPOSED COLUMN MAPPINGS + DRAFT CRM-SIDE MySQL DDL  (OPEN ITEM #1 - REVIEW)
+================================================================================
+These are DRAFTS. The user must confirm the exact subset the CRM wants; trim or
+add as needed, then this becomes mappings.py + the DDL to run on the VM.
+Recommended subset excludes large/internal columns (raw_text, step_statuses,
+sidecar_mtime, extractor_version) — add them back if the CRM needs them.
+
+Type mapping: TEXT->VARCHAR/TEXT, INTEGER->INT/BIGINT, REAL->DOUBLE,
+ISO8601 timestamps kept as VARCHAR(32) (simplest; or DATETIME if you prefer).
+Use CHARSET utf8mb4. Long path PKs -> VARCHAR(512) (utf8mb4: 2048 bytes < 3072
+InnoDB index limit). CRM id PKs are the LOCAL ids (NOT auto-increment on CRM).
+
+-- itineraries -------------------------------------------------------------
+CREATE TABLE itineraries (
+  sidecar_path   VARCHAR(512) NOT NULL,
+  image_path     TEXT,
+  target_id      VARCHAR(128),
+  group_name     VARCHAR(255),
+  branded_path   TEXT,
+  country_csv    VARCHAR(255),
+  months_csv     VARCHAR(128),
+  price_from     INT,
+  airline_csv    VARCHAR(255),
+  region_csv     VARCHAR(255),
+  duration_days  INT,
+  features_csv   TEXT,
+  source_time    VARCHAR(32),
+  indexed_at     VARCHAR(32),
+  image_sha256   VARCHAR(64),
+  PRIMARY KEY (sidecar_path)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- itinerary_plans ---------------------------------------------------------
+CREATE TABLE itinerary_plans (
+  plan_id        VARCHAR(128) NOT NULL,
+  sidecar_path   VARCHAR(512),
+  target_id      VARCHAR(128),
+  group_name     VARCHAR(255),
+  plan_no        INT,
+  title          VARCHAR(512),
+  country_csv    VARCHAR(255),
+  region_csv     VARCHAR(255),
+  airline_csv    VARCHAR(255),
+  features_csv   TEXT,
+  months_csv     VARCHAR(128),
+  price_from     INT,
+  duration_days  INT,
+  indexed_at     VARCHAR(32),
+  PRIMARY KEY (plan_id),
+  KEY idx_plan_sidecar (sidecar_path)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- (optional add: raw_text TEXT, image_path TEXT, branded_path TEXT)
+
+-- itinerary_departures ----------------------------------------------------
+CREATE TABLE itinerary_departures (
+  departure_id   VARCHAR(128) NOT NULL,
+  plan_id        VARCHAR(128),
+  sidecar_path   VARCHAR(512),
+  target_id      VARCHAR(128),
+  group_name     VARCHAR(255),
+  departure_date VARCHAR(32),
+  date_text      VARCHAR(64),
+  month          INT,
+  day            INT,
+  weekday        INT,
+  price_from     INT,
+  duration_days  INT,
+  indexed_at     VARCHAR(32),
+  PRIMARY KEY (departure_id),
+  KEY idx_dep_plan (plan_id),
+  KEY idx_dep_date (departure_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- upload_folders ----------------------------------------------------------
+CREATE TABLE upload_folders (
+  id            BIGINT NOT NULL,
+  folder_slug   VARCHAR(255) NOT NULL,
+  display_name  VARCHAR(512),
+  note          TEXT,
+  source        VARCHAR(64),
+  status        VARCHAR(64),
+  current_step  VARCHAR(64),
+  image_count   INT,
+  line_groups   TEXT,
+  captured_at   VARCHAR(32),
+  job_id        VARCHAR(128),
+  archived_at   VARCHAR(32),
+  archived_by   VARCHAR(128),
+  delete_after  VARCHAR(32),
+  created_at    VARCHAR(32),
+  updated_at    VARCHAR(32),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_folder_slug (folder_slug)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- (excluded: step_statuses)
+
+-- uploaded_images ---------------------------------------------------------
+CREATE TABLE uploaded_images (
+  id                BIGINT NOT NULL,
+  folder_id         BIGINT,
+  original_filename VARCHAR(512),
+  stored_path       VARCHAR(512) NOT NULL,
+  sha256            VARCHAR(64),
+  display_name      VARCHAR(512),
+  ocr_tags_override TEXT,
+  reference_text    TEXT,
+  manual_note       TEXT,
+  archived_at       VARCHAR(32),
+  updated_at        VARCHAR(32),
+  updated_by        VARCHAR(128),
+  uploaded_at       VARCHAR(32),
+  ocr_status        VARCHAR(64),
+  compose_status    VARCHAR(64),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_stored_path (stored_path),
+  KEY idx_img_folder (folder_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- manual_tags -------------------------------------------------------------
+CREATE TABLE manual_tags (
+  id         BIGINT NOT NULL,
+  image_id   BIGINT,
+  tag        VARCHAR(255),
+  note       TEXT,
+  created_by VARCHAR(128),
+  created_at VARCHAR(32),
+  PRIMARY KEY (id),
+  KEY idx_tag_image (image_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+NOTE on FKs: do NOT add hard FK constraints on the CRM side unless you guarantee
+parent-before-child sync ordering. Reconciliation order should be parent->child
+for upserts and child->parent for deletes; keeping CRM FKs off (or deferred)
+avoids ordering failures. Index the *_id columns instead.
+
+================================================================================
+ 9. ENV VARS (config.py) + FOLDED-IN OPTIMIZATIONS
+================================================================================
+ENV VARS (read via os.environ at load, pattern from commit 1ab32cb):
+  SYNC_ENABLED              "1" turns the whole feature on
+  SYNC_SSH_HOST            VM public IP / hostname
+  SYNC_SSH_PORT            default 22
+  SYNC_SSH_USER            dedicated, restricted SSH user
+  SYNC_SSH_KEY             path to a PASSPHRASE-LESS private key (or use ssh-agent)
+  SYNC_SSH_KNOWN_HOSTS     path to a known_hosts file pre-pinned with the VM key
+  SYNC_LOCAL_PORT          default 13306 (local forwarded port)
+  SYNC_MYSQL_REMOTE_PORT   default 3306 (MySQL on the VM, 127.0.0.1)
+  SYNC_MYSQL_USER          scoped user: INSERT/UPDATE/DELETE on CRM tables only
+  SYNC_MYSQL_PASSWORD
+  SYNC_MYSQL_DB
+  SYNC_INTERVAL_SECONDS    default 180 (safety-net cadence)
+Validation: load() raises listing any missing required var. Add a validation
+block to travel-agent-interface/start-internet.ps1 mirroring its existing
+"throw if unset" checks, required only when SYNC_ENABLED=1.
+
+OPTIMIZATION 1 — OBSERVABILITY (folded in):
+  * Each run writes last_run_at/last_success_at/last_error(+_at)/per-table counts
+    to sync_status (sync_meta.db) AND a dedicated log file under logs/openclaw/.
+  * Surface in the web UI: extend the existing agent/job status header response in
+    openclaw_web.py with a "sync" block read from meta.read_status() so sync
+    health is visible at a glance.
+
+OPTIMIZATION 2 — SSH HARDENING (folded in), ssh args:
+  ssh -i KEY -N
+      -o BatchMode=yes              (fail fast, never hang on a prompt)
+      -o ExitOnForwardFailure=yes
+      -o ServerAliveInterval=30
+      -o IdentitiesOnly=yes
+      -o StrictHostKeyChecking=yes  (pinned host key; NOT accept-new / no TOFU)
+      -o UserKnownHostsFile=KNOWN_HOSTS
+      -p PORT
+      -L LOCAL_PORT:127.0.0.1:REMOTE_MYSQL_PORT
+      USER@HOST
+  Popen with creationflags=CREATE_NO_WINDOW (no console popup on Windows).
+  KEY MUST be passphrase-less (or ssh-agent), else BatchMode makes it error out.
+
+OPTIMIZATION 3 — MYSQL PREFLIGHT (folded in):
+  On connect, query information_schema to confirm each target table exists and has
+  the mapped columns + the PK/UNIQUE key. Fail loudly upfront, not per-row.
+
+OPTIMIZATION 4 — SMALL FIXES (folded in):
+  * State lives in its own sync_meta.db (decoupled; app DBs untouched).
+  * In-run retry/backoff: run_once retries tunnel+push 2-3 times before giving up.
+  * 0-row delete guard (section 4).
+  * Add requirements.txt declaring PyMySQL (repo has no manifest today).
+  * Per CLAUDE.md, run gitnexus_impact BEFORE editing each openclaw_web.py symbol.
+
+================================================================================
+ 10. INTEGRATION POINTS in travel-agent-interface/openclaw_web.py
+================================================================================
+All hooks gated on tools.sync.config.is_enabled(); all spawned as daemon=True
+threads so they never block/break a run. RUN gitnexus_impact on each symbol first.
+  (a) _watch_manual_process() finally block (~L455-462): after the existing
+      _start_pending_upload_pipeline_if_idle(), add
+      threading.Thread(target=_trigger_sync, daemon=True).start()
+  (b) _watch_upload_pipeline() (~L2494): same addition.
+  (c) main() (~L3488): if enabled, start ONE daemon thread looping
+      sleep(SYNC_INTERVAL_SECONDS) -> runner.run_once().
+  (d) _trigger_sync(): thin wrapper calling runner.run_once() in try/except (log).
+Concurrency: run_once acquires a module-level threading.Lock NON-BLOCKING; if held,
+log "skipped, in progress" and return -> post-run trigger & timer never overlap.
+(There is NO existing periodic scheduler in the app; threads are spawned on demand.
+ Secrets pattern: os.environ.get at module load. DB paths: tools/common/targets.py.)
+
+================================================================================
+ 11. RUNTIME FLOW of one run_once()
+================================================================================
+  1. is_enabled()? no -> return.
+  2. Acquire non-blocking lock; busy -> log "skipped" + return.
+  3. cfg = config.load(); missing env -> write_status(error) + return.
+  4. meta.ensure_tables().
+  5. retry loop (2-3, backoff):
+       a. open SSHTunnel (ephemeral, hardened args).
+       b. writer.connect() to 127.0.0.1:LOCAL_PORT.
+       c. writer.preflight(TABLES); mismatch -> write_status(error) + ABORT (no retry).
+       d. for each mapping in mappings.TABLES:
+            open source DB SELECT-only -> reconcile_table(...) -> TableSummary.
+       e. writer.close(); tunnel teardown (guaranteed).
+  6. success -> meta.write_status(success, counts);
+     exception -> meta.write_status(error); NEVER raised to caller.
+
+================================================================================
+ 12. BUILD SEQUENCE + DEPENDENCY GRAPH
+================================================================================
+Two parallel tracks.
+
+CODE TRACK (no external deps; can start immediately):
+  Step 1  Scaffold tools/sync/ (config, mappings, meta, reconcile, mysql_writer,
+          tunnel, runner).
+  Step 2  Unit tests with FakeWriter/FakeTunnel + temp SQLite (no real MySQL/SSH).
+  Step 3  Integrate hooks into openclaw_web.py (a/b/c/d) + status-header "sync"
+          block + add requirements.txt (PyMySQL). RUN gitnexus_impact first.
+
+INFRA TRACK (gated on user decisions/credentials):
+  Step 4  Finalize column subset -> mappings.py + generate final CRM DDL.   <-- DO FIRST
+  Step 5  On the VM: run DDL; create scoped MySQL user; set env vars; pin VM host
+          key into known_hosts; provision a passphrase-less SSH key.
+  Step 6  Go-live verify: runner --dry-run -> real backfill -> check counts/values
+          in CRM; test "edit one row + delete one row" propagation.
+
+DEPENDENCY GRAPH:
+  CODE : 1 -> 2 -> 3 ------------------\
+                                        >--> 6 (go-live verify)
+  INFRA:        4 -> 5 ----------------/
+  Step 4 is the CONFLUENCE POINT (defines mappings.py for code AND the CRM DDL for
+  infra) -> decide Step 4 FIRST, then both tracks run independently to Step 6.
+
+================================================================================
+ 13. CLI ENTRYPOINT
+================================================================================
+  python -m tools.sync.runner            one reconciliation pass (auto-backfill if
+                                          shadow is empty)
+  python -m tools.sync.runner --dry-run  compute+report the diff, write nothing
+  python -m tools.sync.runner --loop     periodic loop (alt. to in-web thread,
+                                          e.g. Windows Task Scheduler)
+
+================================================================================
+ 14. VERIFICATION / TESTS
+================================================================================
+Unit (tools/sync/tests/, pytest, temp SQLite, inject fakes):
+  test_reconcile.py  first-run full push (empty shadow); changed-row upsert;
+                     removed-row delete; 0-row delete guard; shadow update.
+  test_mysql_writer.py  fake conn/cursor: assert INSERT..ON DUPLICATE KEY UPDATE
+                     and DELETE SQL+params; preflight raises on missing col/table.
+  test_meta.py       shadow round-trip + status persistence.
+  test_tunnel.py     _wait_for_port vs a real ephemeral socket; assert ssh arg
+                     vector (BatchMode/known_hosts/-L); mock Popen.
+  test_runner.py     FakeTunnel+FakeWriter: orchestration; non-blocking lock (2nd
+                     concurrent call skips); retry/backoff; exception never
+                     propagates + is recorded to status.
+  Run: python -m pytest tools/sync/tests -q
+Manual e2e (needs live VM): set SYNC_* env; pin known_hosts; --dry-run then real;
+  verify CRM counts/values; edit+delete locally; re-run; confirm propagation.
+Regression: python -m pytest tools/openclaw/tests -q
+            python -m pytest tools/indexing/tests -q  (source schemas untouched).
+
+================================================================================
+ 15. RISKS / EDGE CASES
+================================================================================
+- Schema drift: mappings.py is the single source of truth; preflight fails loudly.
+- Partial failure: per-batch transactions; shadow advanced only after commit ->
+  safe auto-retry next run.
+- Shadow vs MySQL drift: assumes MySQL not edited externally (one-way contract).
+  Manual CRM edits to synced rows get overwritten/reconciled. A periodic
+  read-back verify pass can be added later if needed.
+- SSH: passphrase-less key required; host key pinned; BatchMode avoids hangs.
+- Secrets: env-only, never logged; MySQL user scoped (not root).
+- Reconcile cost: reads all rows each run to hash; thousands -> sub-second. If
+  tables grow large, add an updated_at/indexed_at fast-path to skip unchanged rows.
+- Outbox growth: N/A (no outbox in the chosen design).
+- Timestamp compare: indexed_at/updated_at are ISO8601Z TEXT; lexicographic order
+  is valid only if the format is consistent. (Reconciliation uses hashes, not
+  timestamps, so this only matters if a fast-path is added later.)
+
+================================================================================
+ 16. OPEN ITEMS (gate the LIVE connection only, NOT the code/tests)
+================================================================================
+  #1 Exact column subset per table (review section 8 drafts) -> mappings.py + DDL.
+  #2 VM details + credentials: SSH host/port/user, passphrase-less key + VM host
+     key, MySQL user/password/db (set as env vars).
+  #3 CRM-side CREATE TABLE DDL applied on the VM (generated in section 8).
+
+================================================================================
+ 17. PROJECT-SPECIFIC NOTES the new session MUST honor
+================================================================================
+- CLAUDE.md mandates GitNexus: run gitnexus_impact({target, direction:"upstream"})
+  BEFORE editing any function/class/method (e.g. _watch_manual_process,
+  _watch_upload_pipeline, main in openclaw_web.py); run gitnexus_detect_changes()
+  before committing; never find-and-replace renames (use gitnexus_rename); warn on
+  HIGH/CRITICAL risk. The new tools/sync/ files are NEW code (no impact analysis
+  needed for creating them); only the openclaw_web.py edits need it.
+- Sandbox vs real desktop: assistant shell != user's real desktop. Live network/
+  DB steps run on the real box (user: `! <cmd>`).
+- No requirements.txt yet -> add one (PyMySQL). ssh.exe is OS built-in.
+- Do NOT modify the two source DB schemas. Open them SELECT-only.
+- There is an OPEN security audit for openclaw_web.py (login rate-limit, CSRF,
+  exception leak, body-size DoS still open) — be mindful when touching that file,
+  but the sync hooks are additive and unrelated.
+================================================================================
+ END
+================================================================================
