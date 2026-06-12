@@ -16,6 +16,8 @@
   "outputFormat": "jpg",
   "outputQuality": 92,
   "outputMaxWidth": 1200,
+  "outputTargetWidth": 1240,
+  "outputDpi": 150,
   "detectExistingBottomBand": true,
   "detectForeignFooter": true,
   "detectBlankColorFooter": true,

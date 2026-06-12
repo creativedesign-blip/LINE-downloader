@@ -12,6 +12,7 @@ handling).
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 from typing import Optional
@@ -84,6 +85,7 @@ def imwrite_unicode(
     img: np.ndarray,
     ext: str = ".jpg",
     quality: int = 92,
+    dpi: Optional[int] = None,
 ) -> bool:
     """Write an image to a path that may contain non-ASCII characters.
 
@@ -94,6 +96,10 @@ def imwrite_unicode(
         img: uint8 BGR or BGRA ndarray.
         ext: file extension including the leading dot (e.g. ".jpg", ".png").
         quality: JPEG quality 1-100. Ignored for PNG.
+        dpi: if set, embed this DPI (dots-per-inch, both axes) in the file
+            metadata. cv2.imencode cannot write DPI, so when given, the image is
+            encoded via Pillow instead (still unicode-safe: bytes are written
+            directly to the path).
 
     Returns:
         True on success, False on encode or write failure.
@@ -101,6 +107,9 @@ def imwrite_unicode(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     ext = ext.lower()
+    if dpi:
+        return _imwrite_with_dpi(path, img, ext, quality, int(dpi))
+
     if ext in (".jpg", ".jpeg"):
         params = [cv2.IMWRITE_JPEG_QUALITY, int(quality)]
     elif ext == ".png":
@@ -118,6 +127,64 @@ def imwrite_unicode(
     try:
         with open(path, "wb") as f:
             f.write(buf.tobytes())
+    except (PermissionError, OSError):
+        return False
+
+    return True
+
+
+def _imwrite_with_dpi(
+    path: Path,
+    img: np.ndarray,
+    ext: str,
+    quality: int,
+    dpi: int,
+) -> bool:
+    """Encode via Pillow so DPI metadata is embedded; unicode-safe byte write.
+
+    cv2 has no DPI support, so we convert BGR(A) -> RGB(A), let Pillow encode
+    into an in-memory buffer with the dpi tag, then write the bytes ourselves
+    (Pillow's own save() would hit the same Windows non-ASCII path problem that
+    motivates this module).
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return False
+
+    is_jpeg = ext in (".jpg", ".jpeg")
+    if img.ndim == 2:
+        rgb = img
+    elif img.ndim == 3 and img.shape[2] == 3:
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    elif img.ndim == 3 and img.shape[2] == 4:
+        # JPEG cannot hold alpha; drop it. PNG keeps it.
+        if is_jpeg:
+            bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        else:
+            rgb = cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA)
+    else:
+        return False
+
+    if is_jpeg:
+        fmt = "JPEG"
+        save_kwargs = {"quality": int(quality), "dpi": (dpi, dpi)}
+    elif ext == ".png":
+        fmt = "PNG"
+        save_kwargs = {"dpi": (dpi, dpi)}
+    else:
+        return False
+
+    buf = io.BytesIO()
+    try:
+        Image.fromarray(rgb).save(buf, format=fmt, **save_kwargs)
+    except (ValueError, OSError):
+        return False
+
+    try:
+        with open(path, "wb") as f:
+            f.write(buf.getvalue())
     except (PermissionError, OSError):
         return False
 

@@ -94,15 +94,14 @@ def load_config(path: Path) -> dict:
         raise ValueError(
             f"outputFormat must be jpg|jpeg|png, got {cfg['outputFormat']!r}"
         )
-    if cfg.get("outputMaxWidth") is not None:
-        try:
-            max_w = int(cfg["outputMaxWidth"])
-        except (TypeError, ValueError):
-            raise ValueError(
-                f"outputMaxWidth must be a positive int, got {cfg['outputMaxWidth']!r}"
-            )
-        if max_w <= 0:
-            raise ValueError(f"outputMaxWidth must be positive, got {max_w}")
+    for key in ("outputMaxWidth", "outputTargetWidth", "outputDpi"):
+        if cfg.get(key) is not None:
+            try:
+                val = int(cfg[key])
+            except (TypeError, ValueError):
+                raise ValueError(f"{key} must be a positive int, got {cfg[key]!r}")
+            if val <= 0:
+                raise ValueError(f"{key} must be positive, got {val}")
     return cfg
 
 
@@ -546,8 +545,19 @@ def stitch_one(sidecar_path: Path, ctx: StitchContext) -> Result:
     # generation and final delivery — LINE Messaging API auto-compresses
     # to ~1280px on mobile clients anyway. CTA detection runs before this
     # resize so the heuristics keep their full-resolution accuracy.
+    # outputTargetWidth (if set) forces an EXACT output width (up- or down-
+    # scaling) so every branded image shares one width; otherwise outputMaxWidth
+    # only caps oversized images.
+    target_width = int(ctx.cfg.get("outputTargetWidth") or 0)
     max_width = int(ctx.cfg.get("outputMaxWidth") or 0)
-    if max_width and W > max_width:
+    if target_width and W != target_width:
+        new_w = target_width
+        new_h = max(1, int(round(H * (target_width / W))))
+        interp = cv2.INTER_AREA if new_w < W else cv2.INTER_CUBIC
+        base = cv2.resize(base, (new_w, new_h), interpolation=interp)
+        H, W = base.shape[:2]
+        logger.debug("resized base to %dx%d (target %dpx)", W, H, target_width)
+    elif max_width and W > max_width:
         new_w = max_width
         new_h = max(1, int(round(H * (max_width / W))))
         base = cv2.resize(base, (new_w, new_h), interpolation=cv2.INTER_AREA)
@@ -568,7 +578,8 @@ def stitch_one(sidecar_path: Path, ctx: StitchContext) -> Result:
         return "error"
 
     quality = int(ctx.cfg["outputQuality"])
-    if not imwrite_unicode(branded_img_path, out, ext=ext, quality=quality):
+    output_dpi = int(ctx.cfg.get("outputDpi") or 0) or None
+    if not imwrite_unicode(branded_img_path, out, ext=ext, quality=quality, dpi=output_dpi):
         logger.error("failed to write branded image: %s", branded_img_path)
         return "error"
 
@@ -593,6 +604,7 @@ def stitch_one(sidecar_path: Path, ctx: StitchContext) -> Result:
         "output": {
             "path": relpath_from_root(branded_img_path),
             "dimensions": {"w": int(out.shape[1]), "h": int(out.shape[0])},
+            "dpi": output_dpi,
             "originalDimensions": {"w": int(original_w_for_meta), "h": int(original_h_for_meta)},
             "compositeBaseDimensions": {"w": int(W), "h": int(H)},
             "footerCropY": int(cut_y) if cut_y is not None else None,
